@@ -1,91 +1,31 @@
 from __future__ import annotations
-from typing import Literal
-from react_agent.state import State
-
+from typing import Literal, Optional, Dict, Any, List
 import asyncio
-from typing import Any, Callable, List, Optional, Dict, cast
-from functools import wraps
-import time
 import json
 from datetime import datetime, UTC
 
 from langchain_tavily import TavilySearch
-from langchain_core.tools import Tool
+from langchain_core.tools import tool
 from langgraph.runtime import get_runtime
 
 from react_agent.context import Context
 
 
-# Tool execution wrapper for enhanced error handling and logging
-def tool_wrapper(func: Callable) -> Callable:
-    """Wrapper to add error handling, logging, and metadata to tools."""
-    
-    @wraps(func)
-    async def wrapper(*args, **kwargs) -> Dict[str, Any]:
-        start_time = time.time()
-        tool_name = func.__name__
-        
-        try:
-            # Execute the tool
-            result = await func(*args, **kwargs)
-            
-            # Wrap result with metadata
-            return {
-                "success": True,
-                "tool": tool_name,
-                "result": result,
-                "execution_time": time.time() - start_time,
-                "timestamp": datetime.now(UTC).isoformat(),
-                "error": None
-            }
-            
-        except asyncio.TimeoutError:
-            return {
-                "success": False,
-                "tool": tool_name,
-                "result": None,
-                "execution_time": time.time() - start_time,
-                "timestamp": datetime.now(UTC).isoformat(),
-                "error": f"Tool {tool_name} timed out after {time.time() - start_time:.2f}s"
-            }
-            
-        except Exception as e:
-            return {
-                "success": False,
-                "tool": tool_name,
-                "result": None,
-                "execution_time": time.time() - start_time,
-                "timestamp": datetime.now(UTC).isoformat(),
-                "error": f"Tool {tool_name} failed: {str(e)}"
-            }
-    
-    # Preserve the original function's metadata
-    wrapper.__name__ = func.__name__
-    wrapper.__doc__ = func.__doc__
-    
-    return wrapper
-
-
-@tool_wrapper
-async def search(query: str) -> Optional[Dict[str, Any]]:
-    """Search for general web results.
+@tool
+async def search(query: str) -> Dict[str, Any]:
+    """Search for general web results about game development, Unity, Unreal Engine, and related topics.
     
     This function performs a search using the Tavily search engine, which provides
-    comprehensive, accurate, and trusted results. It's particularly useful for
-    answering questions about current events and gathering factual information.
+    comprehensive, accurate, and trusted results. Particularly useful for finding
+    current game development tutorials, documentation, and best practices.
     
     Args:
         query: The search query string
-        
-    Returns:
-        Dictionary containing search results with metadata
     """
-    runtime = get_runtime(Context)
-    
-    # Add timeout handling
-    timeout = runtime.context.tool_timeout_seconds
-    
     try:
+        runtime = get_runtime(Context)
+        timeout = runtime.context.tool_timeout_seconds
+        
         wrapped = TavilySearch(max_results=runtime.context.max_search_results)
         
         # Execute with timeout
@@ -94,303 +34,527 @@ async def search(query: str) -> Optional[Dict[str, Any]]:
             timeout=timeout
         )
         
-        return cast(Dict[str, Any], result)
+        return {
+            "success": True,
+            "result": result,
+            "timestamp": datetime.now(UTC).isoformat()
+        }
         
     except asyncio.TimeoutError:
-        raise asyncio.TimeoutError(f"Search timed out after {timeout} seconds")
+        return {
+            "success": False,
+            "error": f"Search timed out after {timeout} seconds",
+            "timestamp": datetime.now(UTC).isoformat()
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Search failed: {str(e)}",
+            "timestamp": datetime.now(UTC).isoformat()
+        }
 
 
-@tool_wrapper
-async def calculate(expression: str) -> Dict[str, Any]:
-    """Perform mathematical calculations.
+@tool
+async def get_project_info() -> Dict[str, Any]:
+    """Get information about the current Unity or Unreal Engine project.
     
-    Evaluates mathematical expressions safely using a restricted evaluation environment.
-    Supports basic arithmetic, powers, and common mathematical functions.
+    Returns details about the active project including engine version, project structure,
+    installed packages, and current scene information.
+    """
+    # Simulated project info - in reality this would connect to the actual engine
+    return {
+        "success": True,
+        "engine": "Unity",
+        "version": "2023.3.15f1",
+        "project_name": "MyGameProject",
+        "current_scene": "MainScene.unity",
+        "target_platform": "PC, Mac & Linux Standalone",
+        "render_pipeline": "Universal Render Pipeline",
+        "installed_packages": [
+            "Unity UI",
+            "Post Processing",
+            "Cinemachine",
+            "Input System",
+            "Timeline",
+            "TextMeshPro"
+        ],
+        "project_structure": {
+            "Assets": {
+                "Scripts": ["PlayerController.cs", "GameManager.cs", "UIManager.cs"],
+                "Scenes": ["MainScene.unity", "MenuScene.unity"],
+                "Prefabs": ["Player.prefab", "Enemy.prefab", "UI_Canvas.prefab"],
+                "Materials": ["Ground.mat", "Player.mat", "Sky.mat"],
+                "Textures": ["ground_texture.png", "player_sprite.png"]
+            }
+        },
+        "build_settings": {
+            "scenes_in_build": ["MenuScene", "MainScene"],
+            "platform": "Windows x64"
+        }
+    }
+
+
+@tool
+async def create_asset(asset_type: str, name: str, properties: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Create a new asset in the game project.
     
     Args:
-        expression: Mathematical expression to evaluate (e.g., "2 + 2", "sqrt(16)")
-        
-    Returns:
-        Dictionary containing the calculation result
+        asset_type: Type of asset to create (script, prefab, material, scene, etc.)
+        name: Name for the new asset
+        properties: Optional properties/configuration for the asset
     """
-    import math
-    import operator
+    if not properties:
+        properties = {}
     
-    # Safe evaluation environment
-    safe_dict = {
-        'abs': abs,
-        'round': round,
-        'min': min,
-        'max': max,
-        'sum': sum,
-        'pow': pow,
-        'sqrt': math.sqrt,
-        'log': math.log,
-        'log10': math.log10,
-        'exp': math.exp,
-        'sin': math.sin,
-        'cos': math.cos,
-        'tan': math.tan,
-        'pi': math.pi,
-        'e': math.e,
+    # Simulated asset creation
+    asset_info = {
+        "success": True,
+        "asset_type": asset_type,
+        "name": name,
+        "path": f"Assets/{asset_type}s/{name}",
+        "created_at": datetime.now(UTC).isoformat(),
+        "properties": properties
     }
     
-    try:
-        # Remove any potentially dangerous characters
-        if any(char in expression for char in ['import', '__', 'exec', 'eval', 'compile']):
-            raise ValueError("Expression contains forbidden operations")
-        
-        # Evaluate the expression
-        result = eval(expression, {"__builtins__": {}}, safe_dict)
-        
-        return {
-            "expression": expression,
-            "result": result,
-            "type": type(result).__name__
-        }
-        
-    except Exception as e:
-        raise ValueError(f"Calculation failed: {str(e)}")
-
-
-@tool_wrapper
-async def get_current_time(timezone: Optional[str] = None) -> Dict[str, Any]:
-    """Get the current date and time.
-    
-    Args:
-        timezone: Optional timezone name (e.g., "America/New_York", "Europe/London").
-                 If not provided, returns UTC time.
-    
-    Returns:
-        Dictionary containing current time information
-    """
-    from zoneinfo import ZoneInfo
-    
-    try:
-        if timezone:
-            tz = ZoneInfo(timezone)
-            current_time = datetime.now(tz)
-        else:
-            current_time = datetime.now(UTC)
-        
-        return {
-            "iso_format": current_time.isoformat(),
-            "formatted": current_time.strftime("%Y-%m-%d %H:%M:%S %Z"),
-            "timestamp": current_time.timestamp(),
-            "timezone": timezone or "UTC",
-            "date": current_time.date().isoformat(),
-            "time": current_time.time().isoformat(),
-            "weekday": current_time.strftime("%A"),
-        }
-        
-    except Exception as e:
-        raise ValueError(f"Failed to get time for timezone {timezone}: {str(e)}")
-
-
-@tool_wrapper
-async def store_memory(key: str, value: Any) -> Dict[str, Any]:
-    """Store information in temporary memory for use across steps.
-    
-    This tool allows the agent to remember information between steps
-    within the same execution session. Data is not persistent across sessions.
-    
-    Args:
-        key: Unique identifier for the stored information
-        value: The information to store (will be JSON-serialized)
-    
-    Returns:
-        Confirmation of storage with metadata
-    """
-    runtime = get_runtime(Context)
-    
-    # Initialize memory storage if not exists
-    if "agent_memory" not in runtime.context.runtime_metadata:
-        runtime.context.runtime_metadata["agent_memory"] = {}
-    
-    # Store the value
-    try:
-        # Ensure value is JSON-serializable
-        json_value = json.dumps(value)
-        runtime.context.runtime_metadata["agent_memory"][key] = json.loads(json_value)
-        
-        return {
-            "key": key,
-            "stored": True,
-            "size": len(json_value),
-            "total_keys": len(runtime.context.runtime_metadata["agent_memory"])
-        }
-        
-    except Exception as e:
-        raise ValueError(f"Failed to store value: {str(e)}")
-
-
-@tool_wrapper
-async def retrieve_memory(key: str) -> Dict[str, Any]:
-    """Retrieve information from temporary memory.
-    
-    Args:
-        key: The identifier of the information to retrieve
-    
-    Returns:
-        Dictionary containing the retrieved value and metadata
-    """
-    runtime = get_runtime(Context)
-    
-    # Check if memory exists
-    if "agent_memory" not in runtime.context.runtime_metadata:
-        runtime.context.runtime_metadata["agent_memory"] = {}
-    
-    memory = runtime.context.runtime_metadata["agent_memory"]
-    
-    if key in memory:
-        return {
-            "key": key,
-            "value": memory[key],
-            "found": True
-        }
-    else:
-        return {
-            "key": key,
-            "value": None,
-            "found": False,
-            "available_keys": list(memory.keys())
-        }
-
-
-@tool_wrapper
-async def validate_json(json_string: str) -> Dict[str, Any]:
-    """Validate and parse JSON string.
-    
-    Useful for checking if data is valid JSON and extracting structured information.
-    
-    Args:
-        json_string: String that should contain valid JSON
-    
-    Returns:
-        Dictionary containing parsed JSON and validation result
-    """
-    try:
-        parsed = json.loads(json_string)
-        return {
-            "valid": True,
-            "parsed": parsed,
-            "type": type(parsed).__name__,
-            "size": len(json_string)
-        }
-    except json.JSONDecodeError as e:
-        return {
-            "valid": False,
-            "error": str(e),
-            "line": e.lineno,
-            "column": e.colno
-        }
-
-
-@tool_wrapper
-async def text_analysis(text: str, analysis_type: str = "summary") -> Dict[str, Any]:
-    """Analyze text for various properties.
-    
-    Args:
-        text: The text to analyze
-        analysis_type: Type of analysis - "summary", "sentiment", "keywords", "stats"
-    
-    Returns:
-        Dictionary containing analysis results
-    """
-    import re
-    from collections import Counter
-    
-    result = {
-        "text_length": len(text),
-        "analysis_type": analysis_type
-    }
-    
-    if analysis_type == "stats":
-        words = text.split()
-        sentences = re.split(r'[.!?]+', text)
-        
-        result.update({
-            "word_count": len(words),
-            "sentence_count": len([s for s in sentences if s.strip()]),
-            "average_word_length": sum(len(word) for word in words) / len(words) if words else 0,
-            "unique_words": len(set(words))
+    if asset_type.lower() == "script":
+        asset_info.update({
+            "language": "C#",
+            "template": "MonoBehaviour",
+            "methods": ["Start", "Update"],
+            "namespaces": ["UnityEngine"]
         })
+    elif asset_type.lower() == "prefab":
+        asset_info.update({
+            "components": ["Transform", "Renderer", "Collider"],
+            "children": 0,
+            "size": "1.2 MB"
+        })
+    elif asset_type.lower() == "material":
+        asset_info.update({
+            "shader": "Universal Render Pipeline/Lit",
+            "textures": [],
+            "color": "White"
+        })
+    elif asset_type.lower() == "scene":
+        asset_info.update({
+            "objects": ["Main Camera", "Directional Light"],
+            "lighting": "Realtime",
+            "skybox": "Default"
+        })
+    
+    return asset_info
+
+
+@tool
+async def write_file(file_path: str, content: str, file_type: str = "script") -> Dict[str, Any]:
+    """Write or create a file in the project (scripts, config files, etc.).
+    
+    Args:
+        file_path: Path where to create/write the file
+        content: Content to write to the file
+        file_type: Type of file (script, config, text, etc.)
+    """
+    # Simulated file writing
+    return {
+        "success": True,
+        "file_path": file_path,
+        "file_type": file_type,
+        "size_bytes": len(content),
+        "lines_written": len(content.split('\n')),
+        "encoding": "UTF-8",
+        "timestamp": datetime.now(UTC).isoformat(),
+        "message": f"Successfully wrote {file_type} file to {file_path}"
+    }
+
+
+@tool
+async def edit_project_config(config_section: str, settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Edit project configuration settings.
+    
+    Args:
+        config_section: Section of config to modify (build_settings, player_settings, quality, etc.)
+        settings: Dictionary of settings to update
+    """
+    # Simulated config editing
+    return {
+        "success": True,
+        "config_section": config_section,
+        "updated_settings": settings,
+        "previous_values": {
+            # Simulated previous values
+            key: f"previous_{key}_value" for key in settings.keys()
+        },
+        "requires_restart": config_section in ["player_settings", "graphics"],
+        "timestamp": datetime.now(UTC).isoformat(),
+        "message": f"Updated {config_section} configuration"
+    }
+
+
+@tool
+async def get_script_snippets(category: str, language: str = "csharp") -> Dict[str, Any]:
+    """Get code snippets and templates for common game development tasks.
+    
+    Args:
+        category: Category of snippets (player_movement, ui, physics, audio, etc.)
+        language: Programming language (csharp, javascript, blueprint)
+    """
+    # Simulated code snippets database
+    snippets = {
+        "player_movement": {
+            "csharp": {
+                "basic_movement": '''public class PlayerMovement : MonoBehaviour 
+{
+    public float speed = 5f;
+    private Rigidbody rb;
+    
+    void Start() 
+    {
+        rb = GetComponent<Rigidbody>();
+    }
+    
+    void Update() 
+    {
+        float horizontal = Input.GetAxis("Horizontal");
+        float vertical = Input.GetAxis("Vertical");
         
-    elif analysis_type == "keywords":
-        # Simple keyword extraction (most common words)
-        words = re.findall(r'\b\w+\b', text.lower())
-        # Filter out common stop words
-        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'was', 'are', 'were'}
-        words = [w for w in words if w not in stop_words and len(w) > 3]
-        word_freq = Counter(words)
+        Vector3 movement = new Vector3(horizontal, 0, vertical) * speed * Time.deltaTime;
+        rb.MovePosition(transform.position + movement);
+    }
+}''',
+                "fps_controller": '''public class FPSController : MonoBehaviour 
+{
+    public float walkSpeed = 6f;
+    public float runSpeed = 12f;
+    public float mouseSensitivity = 100f;
+    
+    private CharacterController controller;
+    private Camera playerCamera;
+    private float xRotation = 0f;
+    
+    void Start() 
+    {
+        controller = GetComponent<CharacterController>();
+        playerCamera = GetComponentInChildren<Camera>();
+        Cursor.lockState = CursorLockMode.Locked;
+    }
+    
+    void Update() 
+    {
+        HandleMovement();
+        HandleMouseLook();
+    }
+    
+    void HandleMovement() 
+    {
+        float x = Input.GetAxis("Horizontal");
+        float z = Input.GetAxis("Vertical");
+        bool isRunning = Input.GetKey(KeyCode.LeftShift);
         
-        result["keywords"] = dict(word_freq.most_common(10))
+        float currentSpeed = isRunning ? runSpeed : walkSpeed;
+        Vector3 move = transform.right * x + transform.forward * z;
+        controller.Move(move * currentSpeed * Time.deltaTime);
+    }
+    
+    void HandleMouseLook() 
+    {
+        float mouseX = Input.GetAxis("Mouse X") * mouseSensitivity * Time.deltaTime;
+        float mouseY = Input.GetAxis("Mouse Y") * mouseSensitivity * Time.deltaTime;
         
-    elif analysis_type == "summary":
-        # Very basic summary (first and last sentences)
-        sentences = [s.strip() for s in re.split(r'[.!?]+', text) if s.strip()]
-        if sentences:
-            result["first_sentence"] = sentences[0]
-            result["last_sentence"] = sentences[-1] if len(sentences) > 1 else sentences[0]
-            result["sentence_count"] = len(sentences)
-            
+        xRotation -= mouseY;
+        xRotation = Mathf.Clamp(xRotation, -90f, 90f);
+        
+        playerCamera.transform.localRotation = Quaternion.Euler(xRotation, 0f, 0f);
+        transform.Rotate(Vector3.up * mouseX);
+    }
+}'''
+            }
+        },
+        "ui": {
+            "csharp": {
+                "health_bar": '''public class HealthBar : MonoBehaviour 
+{
+    public Slider healthSlider;
+    public Text healthText;
+    public float maxHealth = 100f;
+    private float currentHealth;
+    
+    void Start() 
+    {
+        currentHealth = maxHealth;
+        UpdateHealthUI();
+    }
+    
+    public void TakeDamage(float damage) 
+    {
+        currentHealth -= damage;
+        currentHealth = Mathf.Clamp(currentHealth, 0, maxHealth);
+        UpdateHealthUI();
+    }
+    
+    public void Heal(float healing) 
+    {
+        currentHealth += healing;
+        currentHealth = Mathf.Clamp(currentHealth, 0, maxHealth);
+        UpdateHealthUI();
+    }
+    
+    void UpdateHealthUI() 
+    {
+        healthSlider.value = currentHealth / maxHealth;
+        healthText.text = $"{currentHealth:F0} / {maxHealth:F0}";
+    }
+}''',
+                "menu_controller": '''public class MenuController : MonoBehaviour 
+{
+    public GameObject mainMenuPanel;
+    public GameObject settingsPanel;
+    public GameObject gameplayPanel;
+    
+    void Start() 
+    {
+        ShowMainMenu();
+    }
+    
+    public void ShowMainMenu() 
+    {
+        mainMenuPanel.SetActive(true);
+        settingsPanel.SetActive(false);
+        gameplayPanel.SetActive(false);
+    }
+    
+    public void ShowSettings() 
+    {
+        mainMenuPanel.SetActive(false);
+        settingsPanel.SetActive(true);
+        gameplayPanel.SetActive(false);
+    }
+    
+    public void StartGame() 
+    {
+        mainMenuPanel.SetActive(false);
+        settingsPanel.SetActive(false);
+        gameplayPanel.SetActive(true);
+        // Load gameplay scene or initialize game
+    }
+    
+    public void QuitGame() 
+    {
+        Application.Quit();
+    }
+}'''
+            }
+        },
+        "audio": {
+            "csharp": {
+                "audio_manager": '''public class AudioManager : MonoBehaviour 
+{
+    public AudioSource musicSource;
+    public AudioSource sfxSource;
+    
+    public AudioClip[] musicTracks;
+    public AudioClip[] soundEffects;
+    
+    public static AudioManager Instance;
+    
+    void Awake() 
+    {
+        if (Instance == null) 
+        {
+            Instance = this;
+            DontDestroyOnLoad(gameObject);
+        } 
+        else 
+        {
+            Destroy(gameObject);
+        }
+    }
+    
+    public void PlayMusic(int trackIndex) 
+    {
+        if (trackIndex >= 0 && trackIndex < musicTracks.Length) 
+        {
+            musicSource.clip = musicTracks[trackIndex];
+            musicSource.Play();
+        }
+    }
+    
+    public void PlaySFX(int effectIndex) 
+    {
+        if (effectIndex >= 0 && effectIndex < soundEffects.Length) 
+        {
+            sfxSource.PlayOneShot(soundEffects[effectIndex]);
+        }
+    }
+    
+    public void SetMusicVolume(float volume) 
+    {
+        musicSource.volume = Mathf.Clamp01(volume);
+    }
+    
+    public void SetSFXVolume(float volume) 
+    {
+        sfxSource.volume = Mathf.Clamp01(volume);
+    }
+}'''
+            }
+        }
+    }
+    
+    category_snippets = snippets.get(category, {})
+    language_snippets = category_snippets.get(language, {})
+    
+    return {
+        "success": True,
+        "category": category,
+        "language": language,
+        "available_snippets": list(language_snippets.keys()),
+        "snippets": language_snippets,
+        "total_snippets": len(language_snippets),
+        "message": f"Retrieved {len(language_snippets)} code snippets for {category} in {language}"
+    }
+
+
+@tool
+async def compile_and_test(target: str = "editor") -> Dict[str, Any]:
+    """Compile the project and run basic tests.
+    
+    Args:
+        target: Compilation target (editor, standalone, mobile, etc.)
+    """
+    # Simulated compilation process
+    return {
+        "success": True,
+        "target": target,
+        "compilation_time": "12.3 seconds",
+        "warnings": 2,
+        "errors": 0,
+        "details": {
+            "scripts_compiled": 47,
+            "assets_processed": 156,
+            "build_size": "45.2 MB",
+            "warnings": [
+                "Unused variable 'tempVar' in PlayerController.cs line 23",
+                "Missing reference in UIManager prefab"
+            ]
+        },
+        "timestamp": datetime.now(UTC).isoformat(),
+        "message": f"Successfully compiled for {target} with {2} warnings and {0} errors"
+    }
+
+
+@tool
+async def scene_management(action: str, scene_name: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Manage scenes in the project (create, load, modify, etc.).
+    
+    Args:
+        action: Action to perform (create, load, save, add_object, remove_object, etc.)
+        scene_name: Name of the scene to work with
+        parameters: Additional parameters specific to the action
+    """
+    if not parameters:
+        parameters = {}
+    
+    # Simulated scene management
+    result = {
+        "success": True,
+        "action": action,
+        "scene_name": scene_name,
+        "timestamp": datetime.now(UTC).isoformat()
+    }
+    
+    if action == "create":
+        result.update({
+            "scene_path": f"Assets/Scenes/{scene_name}.unity",
+            "default_objects": ["Main Camera", "Directional Light"],
+            "lighting_settings": "Realtime",
+            "message": f"Created new scene: {scene_name}"
+        })
+    elif action == "load":
+        result.update({
+            "objects_in_scene": ["Player", "Ground", "UI Canvas", "Main Camera", "Directional Light"],
+            "lighting": "Mixed",
+            "active_objects": 12,
+            "message": f"Loaded scene: {scene_name}"
+        })
+    elif action == "add_object":
+        obj_type = parameters.get("object_type", "GameObject")
+        result.update({
+            "object_added": obj_type,
+            "position": parameters.get("position", [0, 0, 0]),
+            "rotation": parameters.get("rotation", [0, 0, 0]),
+            "message": f"Added {obj_type} to {scene_name}"
+        })
+    elif action == "save":
+        result.update({
+            "changes_saved": True,
+            "backup_created": True,
+            "message": f"Saved scene: {scene_name}"
+        })
+    
     return result
 
 
-# Compile all tools into a list
-TOOLS: List[Callable[..., Any]] = [
+# Export tools - focused on game development
+TOOLS = [
     search,
-    calculate,
-    get_current_time,
-    store_memory,
-    retrieve_memory,
-    validate_json,
-    text_analysis,
+    get_project_info,
+    create_asset,
+    write_file,
+    edit_project_config,
+    get_script_snippets,
+    compile_and_test,
+    scene_management,
 ]
 
 
-# Tool metadata for better tool selection
+# Tool metadata for game development context
 TOOL_METADATA = {
     "search": {
         "category": "information_retrieval",
         "cost": "medium",
         "reliability": "high",
-        "best_for": ["current events", "factual information", "web content"]
+        "best_for": ["game dev tutorials", "Unity/Unreal documentation", "best practices", "troubleshooting"]
     },
-    "calculate": {
-        "category": "computation",
+    "get_project_info": {
+        "category": "project_management",
         "cost": "low",
         "reliability": "very_high",
-        "best_for": ["math", "numerical analysis", "calculations"]
+        "best_for": ["project inspection", "understanding current setup", "debugging"]
     },
-    "get_current_time": {
-        "category": "utility",
-        "cost": "low",
+    "create_asset": {
+        "category": "content_creation",
+        "cost": "low", 
         "reliability": "very_high",
-        "best_for": ["time queries", "scheduling", "timezone conversion"]
+        "best_for": ["creating scripts", "making prefabs", "new materials", "scenes"]
     },
-    "store_memory": {
-        "category": "state_management",
+    "write_file": {
+        "category": "file_management",
         "cost": "low",
-        "reliability": "very_high",
-        "best_for": ["cross-step data", "temporary storage", "context preservation"]
+        "reliability": "very_high", 
+        "best_for": ["writing scripts", "config files", "documentation", "shaders"]
     },
-    "retrieve_memory": {
-        "category": "state_management",
-        "cost": "low",
-        "reliability": "very_high",
-        "best_for": ["accessing stored data", "context retrieval"]
-    },
-    "validate_json": {
-        "category": "validation",
-        "cost": "low",
-        "reliability": "very_high",
-        "best_for": ["data validation", "structure checking", "parsing"]
-    },
-    "text_analysis": {
-        "category": "analysis",
+    "edit_project_config": {
+        "category": "configuration",
         "cost": "low",
         "reliability": "high",
-        "best_for": ["text statistics", "keyword extraction", "summarization"]
+        "best_for": ["build settings", "player settings", "quality settings", "input configuration"]
+    },
+    "get_script_snippets": {
+        "category": "code_assistance",
+        "cost": "low",
+        "reliability": "very_high",
+        "best_for": ["code templates", "common patterns", "best practices", "quick implementation"]
+    },
+    "compile_and_test": {
+        "category": "development",
+        "cost": "medium",
+        "reliability": "high", 
+        "best_for": ["testing changes", "checking for errors", "build validation", "deployment prep"]
+    },
+    "scene_management": {
+        "category": "world_building",
+        "cost": "low",
+        "reliability": "very_high",
+        "best_for": ["scene creation", "object placement", "level design", "world setup"]
     }
 }
