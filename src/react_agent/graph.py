@@ -1,4 +1,4 @@
-"""Enhanced ReAct agent with tool-aware planning that creates achievable steps."""
+"""Enhanced ReAct agent with type-constrained tool planning."""
 
 from __future__ import annotations
 
@@ -7,17 +7,15 @@ import re
 from typing import Any, Dict, Literal, List
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.pydantic_v1 import BaseModel, Field
 from langgraph.graph import StateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.runtime import Runtime
 
 from react_agent.context import Context
 from react_agent.prompts import (
-    ACT_PROMPT,
-    ASSESSMENT_PROMPT,
     FINAL_SUMMARY_PROMPT,
     PLANNING_PROMPT,
-    REPAIR_PROMPT,
 )
 from react_agent.state import (
     AssessmentOutcome,
@@ -26,9 +24,56 @@ from react_agent.state import (
     PlanStep,
     State,
     StepStatus,
+    ToolName,  # Import the type-constrained tool name
 )
 from react_agent.tools import TOOLS, TOOL_METADATA
-from react_agent.utils import get_message_text, get_model
+from react_agent.utils import (
+    get_message_text,
+    get_model,
+    create_dynamic_step_message,
+    create_varied_post_tool_message,
+)
+
+
+# Build tools description once at module level for caching
+def _build_static_tools_description() -> str:
+    """Build static tools description for caching."""
+    tools_info = []
+    for tool in TOOLS:
+        tool_info = f"- {tool.name}: {tool.description}"
+        if hasattr(tool, 'name') and tool.name in TOOL_METADATA:
+            metadata = TOOL_METADATA[tool.name]
+            tool_info += f" (Best for: {', '.join(metadata['best_for'])})"
+        tools_info.append(tool_info)
+    return "\n".join(tools_info)
+
+# Static tools description built once
+STATIC_TOOLS_DESCRIPTION = _build_static_tools_description()
+
+
+# Updated structured output schemas with type constraints
+class StructuredPlanStep(BaseModel):
+    """Structured step for planning output with type-constrained tools."""
+    description: str = Field(description="Clear description of what this step accomplishes")
+    tool_name: ToolName = Field(description="Specific tool to use for this step")  # Type-constrained!
+    success_criteria: str = Field(description="Measurable criteria to determine if step succeeded")
+    dependencies: List[int] = Field(default_factory=list, description="Indices of steps this depends on")
+
+
+class StructuredExecutionPlan(BaseModel):
+    """Structured execution plan for native output with type-constrained tools."""
+    goal: str = Field(description="Overall goal to achieve")
+    steps: List[StructuredPlanStep] = Field(description="Ordered list of steps to execute")
+
+
+class StructuredAssessment(BaseModel):
+    """Structured assessment for native output."""
+    outcome: Literal["success", "retry", "blocked"] = Field(
+        description="Whether the step succeeded, should be retried, or is blocked"
+    )
+    reason: str = Field(description="Specific explanation of the assessment")
+    fix: str = Field(default="", description="Suggested fix if retry is needed")
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0, description="Confidence in assessment")
 
 
 def analyze_user_goal(goal: str) -> Dict[str, Any]:
@@ -49,11 +94,11 @@ def analyze_user_goal(goal: str) -> Dict[str, Any]:
     # Determine what the user wants to do
     if any(word in goal_lower for word in ["create script", "write script", "make script", "player controller", "fps controller", "movement script"]):
         analysis.update({
-            "requires_search": True,  # Research best practices
-            "requires_project_info": True,  # Understand current setup
-            "requires_code_generation": True,  # Get code snippets
-            "requires_asset_creation": True,  # Create the script file
-            "requires_compilation": True,  # Test the script
+            "requires_search": True,
+            "requires_project_info": True,
+            "requires_code_generation": True,
+            "requires_asset_creation": True,
+            "requires_compilation": True,
             "main_action_type": "script_creation"
         })
     
@@ -81,7 +126,7 @@ def analyze_user_goal(goal: str) -> Dict[str, Any]:
     elif any(word in goal_lower for word in ["how to", "tutorial", "learn", "guide", "best practices"]):
         analysis.update({
             "requires_search": True,
-            "requires_project_info": True,  # To give context-specific advice
+            "requires_project_info": True,
             "main_action_type": "tutorial_help"
         })
     
@@ -93,7 +138,6 @@ def analyze_user_goal(goal: str) -> Dict[str, Any]:
         })
     
     else:
-        # Default: assume they want general help
         analysis.update({
             "requires_search": True,
             "requires_project_info": True,
@@ -110,11 +154,10 @@ def create_tool_aware_plan(goal: str, analysis: Dict[str, Any]) -> List[PlanStep
     action_type = analysis["main_action_type"]
     
     if action_type == "script_creation":
-        # Multi-step plan for script creation
         if analysis["requires_search"]:
             steps.append(PlanStep(
-                description=f"Research current best practices and tutorials for Unity script development related to: {goal}",
-                tool_name="search",
+                description=f"Search for current best practices and tutorials for Unity script development related to: {goal}",
+                tool_name="search",  # Type-safe! Must be one of the ToolName literals
                 success_criteria="Found relevant, current information about Unity scripting best practices"
             ))
         
@@ -133,7 +176,7 @@ def create_tool_aware_plan(goal: str, analysis: Dict[str, Any]) -> List[PlanStep
         ))
         
         steps.append(PlanStep(
-            description="Create the script file in the project with the generated code",
+            description="Write the script file in the project with the generated code",
             tool_name="write_file",
             success_criteria="Successfully created and wrote the script file to the project",
             dependencies=list(range(len(steps)))
@@ -209,7 +252,6 @@ def create_tool_aware_plan(goal: str, analysis: Dict[str, Any]) -> List[PlanStep
             dependencies=[0]
         ))
         
-        # If the tutorial might involve code, get relevant snippets
         if any(word in goal.lower() for word in ["script", "code", "programming", "controller", "system"]):
             steps.append(PlanStep(
                 description="Get relevant code examples and snippets for hands-on learning",
@@ -253,131 +295,19 @@ def create_tool_aware_plan(goal: str, analysis: Dict[str, Any]) -> List[PlanStep
             dependencies=[0]
         ))
     
-    # Ensure every step has a valid tool
-    for step in steps:
-        if step.tool_name is None:
-            # This should never happen with our new approach, but as a safety net
-            step.tool_name = "get_project_info"  # Safe fallback tool
-    
     return steps
 
 
-def parse_plan_from_response(response_text: str, user_goal: str) -> ExecutionPlan:
-    """Parse a structured plan from LLM response text, ensuring all steps have tools."""
-    
-    # Try to extract JSON plan first
-    json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-    if json_match:
-        try:
-            plan_data = json.loads(json_match.group())
-            if 'steps' in plan_data:
-                steps = []
-                for i, step_data in enumerate(plan_data['steps']):
-                    tool_name = step_data.get('tool_name')
-                    
-                    # Validate that the tool exists
-                    available_tools = [tool.name for tool in TOOLS]
-                    if tool_name not in available_tools:
-                        # Try to map to a valid tool based on step description
-                        description_lower = step_data.get('description', '').lower()
-                        if any(word in description_lower for word in ['search', 'research', 'find', 'look up']):
-                            tool_name = 'search'
-                        elif any(word in description_lower for word in ['project', 'info', 'structure', 'setup']):
-                            tool_name = 'get_project_info'
-                        elif any(word in description_lower for word in ['code', 'script', 'snippet']):
-                            tool_name = 'get_script_snippets'
-                        elif any(word in description_lower for word in ['create', 'make', 'build']):
-                            tool_name = 'create_asset'
-                        elif any(word in description_lower for word in ['write', 'file']):
-                            tool_name = 'write_file'
-                        elif any(word in description_lower for word in ['scene', 'level']):
-                            tool_name = 'scene_management'
-                        elif any(word in description_lower for word in ['compile', 'test']):
-                            tool_name = 'compile_and_test'
-                        elif any(word in description_lower for word in ['config', 'setting']):
-                            tool_name = 'edit_project_config'
-                        else:
-                            tool_name = 'get_project_info'  # Safe fallback
-                    
-                    step = PlanStep(
-                        description=step_data.get('description', f'Execute step {i+1}'),
-                        success_criteria=step_data.get('success_criteria', 'Step completed successfully'),
-                        tool_name=tool_name,
-                        dependencies=step_data.get('dependencies', [])
-                    )
-                    steps.append(step)
-                
-                if steps:  # Only return if we have valid steps
-                    return ExecutionPlan(
-                        goal=user_goal,
-                        steps=steps,
-                        metadata=plan_data.get('metadata', {})
-                    )
-        except json.JSONDecodeError:
-            pass
-    
-    # If JSON parsing failed, fall back to our analysis-based planning
-    analysis = analyze_user_goal(user_goal)
-    steps = create_tool_aware_plan(user_goal, analysis)
-    
-    return ExecutionPlan(
-        goal=user_goal,
-        steps=steps
-    )
-
-
 def create_smart_default_plan(user_goal: str) -> List[PlanStep]:
-    """Create an intelligent default plan based on the user's goal - fallback for game development."""
-    
-    # Use our analysis-based planning as the smart default
+    """Create an intelligent default plan based on the user's goal."""
     analysis = analyze_user_goal(user_goal)
     return create_tool_aware_plan(user_goal, analysis)
-
-
-def create_user_friendly_step_message(step: PlanStep, step_num: int, total_steps: int) -> str:
-    """Create a user-friendly message explaining what the agent is doing."""
-    
-    # Map tool names to base form actions (infinitive) with "Now I'll" prefix
-    tool_actions = {
-        "search": "search for",
-        "get_project_info": "check your project setup",
-        "get_script_snippets": "get code templates for",
-        "create_asset": "create",
-        "write_file": "write",
-        "scene_management": "set up scene for",
-        "compile_and_test": "test and compile",
-        "edit_project_config": "configure project settings for"
-    }
-    
-    action = tool_actions.get(step.tool_name, "work on")
-    
-    # Create step-specific messages with "Now I'll" prefix
-    if step.tool_name == "search":
-        message = f"**Step {step_num}/{total_steps}**: Now I'll {action} the latest Unity best practices and tutorials..."
-    elif step.tool_name == "get_project_info":
-        message = f"**Step {step_num}/{total_steps}**: Now I'll {action} to understand your current Unity environment..."
-    elif step.tool_name == "get_script_snippets":
-        message = f"**Step {step_num}/{total_steps}**: Now I'll {action} your script implementation..."
-    elif step.tool_name == "create_asset":
-        message = f"**Step {step_num}/{total_steps}**: Now I'll {action} the requested asset in your project..."
-    elif step.tool_name == "write_file":
-        message = f"**Step {step_num}/{total_steps}**: Now I'll {action} the script file to your project..."
-    elif step.tool_name == "scene_management":
-        message = f"**Step {step_num}/{total_steps}**: Now I'll {action} your request..."
-    elif step.tool_name == "compile_and_test":
-        message = f"**Step {step_num}/{total_steps}**: Now I'll {action} your project to ensure everything works..."
-    elif step.tool_name == "edit_project_config":
-        message = f"**Step {step_num}/{total_steps}**: Now I'll {action} your request..."
-    else:
-        message = f"**Step {step_num}/{total_steps}**: Now I'll {action} {step.description.lower()}..."
-    
-    return message
 
 
 # Core node functions
 
 async def plan(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Create a comprehensive execution plan that uses available tools effectively."""
+    """Create a comprehensive execution plan using structured outputs with type constraints."""
     context = runtime.context
     
     # Use planning model or fall back to main model
@@ -396,19 +326,7 @@ async def plan(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     # Analyze the goal to understand what tools we'll need
     analysis = analyze_user_goal(user_message)
     
-    # Prepare detailed tools information for planning
-    tools_info = []
-    for tool in TOOLS:
-        tool_info = f"- {tool.name}: {tool.description}"
-        # Add usage context from tool metadata
-        if hasattr(tool, 'name') and tool.name in TOOL_METADATA:
-            metadata = TOOL_METADATA[tool.name]
-            tool_info += f" (Best for: {', '.join(metadata['best_for'])})"
-        tools_info.append(tool_info)
-    
-    tools_description = "\n".join(tools_info)
-    
-    # Create a targeted planning prompt based on the goal analysis
+    # Create action guidance
     action_guidance = ""
     if analysis["main_action_type"] == "script_creation":
         action_guidance = """
@@ -426,73 +344,63 @@ For tutorial/learning tasks:
 2. Use 'get_project_info' to provide context-specific advice
 3. Optionally use 'get_script_snippets' for code examples"""
     
-    # Enhanced planning prompt that emphasizes tool usage
-    planning_request = f"""You are helping with this Unity/game development request: "{user_message}"
+    # Enhanced planning prompt for structured output
+    planning_request = f"""Create a tactical Unity/game development plan for: "{user_message}"
 
-AVAILABLE TOOLS (you MUST use these - no null tool_name values):
-{tools_description}
+VALID TOOL NAMES: search, get_project_info, create_asset, write_file, edit_project_config, get_script_snippets, compile_and_test, scene_management
 
 {action_guidance}
 
-Create a JSON plan that uses ONLY the available tools above. Every step MUST specify a valid tool_name.
-
-Example format:
-{{
-    "goal": "{user_message}",
-    "steps": [
-        {{
-            "description": "Research Unity best practices for player controllers",
-            "tool_name": "search",
-            "success_criteria": "Found current Unity controller patterns and tutorials",
-            "dependencies": []
-        }},
-        {{
-            "description": "Get current project setup information",
-            "tool_name": "get_project_info", 
-            "success_criteria": "Retrieved Unity version, packages, and project structure",
-            "dependencies": [0]
-        }},
-        {{
-            "description": "Get movement controller code templates",
-            "tool_name": "get_script_snippets",
-            "success_criteria": "Retrieved appropriate movement script templates",
-            "dependencies": [1]
-        }},
-        {{
-            "description": "Create the PlayerController.cs script file",
-            "tool_name": "write_file",
-            "success_criteria": "Successfully wrote the script to Assets/Scripts/",
-            "dependencies": [2]
-        }},
-        {{
-            "description": "Compile and test the new script",
-            "tool_name": "compile_and_test",
-            "success_criteria": "Script compiles without errors",
-            "dependencies": [3]
-        }}
-    ]
-}}
-
-CRITICAL: Every step must have a tool_name from the available tools. Create 2-5 logical steps that solve the user's request."""
+Create a plan that uses ONLY the available tools above. Every step MUST specify a valid tool_name from the list.
+Focus on 2-5 logical steps that solve the user's request effectively."""
     
+    # Structure messages for optimal caching - static content first
+    # System prompt with tools info - this will be cached
+    static_system_content = f"""{PLANNING_PROMPT}
+
+Your available game development tools:
+{STATIC_TOOLS_DESCRIPTION}
+
+IMPORTANT: Every step must use a specific tool from your toolkit. No generic or non-executable steps.
+
+Plan Structure Guidelines:
+- Start with research (search) for best practices and current approaches
+- Gather project context (get_project_info) to understand the current setup
+- Use code generation tools (get_script_snippets) for implementation details
+- Create/modify assets (create_asset, write_file) for concrete deliverables
+- Test implementations (compile_and_test) to ensure quality
+- Configure settings (edit_project_config) when needed
+- Manage scenes (scene_management) for level/world changes
+
+Create plans that result in working game features, not just documentation."""
+
+    # Construct messages with static content first for caching
     messages = [
-        {"role": "system", "content": PLANNING_PROMPT.format(tools_info=tools_description)},
+        {"role": "system", "content": static_system_content},
         {"role": "user", "content": planning_request}
     ]
     
     try:
-        response = await model.ainvoke(messages)
-        plan_content = get_message_text(response)
+        # Use structured output to force proper JSON schema with type constraints
+        structured_model = model.with_structured_output(StructuredExecutionPlan)
+        structured_response = await structured_model.ainvoke(messages)
         
-        # Parse the structured plan from the response
-        plan = parse_plan_from_response(plan_content, user_message)
+        # Convert structured response to internal format
+        # NO MORE VALIDATION NEEDED! Type constraints guarantee valid tool names
+        steps = []
+        for step_data in structured_response.steps:
+            step = PlanStep(
+                description=step_data.description,
+                success_criteria=step_data.success_criteria,
+                tool_name=step_data.tool_name,  # Already type-safe!
+                dependencies=step_data.dependencies
+            )
+            steps.append(step)
         
-        # Validate that all steps have valid tools
-        available_tool_names = [tool.name for tool in TOOLS]
-        for step in plan.steps:
-            if step.tool_name not in available_tool_names:
-                # Fix invalid tool names
-                step.tool_name = "get_project_info"  # Safe fallback
+        plan = ExecutionPlan(
+            goal=structured_response.goal,
+            steps=steps
+        )
         
         # USER-FRIENDLY RESPONSE with step preview
         step_preview = f"\n\nHere's my plan:\n"
@@ -509,7 +417,7 @@ CRITICAL: Every step must have a tool_name from the available tools. Create 2-5 
         }
     
     except Exception as e:
-        # Fallback to analysis-based planning if LLM fails
+        # Fallback to analysis-based planning if structured output fails
         fallback_steps = create_tool_aware_plan(user_message, analysis)
         fallback_plan = ExecutionPlan(
             goal=user_message,
@@ -534,16 +442,15 @@ async def act(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     
     current_step = state.plan.steps[state.step_index]
     
-    # Ensure the step has a valid tool
-    available_tool_names = [tool.name for tool in TOOLS]
-    if current_step.tool_name not in available_tool_names:
-        current_step.tool_name = "get_project_info"  # Safe fallback
+    # NO MORE TOOL VALIDATION NEEDED! Type constraints guarantee valid tools
+    # current_step.tool_name is guaranteed to be a valid ToolName
     
-    # CREATE USER-FRIENDLY PROGRESS MESSAGE
-    step_message = create_user_friendly_step_message(
+    # CREATE USER-FRIENDLY PROGRESS MESSAGE using dynamic step narration
+    step_message = create_dynamic_step_message(
         current_step, 
         state.step_index + 1, 
-        len(state.plan.steps)
+        len(state.plan.steps),
+        state.plan.goal
     )
     
     # Prepare execution context
@@ -575,9 +482,36 @@ Based on the step description and required tool, call {current_step.tool_name} w
         elif isinstance(msg, AIMessage) and not msg.tool_calls:
             conversation_messages.append({"role": "assistant", "content": get_message_text(msg)})
     
-    # Prepare messages for the model
+    # Static system content that can be cached
+    static_system_content = """You are executing a Unity/Unreal Engine development step. Focus on creating working game features using your development tools.
+
+DEVELOPMENT EXECUTION GUIDELINES:
+1. Use the specified tool to create actual game development deliverables
+2. Follow Unity/Unreal best practices and naming conventions
+3. Write production-ready code that integrates with existing projects
+4. Create assets that follow proper game development workflows
+5. Focus on this specific development task completely
+
+Tool-Specific Execution:
+- search: Find current Unity/Unreal tutorials, best practices, and solutions
+- get_project_info: Analyze project structure, version, packages, and setup
+- get_script_snippets: Retrieve working code templates for game systems
+- create_asset: Make new scripts, prefabs, materials, or scenes
+- write_file: Create actual C# scripts or configuration files
+- scene_management: Build levels, set up gameplay areas, place objects
+- compile_and_test: Verify code compiles and features work correctly
+- edit_project_config: Modify build settings, input, quality, or player settings
+
+EXECUTE THE DEVELOPMENT STEP NOW - create working game development output."""
+
+    # Dynamic context message - this part changes and won't be cached
+    dynamic_context_message = f"""Current execution context:
+{json.dumps(execution_context, indent=2)}"""
+
+    # Structure for optimal caching
     messages = [
-        {"role": "system", "content": ACT_PROMPT.format(execution_context=json.dumps(execution_context, indent=2))},
+        {"role": "system", "content": static_system_content},
+        {"role": "system", "content": dynamic_context_message},
         *conversation_messages,
         {"role": "user", "content": action_request}
     ]
@@ -651,9 +585,8 @@ Based on the step description and required tool, call {current_step.tool_name} w
         }
 
 
-# Keep the rest of the functions the same - just the act function needed changes
 async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Assess whether the current step succeeded - INTERNAL ONLY."""
+    """Assess whether the current step succeeded using structured outputs."""
     context = runtime.context
     model = get_model(context.assessment_model or context.model)
     
@@ -673,15 +606,21 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     
     # Find the most recent tool messages for better context
     recent_tool_results = []
+    latest_tool_result = None
     for msg in reversed(state.messages):
         if isinstance(msg, ToolMessage):
+            if latest_tool_result is None:
+                try:
+                    latest_tool_result = json.loads(get_message_text(msg))
+                except:
+                    latest_tool_result = {"message": get_message_text(msg)}
             recent_tool_results.append(f"Tool '{msg.name}': {get_message_text(msg)}")
-            if len(recent_tool_results) >= 3:  # Get last 3 tool results
+            if len(recent_tool_results) >= 3:
                 break
     
     tool_results_text = "\n".join(recent_tool_results) if recent_tool_results else "No recent tool results found"
     
-    # Enhanced assessment focused on step completion
+    # Enhanced assessment request for structured output
     assessment_request = f"""Assess if the current step has been successfully completed:
 
 Overall Goal: {state.plan.goal}
@@ -699,71 +638,71 @@ Evaluation:
 - Is there enough information to move to the next step?
 - Did this step contribute meaningfully to the overall goal?
 
-Respond with JSON:
-{{
-    "outcome": "success|retry|blocked",
-    "reason": "specific explanation of assessment",
-    "fix": "what needs improvement if retry",
-    "confidence": 0.8
-}}
-
-Be thorough but fair in assessment."""
+Provide assessment with outcome, reason, fix (if needed), and confidence."""
     
+    # Static assessment prompt - cacheable
+    static_assessment_content = """You are evaluating game development step completion with focus on deliverable quality and tool effectiveness.
+
+Assessment Criteria:
+- Was the required development tool used properly?
+- Did the step produce a working game asset, script, or feature?
+- Can the output be integrated into a Unity/Unreal project?
+- Does the result follow game development best practices?
+- Is there sufficient progress toward the gameplay goal?
+
+Be particularly strict about:
+- Code quality and Unity/Unreal compatibility
+- Asset creation and proper file structure
+- Project integration and build compatibility
+- Following established game development patterns
+
+Assessment outcomes:
+- "success": Step completed with working game development output
+- "retry": Implementation incomplete or doesn't meet game dev standards
+- "blocked": Technical limitation preventing proper implementation
+
+Judge based on professional game development quality and deliverables."""
+
+    # Structure for optimal caching
     messages = [
-        {"role": "system", "content": ASSESSMENT_PROMPT},
+        {"role": "system", "content": static_assessment_content},
         {"role": "user", "content": assessment_request}
     ]
     
     try:
-        response = await model.ainvoke(messages)
-        assessment_text = get_message_text(response)
+        # Use structured output for assessment
+        structured_model = model.with_structured_output(StructuredAssessment)
+        structured_assessment = await structured_model.ainvoke(messages)
         
-        # Parse assessment
-        try:
-            import re
-            json_match = re.search(r'\{.*\}', assessment_text, re.DOTALL)
-            if json_match:
-                assessment_data = json.loads(json_match.group())
-                assessment = AssessmentOutcome(
-                    outcome=assessment_data.get("outcome", "retry"),
-                    reason=assessment_data.get("reason", "Assessment completed"),
-                    fix=assessment_data.get("fix"),
-                    confidence=assessment_data.get("confidence", 0.8)
-                )
-            else:
-                # Fallback assessment based on keywords and tool usage
-                has_tool_results = len(recent_tool_results) > 0
-                content_length = len(last_result)
-                
-                if ("success" in assessment_text.lower() or 
-                    (has_tool_results and content_length > 50)):
-                    outcome = "success"
-                elif "blocked" in assessment_text.lower() or "cannot" in assessment_text.lower():
-                    outcome = "blocked"
-                else:
-                    outcome = "retry"
-                
-                assessment = AssessmentOutcome(
-                    outcome=outcome,
-                    reason=assessment_text,
-                    confidence=0.6
-                )
-        except Exception:
-            # Default to success if we have tool results, otherwise retry
-            has_recent_tools = len(recent_tool_results) > 0
-            assessment = AssessmentOutcome(
-                outcome="success" if has_recent_tools else "retry",
-                reason="Assessment parsing failed, using heuristic",
-                confidence=0.4
+        assessment = AssessmentOutcome(
+            outcome=structured_assessment.outcome,
+            reason=structured_assessment.reason,
+            fix=structured_assessment.fix or None,
+            confidence=structured_assessment.confidence
+        )
+        
+        # Add post-tool narration message if we have a tool result
+        messages_to_add = []
+        if latest_tool_result and current_step.tool_name:
+            post_tool_message = create_varied_post_tool_message(
+                current_step.tool_name, 
+                latest_tool_result,
+                state.step_index + 1
             )
+            messages_to_add = [AIMessage(content=post_tool_message)]
         
-        return {
+        result = {
             "current_assessment": assessment,
             "total_assessments": state.total_assessments + 1
         }
         
+        if messages_to_add:
+            result["messages"] = messages_to_add
+            
+        return result
+        
     except Exception as e:
-        # Fallback assessment - be more optimistic if we have tool activity
+        # Fallback assessment
         has_tool_activity = any(isinstance(msg, ToolMessage) for msg in state.messages[-5:])
         fallback_assessment = AssessmentOutcome(
             outcome="success" if has_tool_activity else "retry",
@@ -777,7 +716,7 @@ Be thorough but fair in assessment."""
 
 
 async def repair(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Replan after encountering issues - try alternative approach."""
+    """Replan after encountering issues using structured outputs."""
     context = runtime.context
     model = get_model(context.planning_model or context.model)
     
@@ -787,7 +726,7 @@ async def repair(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     # Create a user-friendly message about trying a different approach
     user_message = "Let me try a different approach to better help you with this."
     
-    # Gather information about what went wrong (internal)
+    # Gather information about what went wrong
     current_step = state.plan.steps[state.step_index]
     assessment = state.current_assessment
     
@@ -803,23 +742,61 @@ Create a revised plan that:
 3. Maintains focus on the original goal
 4. Has clear, achievable steps
 
-Respond with a JSON plan like before, focusing on alternative methods."""
+VALID TOOL NAMES: search, get_project_info, create_asset, write_file, edit_project_config, get_script_snippets, compile_and_test, scene_management
+
+Provide a complete revised execution plan using only the valid tool names above."""
     
+    # Static repair prompt with tool constraints - cacheable
+    static_repair_content = """You are revising a game development plan that failed to achieve the desired implementation.
+
+Common game development issues to address:
+- Code doesn't follow Unity/Unreal conventions or best practices
+- Assets not created in proper project structure
+- Missing integration with existing game systems
+- Compilation errors or runtime issues
+- Incorrect tool usage for game development tasks
+
+Create a revised development plan that:
+- Uses the correct Unity/Unreal development workflow
+- Follows established game programming patterns
+- Creates properly integrated game features
+- Includes adequate testing and validation
+- Addresses the specific development failure
+
+VALID TOOL NAMES: search, get_project_info, create_asset, write_file, edit_project_config, get_script_snippets, compile_and_test, scene_management
+
+Focus on professional game development practices and working implementations."""
+
+    # Structure for optimal caching
     messages = [
-        {"role": "system", "content": REPAIR_PROMPT},
+        {"role": "system", "content": static_repair_content},
         {"role": "user", "content": repair_request}
     ]
     
     try:
-        response = await model.ainvoke(messages)
-        repair_content = get_message_text(response)
+        # Use structured output for repair planning with type constraints
+        structured_model = model.with_structured_output(StructuredExecutionPlan)
+        structured_response = await structured_model.ainvoke(messages)
         
-        # Parse the revised plan
-        revised_plan = parse_plan_from_response(repair_content, state.plan.goal)
+        # Convert to internal format - NO VALIDATION NEEDED!
+        steps = []
+        for step_data in structured_response.steps:
+            step = PlanStep(
+                description=step_data.description,
+                success_criteria=step_data.success_criteria,
+                tool_name=step_data.tool_name,  # Type-safe!
+                dependencies=step_data.dependencies
+            )
+            steps.append(step)
+        
+        revised_plan = ExecutionPlan(
+            goal=state.plan.goal,
+            steps=steps
+        )
         
         return {
             "plan": revised_plan,
-            "step_index": 0,  # Start from beginning with new plan
+            "step_index": 0,
             "retry_count": 0,
             "current_assessment": None,
             "plan_revision_count": state.plan_revision_count + 1,
@@ -827,7 +804,7 @@ Respond with a JSON plan like before, focusing on alternative methods."""
         }
         
     except Exception as e:
-        # Create a simple fallback plan
+        # Fallback plan
         fallback_steps = create_smart_default_plan(state.plan.goal)
         fallback_plan = ExecutionPlan(
             goal=state.plan.goal,
@@ -855,18 +832,9 @@ async def finish(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     for msg in state.messages:
         if isinstance(msg, ToolMessage):
             completed_tools.append(msg.name)
-            # Extract key information from tool results
             content = get_message_text(msg)
-            if len(content) > 100:  # Only include substantial results
+            if len(content) > 100:
                 tool_results.append(f"{msg.name}: {content[:200]}...")
-    
-    # Check for substantive content in AI messages
-    substantive_responses = []
-    for msg in state.messages:
-        if isinstance(msg, AIMessage) and not msg.tool_calls:
-            content = get_message_text(msg)
-            if len(content) > 150 and "step" not in content.lower():
-                substantive_responses.append(content[:300])
     
     # Create comprehensive summary request
     summary_request = f"""Create a helpful summary of what was accomplished for the user's request: "{state.plan.goal if state.plan else 'Unity development assistance'}"
@@ -900,7 +868,7 @@ Be specific about Unity/game development outcomes, not just generic task complet
         }
         
     except Exception:
-        # Fallback summary based on what we know
+        # Fallback summary
         if completed_tools:
             fallback_message = f"I've worked through your Unity development request using {', '.join(set(completed_tools))}. The process involved {len(state.completed_steps)} completed steps. Would you like me to elaborate on any specific aspect of what was accomplished, or help you with the next phase of your project?"
         else:
@@ -969,7 +937,7 @@ async def advance_step(
     return result
 
 
-# Routing functions (unchanged)
+# Routing functions
 def should_continue(state: State) -> Literal["plan", "act"]:
     """Route to plan if no plan exists, otherwise act."""
     if state.plan is None:
@@ -1013,7 +981,7 @@ def route_after_repair(state: State) -> Literal["act", "finish"]:
     return "act"
 
 
-# Graph construction (unchanged)
+# Graph construction
 def create_graph() -> StateGraph:
     """Construct the enhanced ReAct agent graph."""
     builder = StateGraph(State, input_schema=InputState, context_schema=Context)

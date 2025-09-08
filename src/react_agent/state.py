@@ -13,6 +13,19 @@ from typing_extensions import Annotated
 from pydantic import BaseModel, Field, ConfigDict
 
 
+# Type-constrained tool names based on available tools
+ToolName = Literal[
+    "search",
+    "get_project_info", 
+    "create_asset",
+    "write_file",
+    "edit_project_config",
+    "get_script_snippets",
+    "compile_and_test",
+    "scene_management"
+]
+
+
 class StepStatus(str, Enum):
     """Status of a plan step execution."""
     PENDING = "pending"
@@ -27,7 +40,7 @@ class PlanStep(BaseModel):
     model_config = ConfigDict(extra="forbid")  # Prevent schema drift
     
     description: str = Field(description="Clear description of what this step accomplishes")
-    tool_name: Optional[str] = Field(default=None, description="Specific tool to use for this step")
+    tool_name: Optional[ToolName] = Field(default=None, description="Specific tool to use for this step")
     success_criteria: str = Field(description="Measurable criteria to determine if step succeeded")
     dependencies: List[int] = Field(default_factory=list, description="Indices of steps this depends on")
     status: StepStatus = Field(default=StepStatus.PENDING, description="Current status of the step")

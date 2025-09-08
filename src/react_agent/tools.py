@@ -507,54 +507,83 @@ TOOLS = [
 ]
 
 
-# Tool metadata for game development context
+# Tool metadata for game development context - now includes type validation
 TOOL_METADATA = {
     "search": {
         "category": "information_retrieval",
         "cost": "medium",
         "reliability": "high",
-        "best_for": ["game dev tutorials", "Unity/Unreal documentation", "best practices", "troubleshooting"]
+        "best_for": ["game dev tutorials", "Unity/Unreal documentation", "best practices", "troubleshooting"],
+        "type_safe": True
     },
     "get_project_info": {
         "category": "project_management",
         "cost": "low",
         "reliability": "very_high",
-        "best_for": ["project inspection", "understanding current setup", "debugging"]
+        "best_for": ["project inspection", "understanding current setup", "debugging"],
+        "type_safe": True
     },
     "create_asset": {
         "category": "content_creation",
         "cost": "low", 
         "reliability": "very_high",
-        "best_for": ["creating scripts", "making prefabs", "new materials", "scenes"]
+        "best_for": ["creating scripts", "making prefabs", "new materials", "scenes"],
+        "type_safe": True
     },
     "write_file": {
         "category": "file_management",
         "cost": "low",
         "reliability": "very_high", 
-        "best_for": ["writing scripts", "config files", "documentation", "shaders"]
+        "best_for": ["writing scripts", "config files", "documentation", "shaders"],
+        "type_safe": True
     },
     "edit_project_config": {
         "category": "configuration",
         "cost": "low",
         "reliability": "high",
-        "best_for": ["build settings", "player settings", "quality settings", "input configuration"]
+        "best_for": ["build settings", "player settings", "quality settings", "input configuration"],
+        "type_safe": True
     },
     "get_script_snippets": {
         "category": "code_assistance",
         "cost": "low",
         "reliability": "very_high",
-        "best_for": ["code templates", "common patterns", "best practices", "quick implementation"]
+        "best_for": ["code templates", "common patterns", "best practices", "quick implementation"],
+        "type_safe": True
     },
     "compile_and_test": {
         "category": "development",
         "cost": "medium",
         "reliability": "high", 
-        "best_for": ["testing changes", "checking for errors", "build validation", "deployment prep"]
+        "best_for": ["testing changes", "checking for errors", "build validation", "deployment prep"],
+        "type_safe": True
     },
     "scene_management": {
         "category": "world_building",
         "cost": "low",
         "reliability": "very_high",
-        "best_for": ["scene creation", "object placement", "level design", "world setup"]
+        "best_for": ["scene creation", "object placement", "level design", "world setup"],
+        "type_safe": True
     }
 }
+
+
+# Utility function to get available tool names for type validation
+def get_available_tool_names() -> List[str]:
+    """Get list of available tool names for validation."""
+    return [tool.name for tool in TOOLS]
+
+
+# Utility function to validate tool name at runtime (optional safety check)
+def validate_tool_name(tool_name: str) -> bool:
+    """Validate that a tool name is available and type-safe."""
+    return tool_name in get_available_tool_names()
+
+
+# Type-safe tool name getter with fallback
+def get_safe_tool_name(proposed_name: str, fallback: str = "get_project_info") -> str:
+    """Get a type-safe tool name with fallback if invalid."""
+    available_names = get_available_tool_names()
+    if proposed_name in available_names:
+        return proposed_name
+    return fallback
