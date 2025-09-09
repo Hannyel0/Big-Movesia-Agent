@@ -137,3 +137,28 @@ class State(InputState):
     
     runtime_context: Dict[str, Any] = field(default_factory=dict)
     """Runtime context information for tools and assessment."""
+
+
+# Structured output schemas for LLM responses
+class StructuredPlanStep(BaseModel):
+    """Structured step for planning output with type-constrained tools."""
+    description: str = Field(description="Clear description of what this step accomplishes")
+    tool_name: ToolName = Field(description="Specific tool to use for this step")  # Type-constrained!
+    success_criteria: str = Field(description="Measurable criteria to determine if step succeeded")
+    dependencies: List[int] = Field(default_factory=list, description="Indices of steps this depends on")
+
+
+class StructuredExecutionPlan(BaseModel):
+    """Structured execution plan for native output with type-constrained tools."""
+    goal: str = Field(description="Overall goal to achieve")
+    steps: List[StructuredPlanStep] = Field(description="Ordered list of steps to execute")
+
+
+class StructuredAssessment(BaseModel):
+    """Structured assessment for native output."""
+    outcome: Literal["success", "retry", "blocked"] = Field(
+        description="Whether the step succeeded, should be retried, or is blocked"
+    )
+    reason: str = Field(description="Specific explanation of the assessment")
+    fix: str = Field(default="", description="Suggested fix if retry is needed")
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0, description="Confidence in assessment")

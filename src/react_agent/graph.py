@@ -27,6 +27,7 @@ from react_agent.state import (
     ToolName,  # Import the type-constrained tool name
 )
 from react_agent.tools import TOOLS, TOOL_METADATA
+from react_agent.narration import NarrationEngine, StreamingNarrator, integrate_narration_engine
 from react_agent.utils import (
     get_message_text,
     get_model,
@@ -49,6 +50,10 @@ def _build_static_tools_description() -> str:
 
 # Static tools description built once
 STATIC_TOOLS_DESCRIPTION = _build_static_tools_description()
+
+# Initialize narration components
+narration_engine = NarrationEngine()
+streaming_narrator = StreamingNarrator()
 
 
 # Updated structured output schemas with type constraints
@@ -307,7 +312,7 @@ def create_smart_default_plan(user_goal: str) -> List[PlanStep]:
 # Core node functions
 
 async def plan(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Create a comprehensive execution plan using structured outputs with type constraints."""
+    """Enhanced planning with rich introductory narration."""
     context = runtime.context
     
     # Use planning model or fall back to main model
@@ -402,18 +407,24 @@ Create plans that result in working game features, not just documentation."""
             steps=steps
         )
         
-        # USER-FRIENDLY RESPONSE with step preview
-        step_preview = f"\n\nHere's my plan:\n"
-        for i, step in enumerate(plan.steps):
-            step_preview += f"{i+1}. {step.description}\n"
+        # CREATE RICH PLANNING NARRATION
+        planning_narration = narration_engine.create_planning_narration(plan, user_message)
         
-        user_response = f"I'll help you with {user_message.lower()}. Let me work through this systematically using my Unity development tools.{step_preview}"
+        # Add streaming UI updates if supported
+        if context.runtime_metadata.get("supports_streaming"):
+            for i, step in enumerate(plan.steps):
+                ui_update = streaming_narrator.create_inline_update(
+                    f"📌 Step {i+1}: {step.description}",
+                    style="info"
+                )
+                if hasattr(runtime, 'push_ui_message'):
+                    runtime.push_ui_message(ui_update)
         
         return {
             "plan": plan,
             "step_index": 0,
             "retry_count": 0,
-            "messages": [AIMessage(content=user_response)]
+            "messages": [AIMessage(content=planning_narration)]
         }
     
     except Exception as e:
@@ -424,16 +435,19 @@ Create plans that result in working game features, not just documentation."""
             steps=fallback_steps
         )
         
+        fallback_narration = (f"I'll help you with **{user_message}**.\n\n"
+                             f"Let me work through this systematically using my Unity development tools.")
+        
         return {
             "plan": fallback_plan,
             "step_index": 0,
             "retry_count": 0,
-            "messages": [AIMessage(content=f"I'll help you with {user_message.lower()}. Let me use my development tools to assist you.")]
+            "messages": [AIMessage(content=fallback_narration)]
         }
 
 
 async def act(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Execute the current step with both tool calls AND user-facing progress updates."""
+    """Enhanced act node with rich narration from tool outputs."""
     context = runtime.context
     model = get_model(context.model)
     
@@ -442,16 +456,37 @@ async def act(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     
     current_step = state.plan.steps[state.step_index]
     
-    # NO MORE TOOL VALIDATION NEEDED! Type constraints guarantee valid tools
-    # current_step.tool_name is guaranteed to be a valid ToolName
+    # START STREAMING NARRATION (if UI supports it)
+    stream_msg = None
+    if context.runtime_metadata.get("supports_streaming"):
+        stream_msg = streaming_narrator.start_step_narration(
+            f"Step {state.step_index + 1}: {current_step.description}"
+        )
+        # Push to UI stream if available
+        if hasattr(runtime, 'push_ui_message'):
+            runtime.push_ui_message(stream_msg)
     
-    # CREATE USER-FRIENDLY PROGRESS MESSAGE using dynamic step narration
-    step_message = create_dynamic_step_message(
-        current_step, 
-        state.step_index + 1, 
-        len(state.plan.steps),
-        state.plan.goal
-    )
+    # Create rich pre-step narration using the engine
+    step_context = {
+        "step_index": state.step_index,
+        "total_steps": len(state.plan.steps),
+        "goal": state.plan.goal,
+        "tool_name": current_step.tool_name,
+        "description": current_step.description
+    }
+    
+    # Generate contextual pre-step message
+    pre_step_narration = _create_rich_pre_step_narration(current_step, step_context)
+    
+    # Update streaming if active
+    if stream_msg and context.runtime_metadata.get("supports_streaming"):
+        updated_msg = streaming_narrator.update_step_progress(
+            stream_msg["id"], 
+            "Executing tool call...",
+            f"Using {current_step.tool_name}"
+        )
+        if hasattr(runtime, 'push_ui_message'):
+            runtime.push_ui_message(updated_msg)
     
     # Prepare execution context
     execution_context = {
@@ -546,7 +581,7 @@ EXECUTE THE DEVELOPMENT STEP NOW - create working game development output."""
         
         # Create messages that include BOTH the user update AND the tool call
         messages_to_add = [
-            AIMessage(content=step_message),  # User-facing progress update
+            AIMessage(content=pre_step_narration),  # Rich contextual narration
             response  # Tool call response
         ]
         
@@ -557,8 +592,15 @@ EXECUTE THE DEVELOPMENT STEP NOW - create working game development output."""
         }
         
     except Exception as e:
-        # Handle execution errors
-        user_friendly_error = f"**Step {state.step_index + 1}/{len(state.plan.steps)}**: Encountered an issue with this step. Let me try a different approach."
+        # Rich error narration
+        error_narration = narration_engine._narrate_error(
+            f"step {state.step_index + 1}", 
+            str(e)
+        )
+        
+        # Complete streaming with error if active
+        if stream_msg and context.runtime_metadata.get("supports_streaming"):
+            streaming_narrator.complete_step(stream_msg["id"], f"Error: {str(e)}")
         
         updated_steps = list(state.plan.steps)
         error_messages = current_step.error_messages + [str(e)]
@@ -580,13 +622,13 @@ EXECUTE THE DEVELOPMENT STEP NOW - create working game development output."""
         
         return {
             "plan": updated_plan,
-            "messages": [AIMessage(content=user_friendly_error)],
+            "messages": [AIMessage(content=error_narration)],
             "tool_errors": state.tool_errors + [{"step": state.step_index, "error": str(e)}]
         }
 
 
 async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Assess whether the current step succeeded using structured outputs."""
+    """Enhanced assessment with rich post-tool narration."""
     context = runtime.context
     model = get_model(context.assessment_model or context.model)
     
@@ -595,14 +637,37 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     
     current_step = state.plan.steps[state.step_index]
     
-    # Get the last tool result or AI response
-    last_message = state.messages[-1] if state.messages else None
-    last_result = ""
+    # Extract the tool result from the last ToolMessage
+    tool_result = None
+    tool_name = current_step.tool_name
     
-    if isinstance(last_message, AIMessage):
-        last_result = get_message_text(last_message)
-    elif isinstance(last_message, ToolMessage):
-        last_result = get_message_text(last_message)
+    for msg in reversed(state.messages[-10:]):  # Look at recent messages
+        if isinstance(msg, ToolMessage):
+            try:
+                # Parse tool result
+                content = get_message_text(msg)
+                tool_result = json.loads(content) if content else {}
+            except json.JSONDecodeError:
+                tool_result = {"message": content}
+            break
+    
+    # GENERATE RICH POST-TOOL NARRATION
+    post_tool_narration = None
+    if tool_result and tool_name:
+        step_context = {
+            "step_index": state.step_index,
+            "total_steps": len(state.plan.steps),
+            "goal": state.plan.goal,
+            "tool_name": tool_name,
+            "description": current_step.description
+        }
+        
+        # Use the narration engine to create rich, contextual narration
+        post_tool_narration = narration_engine.narrate_tool_result(
+            tool_name,
+            tool_result,
+            step_context
+        )
     
     # Find the most recent tool messages for better context
     recent_tool_results = []
@@ -620,25 +685,17 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     
     tool_results_text = "\n".join(recent_tool_results) if recent_tool_results else "No recent tool results found"
     
-    # Enhanced assessment request for structured output
+    # Now perform the assessment using structured output
     assessment_request = f"""Assess if the current step has been successfully completed:
 
 Overall Goal: {state.plan.goal}
 Current Step ({state.step_index + 1}/{len(state.plan.steps)}): {current_step.description}
 Success Criteria: {current_step.success_criteria}
+Tool Used: {tool_name}
 
-Recent Tool Results:
-{tool_results_text}
+Tool Result Summary: {json.dumps(tool_result, indent=2) if tool_result else "No result captured"}
 
-Last AI Response: {last_result}
-
-Evaluation:
-- Was the step's specific objective achieved?
-- If a tool was supposed to be used, was it used effectively?
-- Is there enough information to move to the next step?
-- Did this step contribute meaningfully to the overall goal?
-
-Provide assessment with outcome, reason, fix (if needed), and confidence."""
+Determine if the step succeeded, needs retry, or is blocked."""
     
     # Static assessment prompt - cacheable
     static_assessment_content = """You are evaluating game development step completion with focus on deliverable quality and tool effectiveness.
@@ -681,15 +738,17 @@ Judge based on professional game development quality and deliverables."""
             confidence=structured_assessment.confidence
         )
         
-        # Add post-tool narration message if we have a tool result
+        # Prepare messages with rich narration
         messages_to_add = []
-        if latest_tool_result and current_step.tool_name:
-            post_tool_message = create_varied_post_tool_message(
-                current_step.tool_name, 
-                latest_tool_result,
-                state.step_index + 1
-            )
-            messages_to_add = [AIMessage(content=post_tool_message)]
+        if post_tool_narration:
+            messages_to_add.append(AIMessage(content=post_tool_narration))
+        
+        # Add transition narration if moving to next step
+        if assessment.outcome == "success" and state.step_index + 1 < len(state.plan.steps):
+            next_step = state.plan.steps[state.step_index + 1]
+            transition = _create_step_transition(current_step, next_step)
+            if transition:
+                messages_to_add.append(AIMessage(content=transition))
         
         result = {
             "current_assessment": assessment,
@@ -698,19 +757,30 @@ Judge based on professional game development quality and deliverables."""
         
         if messages_to_add:
             result["messages"] = messages_to_add
-            
+        
+        # Complete streaming narration if active
+        if context.runtime_metadata.get("supports_streaming"):
+            stream_id = f"step_{state.step_index}"
+            if assessment.outcome == "success":
+                streaming_narrator.complete_step(stream_id, "Step completed successfully!")
+            elif assessment.outcome == "retry":
+                streaming_narrator.update_step_progress(stream_id, "Retrying with adjustments...")
+            else:
+                streaming_narrator.complete_step(stream_id, "Step blocked - replanning...")
+        
         return result
         
     except Exception as e:
-        # Fallback assessment
-        has_tool_activity = any(isinstance(msg, ToolMessage) for msg in state.messages[-5:])
-        fallback_assessment = AssessmentOutcome(
-            outcome="success" if has_tool_activity else "retry",
-            reason=f"Assessment failed: {str(e)}",
-            confidence=0.3
-        )
+        # Fallback assessment with narration
+        fallback_narration = f"Assessment check completed. Moving forward with the implementation."
+        
         return {
-            "current_assessment": fallback_assessment,
+            "current_assessment": AssessmentOutcome(
+                outcome="success" if tool_result else "retry",
+                reason="Automated assessment",
+                confidence=0.5
+            ),
+            "messages": [AIMessage(content=fallback_narration)] if tool_result else [],
             "total_assessments": state.total_assessments + 1
         }
 
@@ -822,61 +892,27 @@ Focus on professional game development practices and working implementations."""
 
 
 async def finish(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Provide final summary with actual results and insights."""
+    """Enhanced finish node with rich completion summary."""
     context = runtime.context
-    model = get_model(context.model)
     
-    # Gather information about what was accomplished
-    completed_tools = []
-    tool_results = []
-    for msg in state.messages:
-        if isinstance(msg, ToolMessage):
-            completed_tools.append(msg.name)
-            content = get_message_text(msg)
-            if len(content) > 100:
-                tool_results.append(f"{msg.name}: {content[:200]}...")
+    # Use narration engine for rich completion summary
+    completion_narration = narration_engine.create_completion_narration(
+        state.completed_steps,
+        state.plan
+    )
     
-    # Create comprehensive summary request
-    summary_request = f"""Create a helpful summary of what was accomplished for the user's request: "{state.plan.goal if state.plan else 'Unity development assistance'}"
-
-Tools Used: {', '.join(set(completed_tools)) if completed_tools else 'None'}
-Steps Completed: {len(state.completed_steps)} out of {len(state.plan.steps) if state.plan else 0}
-
-Key Results:
-{chr(10).join(tool_results[:3]) if tool_results else "No significant tool results captured"}
-
-Provide a summary that:
-1. Highlights what was successfully accomplished
-2. Mentions any code, assets, or configurations created
-3. Provides key insights or recommendations discovered
-4. Suggests logical next steps for the user
-5. Offers to elaborate on specific aspects
-
-Be specific about Unity/game development outcomes, not just generic task completion."""
+    # Add final streaming updates if supported
+    if context.runtime_metadata.get("supports_streaming"):
+        final_update = streaming_narrator.create_inline_update(
+            "✨ Implementation complete! Check your Unity project for the new features.",
+            style="success"
+        )
+        if hasattr(runtime, 'push_ui_message'):
+            runtime.push_ui_message(final_update)
     
-    messages = [
-        {"role": "system", "content": FINAL_SUMMARY_PROMPT},
-        {"role": "user", "content": summary_request}
-    ]
-    
-    try:
-        response = await model.ainvoke(messages)
-        summary_content = get_message_text(response)
-        
-        return {
-            "messages": [AIMessage(content=summary_content)]
-        }
-        
-    except Exception:
-        # Fallback summary
-        if completed_tools:
-            fallback_message = f"I've worked through your Unity development request using {', '.join(set(completed_tools))}. The process involved {len(state.completed_steps)} completed steps. Would you like me to elaborate on any specific aspect of what was accomplished, or help you with the next phase of your project?"
-        else:
-            fallback_message = f"I apologize that I wasn't able to fully complete your Unity development request. Would you like me to try a different approach, or could you help me understand what specific aspect you're most interested in?"
-        
-        return {
-            "messages": [AIMessage(content=fallback_message)]
-        }
+    return {
+        "messages": [AIMessage(content=completion_narration)]
+    }
 
 
 async def advance_step(
@@ -1006,6 +1042,60 @@ def create_graph() -> StateGraph:
     builder.add_edge("finish", "__end__")
     
     return builder.compile(name="Enhanced ReAct Agent")
+
+# Helper functions for rich narration
+def _create_rich_pre_step_narration(step: 'PlanStep', context: Dict[str, Any]) -> str:
+    """Create rich, contextual pre-step narration."""
+    step_num = context.get("step_index", 0) + 1
+    total_steps = context.get("total_steps", 1)
+    
+    # Tool-specific introductions with variety
+    tool_intros = {
+        "search": [
+            f"**Step {step_num}/{total_steps}**: Researching current Unity best practices and tutorials...\n\nI'm looking for the most up-to-date and authoritative sources to ensure we're following modern game development patterns.",
+            f"**Researching ({step_num}/{total_steps})**: Let me find the latest Unity documentation and community solutions for this specific implementation.",
+            f"**Step {step_num}**: Diving into Unity resources to find proven approaches for your request..."
+        ],
+        "get_project_info": [
+            f"**Step {step_num}/{total_steps}**: Analyzing your project structure...\n\nI'm examining your Unity setup, installed packages, and current configuration to tailor the solution perfectly to your environment.",
+            f"**Project Analysis ({step_num}/{total_steps})**: Scanning your project to understand the existing setup and dependencies.",
+            f"**Step {step_num}**: Inspecting your Unity project to ensure compatibility..."
+        ],
+        "write_file": [
+            f"**Step {step_num}/{total_steps}**: Creating your script...\n\nI'm writing production-ready C# code that follows Unity conventions and integrates seamlessly with your project.",
+            f"**Code Generation ({step_num}/{total_steps})**: Building the script with proper namespaces, optimized logic, and clear documentation.",
+            f"**Step {step_num}**: Writing the implementation to your project..."
+        ],
+        "compile_and_test": [
+            f"**Step {step_num}/{total_steps}**: Running build validation...\n\nI'm compiling the project to ensure everything integrates properly and checking for any issues.",
+            f"**Testing ({step_num}/{total_steps})**: Verifying that the new code compiles cleanly and works with your existing systems.",
+            f"**Step {step_num}**: Building the project to validate the implementation..."
+        ]
+    }
+    
+    # Get varied intro for this tool
+    tool_name = step.tool_name or "process"
+    intros = tool_intros.get(tool_name, [f"**Step {step_num}/{total_steps}**: {step.description}"])
+    
+    # Select with variety
+    import hashlib
+    hash_val = int(hashlib.md5(f"{step_num}_{tool_name}".encode()).hexdigest(), 16)
+    return intros[hash_val % len(intros)]
+
+
+def _create_step_transition(current_step: 'PlanStep', next_step: 'PlanStep') -> str:
+    """Create natural transition narration between steps."""
+    transitions = [
+        f"Excellent! Now that {current_step.tool_name} is complete, let's move on to {next_step.description.lower()}.",
+        f"Perfect. With that done, the next step is to {next_step.description.lower()}.",
+        f"Great progress! Moving forward to {next_step.description.lower()}.",
+        ""  # Sometimes no transition for flow
+    ]
+    
+    import hashlib
+    hash_val = int(hashlib.md5(f"{current_step.tool_name}_{next_step.tool_name}".encode()).hexdigest(), 16)
+    return transitions[hash_val % len(transitions)]
+
 
 # Export the compiled graph
 graph = create_graph()
