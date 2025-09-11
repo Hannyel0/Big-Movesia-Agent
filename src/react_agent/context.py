@@ -145,14 +145,6 @@ class Context:
         },
     )
     
-    # Performance optimization
-    cache_assessments: bool = field(
-        default=False,
-        metadata={
-            "description": "Whether to cache assessment results for similar steps "
-            "to reduce redundant LLM calls."
-        },
-    )
     
     enable_step_dependencies: bool = field(
         default=True,
@@ -170,12 +162,6 @@ class Context:
         },
     )
     
-    track_token_usage: bool = field(
-        default=False,
-        metadata={
-            "description": "Track and report token usage for each LLM call."
-        },
-    )
     
     # Runtime metadata
     runtime_metadata: Dict[str, Any] = field(
@@ -193,13 +179,6 @@ class Context:
         },
     )
     
-    enable_parallel_assessment: bool = field(
-        default=False,
-        metadata={
-            "description": "Whether to run assessments in parallel with next step preparation "
-            "(experimental feature)."
-        },
-    )
     
     use_chain_of_thought: bool = field(
         default=True,

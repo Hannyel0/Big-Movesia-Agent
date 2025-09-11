@@ -14,6 +14,7 @@ from react_agent.context import Context
 from react_agent.state import (
     AssessmentOutcome,
     State,
+    StructuredAssessment,
 )
 from react_agent.narration import NarrationEngine, StreamingNarrator
 from react_agent.utils import get_message_text, get_model
@@ -23,14 +24,6 @@ from react_agent.utils import get_message_text, get_model
 narration_engine = NarrationEngine()
 
 
-class StructuredAssessment(BaseModel):
-    """Structured assessment for native output."""
-    outcome: Literal["success", "retry", "blocked"] = Field(
-        description="Whether the step succeeded, should be retried, or is blocked"
-    )
-    reason: str = Field(description="Specific explanation of the assessment")
-    fix: str = Field(default="", description="Suggested fix if retry is needed")
-    confidence: float = Field(default=0.8, ge=0.0, le=1.0, description="Confidence in assessment")
 
 
 def _create_step_transition(current_step, next_step) -> str:

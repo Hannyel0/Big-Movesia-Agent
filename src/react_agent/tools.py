@@ -574,16 +574,3 @@ def get_available_tool_names() -> List[str]:
     return [tool.name for tool in TOOLS]
 
 
-# Utility function to validate tool name at runtime (optional safety check)
-def validate_tool_name(tool_name: str) -> bool:
-    """Validate that a tool name is available and type-safe."""
-    return tool_name in get_available_tool_names()
-
-
-# Type-safe tool name getter with fallback
-def get_safe_tool_name(proposed_name: str, fallback: str = "get_project_info") -> str:
-    """Get a type-safe tool name with fallback if invalid."""
-    available_names = get_available_tool_names()
-    if proposed_name in available_names:
-        return proposed_name
-    return fallback

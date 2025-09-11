@@ -13,24 +13,13 @@ from react_agent.state import (
     ExecutionPlan,
     PlanStep,
     State,
+    StructuredExecutionPlan,
+    StructuredPlanStep,
     ToolName,
 )
 from react_agent.utils import get_model
 
 
-# Structured output schemas for repair
-class StructuredPlanStep(BaseModel):
-    """Structured step for planning output with type-constrained tools."""
-    description: str = Field(description="Clear description of what this step accomplishes")
-    tool_name: ToolName = Field(description="Specific tool to use for this step")  # Type-constrained!
-    success_criteria: str = Field(description="Measurable criteria to determine if step succeeded")
-    dependencies: List[int] = Field(default_factory=list, description="Indices of steps this depends on")
-
-
-class StructuredExecutionPlan(BaseModel):
-    """Structured execution plan for native output with type-constrained tools."""
-    goal: str = Field(description="Overall goal to achieve")
-    steps: List[StructuredPlanStep] = Field(description="Ordered list of steps to execute")
 
 
 def create_smart_default_plan(user_goal: str) -> List[PlanStep]:

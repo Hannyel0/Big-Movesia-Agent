@@ -17,7 +17,7 @@ from react_agent.state import (
 )
 from react_agent.tools import TOOLS
 from react_agent.narration import NarrationEngine
-from react_agent.utils import get_message_text, get_model, _create_rich_pre_step_narration
+from react_agent.utils import get_message_text, get_model
 
 
 # Initialize narration components

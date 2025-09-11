@@ -537,33 +537,3 @@ class StreamingNarrator:
         }
 
 
-# Cached prompt templates for efficient token usage
-NARRATION_PROMPTS = {
-    "tool_commentary": ChatPromptTemplate.from_messages([
-        ("system", """You are providing live development commentary. Given a tool result, 
-         extract concrete details and explain what happened in a friendly, informative way.
-         Focus on: specific files/paths, line counts, error details, configuration changes.
-         Keep it concise but rich with actual information from the result."""),
-        ("user", "Tool: {tool_name}\nResult: {result}\nContext: {context}\n\nProvide narration:")
-    ]),
-    
-    "step_transition": ChatPromptTemplate.from_messages([
-        ("system", """You're transitioning between development steps. Create a brief, 
-         natural bridge that acknowledges what just happened and previews what's next.
-         Be conversational but professional."""),
-        ("user", "Completed: {last_step}\nNext: {next_step}\nCreate transition:")
-    ])
-}
-
-
-def integrate_narration_engine(state: Dict[str, Any], result: Dict[str, Any], 
-                              context: Dict[str, Any]) -> AIMessage:
-    """Integration helper to add narration to existing graph nodes."""
-    engine = NarrationEngine(verbose=context.get("verbose_logging", False))
-    
-    tool_name = context.get("tool_name")
-    if tool_name and result:
-        narration = engine.narrate_tool_result(tool_name, result, context)
-        return AIMessage(content=narration)
-    
-    return AIMessage(content="Continuing with the next step...")
