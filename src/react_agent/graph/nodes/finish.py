@@ -95,12 +95,11 @@ async def _generate_comprehensive_completion_summary(state: State, model, contex
         "retry_attempts": sum(step.attempts for step in state.plan.steps)
     }
     
-    # Create comprehensive prompt for AI summary
-    completion_prompt = f"""You have just completed a Unity/game development session. Generate a professional, specific completion summary.
+    # Create comprehensive prompt for AI summary with dynamic, contextual formatting
+    completion_prompt = f"""You have just completed a Unity/game development session. Generate a contextual, well-formatted completion summary that dynamically adapts to what was actually accomplished.
 
-**Original Goal:** "{state.plan.goal}"
-
-**Execution Summary:**
+**Session Context:**
+- Original Goal: "{state.plan.goal}"
 - Planned Steps: {len(state.plan.steps)}
 - Completed Steps: {len(state.completed_steps)} ({execution_context['completion_percentage']:.1f}%)
 - Total Tool Calls: {state.total_tool_calls}
@@ -113,21 +112,42 @@ async def _generate_comprehensive_completion_summary(state: State, model, contex
 {chr(10).join(files_created + assets_built + concrete_results) if (files_created + assets_built + concrete_results) else "Development work completed successfully"}
 
 Generate a completion summary that:
-1. Starts with a confident completion statement (e.g., "Perfect!", "Excellent!", "Mission accomplished!")
-2. Specifically mentions what was actually built/created/configured
-3. Highlights the key deliverables from the session
-4. Shows awareness of the concrete work done
-5. Suggests logical next steps for the developer
-6. Maintains a professional, confident tone
-7. Is 2-4 sentences long and actionable
 
-Focus on tangible outcomes and what the developer can now do with their project.
+1. **Uses dynamic structure** - Organize sections based on what actually happened (e.g., "Error Found and Fixed", "Implementation Complete", "Asset Created", etc.)
 
-Example good summaries:
-- "Perfect! I've successfully created a complete FPS controller script with movement, mouse look, and jump mechanics. The script is compiled and ready to attach to your player GameObject. You can now test it in Play mode and customize the movement speeds to your liking."
-- "Excellent! I've built a comprehensive UI health bar system with dynamic updates and proper text display. The script is integrated into your project and ready for implementation. Simply drag the HealthBar prefab into your scene and connect it to your player health system."
+2. **Contextual formatting** - Use markdown formatting naturally:
+   - **Bold** for key concepts, file names, and important status indicators
+   - Bullet points or numbered lists where they make sense
+   - Code formatting with backticks for file names, methods, or technical terms
+   - Checkmarks (✅) or other symbols organically where appropriate
 
-Your completion summary:"""
+3. **Tell the story** of what happened:
+   - If errors were fixed, explain what the problem was and how it was solved
+   - If features were implemented, describe what they do and how they work
+   - If assets were created, explain their purpose and integration
+   - If configurations were changed, explain why and what impact it has
+
+4. **Technical specificity** - Include actual details like:
+   - File names and paths that were created/modified
+   - Specific Unity concepts, components, or systems involved
+   - Compilation results, error counts, warnings
+   - Methods, classes, or technical implementations used
+
+5. **Actionable next steps** - Provide concrete instructions for what the developer should do next to use or test what was built
+
+6. **Natural tone** - Write as if explaining to a fellow developer what you accomplished and why it matters for their project
+
+INSPIRATION EXAMPLE (adapt this style, don't copy the structure):
+**Error Found and Fixed**
+**Issue: Input System Import Conflict**
+The script was importing `UnityEngine.InputSystem` but using legacy `Input` class methods like `Input.GetAxis("Horizontal")`. This creates a namespace conflict in Unity 6.
+**Solution Applied**
+I removed the unnecessary import since the script uses the legacy Input Manager, which works perfectly for character controllers.
+**Current Status**
+Your `PlayerController.cs` script is now error-free and ready to use! The script:
+✅ **Fixed compilation errors** ✅ **Uses legacy Input system** ✅ **Includes all movement features**
+
+Generate your contextual summary based on what actually happened in this session:"""
 
     try:
         # Generate AI completion summary
