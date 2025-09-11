@@ -6,7 +6,7 @@ import json
 from typing import Any, Dict, List
 
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.pydantic_v1 import BaseModel, Field
+from pydantic import BaseModel, Field
 from langgraph.runtime import Runtime
 
 from react_agent.context import Context

@@ -27,8 +27,86 @@ def _create_step_transition(current_step, next_step) -> str:
     return f"✅ Step completed successfully! Moving on to: {next_step.description}"
 
 
+async def _generate_completion_summary(state: State, model, context: Context) -> str:
+    """Generate a completion summary using the LLM based on what was actually accomplished."""
+    
+    # Gather context about what was accomplished
+    completed_steps_summary = []
+    for i, step in enumerate(state.plan.steps):
+        if i <= state.step_index:  # Include current completing step
+            completed_steps_summary.append(f"Step {i+1}: {step.description} (using {step.tool_name})")
+    
+    # Find recent tool results for context
+    recent_tool_results = []
+    for msg in reversed(state.messages[-10:]):
+        if isinstance(msg, ToolMessage):
+            try:
+                result = json.loads(get_message_text(msg))
+                tool_name = msg.name or 'unknown'
+                success = result.get('success', True)
+                if success:
+                    # Include key details from successful tool results
+                    if tool_name == "write_file":
+                        recent_tool_results.append(f"Created file: {result.get('file_path', 'script file')}")
+                    elif tool_name == "create_asset":
+                        recent_tool_results.append(f"Created {result.get('asset_type', 'asset')}: {result.get('name', 'new asset')}")
+                    elif tool_name == "compile_and_test":
+                        errors = result.get('errors', 0)
+                        recent_tool_results.append(f"Compilation: {errors} errors, {result.get('warnings', 0)} warnings")
+                    elif tool_name == "search":
+                        results_count = len(result.get('result', []))
+                        recent_tool_results.append(f"Found {results_count} resources")
+                    else:
+                        recent_tool_results.append(f"{tool_name}: {result.get('message', 'completed successfully')}")
+            except:
+                recent_tool_results.append(f"{msg.name}: completed")
+    
+    # Create prompt for completion summary
+    completion_prompt = f"""You have just completed all steps for the goal: "{state.plan.goal}"
+
+Completed Steps:
+{chr(10).join(completed_steps_summary)}
+
+Key Results:
+{chr(10).join(recent_tool_results[-5:]) if recent_tool_results else "All steps completed successfully"}
+
+Generate a brief, professional completion message (1-2 sentences) that:
+1. Starts with "Perfect!" or similar positive confirmation
+2. Summarizes what was successfully accomplished
+3. Shows awareness of the specific work done
+4. Sounds confident and professional
+
+Examples of good completion messages:
+- "Perfect! I've successfully created a complete character controller script for you. The script includes movement mechanics and follows Unity best practices."
+- "Perfect! I've identified and fixed the main issue in your project. The compilation errors have been resolved and the code is now working properly."
+- "Perfect! I've successfully configured all the requested project settings. Your Unity project is now optimized for development."
+
+Your completion message:"""
+
+    try:
+        # Generate completion summary using LLM
+        completion_messages = [
+            {"role": "system", "content": "You are providing a brief, professional completion summary for a Unity development task. Be concise, specific, and confident."},
+            {"role": "user", "content": completion_prompt}
+        ]
+        
+        completion_response = await model.ainvoke(completion_messages)
+        completion_summary = get_message_text(completion_response).strip()
+        
+        # Validate the response quality
+        if len(completion_summary) < 20 or not completion_summary.lower().startswith(('perfect', 'excellent', 'great', 'done', 'completed', 'success')):
+            # Fallback if LLM response is poor
+            return f"Perfect! I've successfully completed your request: {state.plan.goal}"
+        
+        return completion_summary
+        
+    except Exception as e:
+        # Fallback on error
+        return f"Perfect! I've successfully completed all steps for: {state.plan.goal}"
+
+
 async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Enhanced assessment with rich post-tool narration and retry awareness."""
+    """Enhanced assessment with LLM-generated completion summaries and retry awareness."""
     context = runtime.context
     model = get_model(context.assessment_model or context.model)
     
@@ -153,12 +231,21 @@ Judge based on professional game development quality and deliverables."""
         if post_tool_narration:
             messages_to_add.append(AIMessage(content=post_tool_narration))
         
-        # Add transition narration if moving to next step
-        if assessment.outcome == "success" and state.step_index + 1 < len(state.plan.steps):
-            next_step = state.plan.steps[state.step_index + 1]
-            transition = _create_step_transition(current_step, next_step)
-            if transition:
-                messages_to_add.append(AIMessage(content=transition))
+        # CHECK FOR COMPLETION - Generate LLM completion summary
+        if assessment.outcome == "success":
+            next_index = state.step_index + 1
+            is_final_step = next_index >= len(state.plan.steps)
+            
+            if is_final_step:
+                # Generate completion summary using LLM
+                completion_summary = await _generate_completion_summary(state, model, context)
+                messages_to_add.append(AIMessage(content=completion_summary))
+            elif next_index < len(state.plan.steps):
+                # More steps to go - Add transition
+                next_step = state.plan.steps[next_index]
+                transition = _create_step_transition(current_step, next_step)
+                if transition:
+                    messages_to_add.append(AIMessage(content=transition))
         
         result = {
             "current_assessment": assessment,
