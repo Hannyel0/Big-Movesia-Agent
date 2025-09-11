@@ -1,4 +1,4 @@
-"""Enhanced ReAct agent with type-constrained tool planning."""
+"""Enhanced ReAct agent with narration guard for forced tool calls."""
 
 from __future__ import annotations
 
@@ -446,8 +446,8 @@ Create plans that result in working game features, not just documentation."""
         }
 
 
-async def act(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Enhanced act node with rich narration from tool outputs."""
+async def act_with_narration_guard(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
+    """Enhanced act node with guardrails to ensure LLM-generated narration alongside tool calls."""
     context = runtime.context
     model = get_model(context.model)
     
@@ -456,17 +456,7 @@ async def act(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     
     current_step = state.plan.steps[state.step_index]
     
-    # START STREAMING NARRATION (if UI supports it)
-    stream_msg = None
-    if context.runtime_metadata.get("supports_streaming"):
-        stream_msg = streaming_narrator.start_step_narration(
-            f"Step {state.step_index + 1}: {current_step.description}"
-        )
-        # Push to UI stream if available
-        if hasattr(runtime, 'push_ui_message'):
-            runtime.push_ui_message(stream_msg)
-    
-    # Create rich pre-step narration using the engine
+    # Create step context for narration
     step_context = {
         "step_index": state.step_index,
         "total_steps": len(state.plan.steps),
@@ -475,20 +465,53 @@ async def act(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
         "description": current_step.description
     }
     
-    # Generate contextual pre-step message
-    pre_step_narration = _create_rich_pre_step_narration(current_step, step_context)
+    # STRATEGY: Two-phase approach for guaranteed narration + tool call
     
-    # Update streaming if active
-    if stream_msg and context.runtime_metadata.get("supports_streaming"):
-        updated_msg = streaming_narrator.update_step_progress(
-            stream_msg["id"], 
-            "Executing tool call...",
-            f"Using {current_step.tool_name}"
-        )
-        if hasattr(runtime, 'push_ui_message'):
-            runtime.push_ui_message(updated_msg)
+    # Phase 1: Generate contextual narration
+    narration_prompt = _create_narration_prompt(current_step, step_context)
     
-    # Prepare execution context
+    try:
+        # Get LLM-generated narration first (without tools to avoid distraction)
+        narration_messages = [
+            {"role": "system", "content": "You are providing live development commentary. Generate a brief (1-2 sentences), engaging message about what you're about to do. Be specific about the Unity/Unreal tool you'll use and sound knowledgeable."},
+            {"role": "user", "content": narration_prompt}
+        ]
+        
+        narration_response = await model.ainvoke(narration_messages)
+        llm_generated_narration = get_message_text(narration_response)
+        
+        # Validate the LLM narration quality
+        if len(llm_generated_narration.strip()) < 15 or _is_generic_response(llm_generated_narration):
+            # Fallback to engine-generated narration if LLM narration is poor
+            llm_generated_narration = _create_rich_pre_step_narration(current_step, step_context)
+        
+    except Exception as e:
+        # Fallback to pre-generated narration if LLM narration fails
+        llm_generated_narration = _create_rich_pre_step_narration(current_step, step_context)
+    
+    # Phase 2: Generate tool call with execution context
+    tool_call_prompt = _create_tool_execution_prompt(current_step, step_context)
+    
+    # Static system content for tool execution - cacheable
+    static_system_content = """You are executing a Unity/Unreal Engine development step. Focus on calling the required tool with appropriate parameters.
+
+EXECUTION GUIDELINES:
+1. Call the exact tool specified in the step requirements  
+2. Use appropriate parameters based on the step description and success criteria
+3. Focus on creating working game development deliverables
+4. Follow Unity/Unreal best practices in your tool usage
+
+You MUST call the specified tool to complete this development step."""
+
+    # Prepare conversation context for better tool usage
+    conversation_messages = []
+    for msg in state.messages[-3:]:
+        if isinstance(msg, HumanMessage):
+            conversation_messages.append({"role": "user", "content": get_message_text(msg)})
+        elif isinstance(msg, AIMessage) and not msg.tool_calls:
+            conversation_messages.append({"role": "assistant", "content": get_message_text(msg)})
+    
+    # Dynamic context for tool execution
     execution_context = {
         "current_step": current_step.description,
         "success_criteria": current_step.success_criteria,
@@ -498,67 +521,32 @@ async def act(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
         "available_tools": [tool.name for tool in TOOLS]
     }
     
-    # Create focused action prompt that mandates tool usage
-    action_request = f"""You are executing step {state.step_index + 1} of {len(state.plan.steps)} for: "{state.plan.goal}"
-
-CURRENT STEP: {current_step.description}
-SUCCESS CRITERIA: {current_step.success_criteria}
-REQUIRED TOOL: {current_step.tool_name}
-
-YOU MUST USE THE REQUIRED TOOL: {current_step.tool_name}
-
-Based on the step description and required tool, call {current_step.tool_name} with appropriate parameters to complete this step."""
-    
-    # Get conversation history for context
-    conversation_messages = []
-    for msg in state.messages[-3:]:
-        if isinstance(msg, HumanMessage):
-            conversation_messages.append({"role": "user", "content": get_message_text(msg)})
-        elif isinstance(msg, AIMessage) and not msg.tool_calls:
-            conversation_messages.append({"role": "assistant", "content": get_message_text(msg)})
-    
-    # Static system content that can be cached
-    static_system_content = """You are executing a Unity/Unreal Engine development step. Focus on creating working game features using your development tools.
-
-DEVELOPMENT EXECUTION GUIDELINES:
-1. Use the specified tool to create actual game development deliverables
-2. Follow Unity/Unreal best practices and naming conventions
-3. Write production-ready code that integrates with existing projects
-4. Create assets that follow proper game development workflows
-5. Focus on this specific development task completely
-
-Tool-Specific Execution:
-- search: Find current Unity/Unreal tutorials, best practices, and solutions
-- get_project_info: Analyze project structure, version, packages, and setup
-- get_script_snippets: Retrieve working code templates for game systems
-- create_asset: Make new scripts, prefabs, materials, or scenes
-- write_file: Create actual C# scripts or configuration files
-- scene_management: Build levels, set up gameplay areas, place objects
-- compile_and_test: Verify code compiles and features work correctly
-- edit_project_config: Modify build settings, input, quality, or player settings
-
-EXECUTE THE DEVELOPMENT STEP NOW - create working game development output."""
-
-    # Dynamic context message - this part changes and won't be cached
     dynamic_context_message = f"""Current execution context:
 {json.dumps(execution_context, indent=2)}"""
-
-    # Structure for optimal caching
-    messages = [
+    
+    # Messages for tool execution
+    tool_messages = [
         {"role": "system", "content": static_system_content},
         {"role": "system", "content": dynamic_context_message},
         *conversation_messages,
-        {"role": "user", "content": action_request}
+        {"role": "user", "content": tool_call_prompt}
     ]
     
     try:
-        # Bind tools to model and invoke with forced tool choice
+        # Bind tools and force the specific tool usage
         model_with_tools = model.bind_tools(TOOLS)
-        
-        # Force the specific tool usage
-        response = await model_with_tools.ainvoke(
-            messages,
+        tool_response = await model_with_tools.ainvoke(
+            tool_messages,
             tool_choice={"type": "function", "function": {"name": current_step.tool_name}}
+        )
+        
+        # Combine narration with tool call
+        combined_response = AIMessage(
+            content=llm_generated_narration,
+            tool_calls=tool_response.tool_calls,
+            additional_kwargs=tool_response.additional_kwargs,
+            response_metadata=tool_response.response_metadata,
+            id=tool_response.id
         )
         
         # Update step status
@@ -579,28 +567,15 @@ EXECUTE THE DEVELOPMENT STEP NOW - create working game development output."""
             metadata=state.plan.metadata
         )
         
-        # Create messages that include BOTH the user update AND the tool call
-        messages_to_add = [
-            AIMessage(content=pre_step_narration),  # Rich contextual narration
-            response  # Tool call response
-        ]
-        
         return {
             "plan": updated_plan,
-            "messages": messages_to_add,
-            "total_tool_calls": state.total_tool_calls + (len(response.tool_calls) if response.tool_calls else 0)
+            "messages": [combined_response],
+            "total_tool_calls": state.total_tool_calls + (len(tool_response.tool_calls) if tool_response.tool_calls else 0)
         }
         
     except Exception as e:
         # Rich error narration
-        error_narration = narration_engine._narrate_error(
-            f"step {state.step_index + 1}", 
-            str(e)
-        )
-        
-        # Complete streaming with error if active
-        if stream_msg and context.runtime_metadata.get("supports_streaming"):
-            streaming_narrator.complete_step(stream_msg["id"], f"Error: {str(e)}")
+        error_narration = f"Hit a snag while {current_step.description.lower()}: {str(e)}. Let me try a different approach."
         
         updated_steps = list(state.plan.steps)
         error_messages = current_step.error_messages + [str(e)]
@@ -625,6 +600,96 @@ EXECUTE THE DEVELOPMENT STEP NOW - create working game development output."""
             "messages": [AIMessage(content=error_narration)],
             "tool_errors": state.tool_errors + [{"step": state.step_index, "error": str(e)}]
         }
+
+
+async def act(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
+    """Act node with two-phase narration guard approach for guaranteed LLM narration and tool calls."""
+    return await act_with_narration_guard(state, runtime)
+
+
+def _create_narration_prompt(current_step: PlanStep, step_context: Dict[str, Any]) -> str:
+    """Create a prompt for generating contextual narration about the current step."""
+    return f"""You are about to execute step {step_context['step_index'] + 1} of {step_context['total_steps']} for the goal: "{step_context['goal']}"
+
+Step Description: {current_step.description}
+Tool to Use: {current_step.tool_name}
+Success Criteria: {current_step.success_criteria}
+
+Generate a brief, engaging commentary (1-2 sentences) about what you're about to do. Be specific about the Unity/Unreal tool you'll use and sound knowledgeable about game development.
+
+Example styles:
+- "I'll search for the latest Unity water shader techniques to find advanced approaches for realistic water rendering."
+- "Let me create a new C# script for the player movement controller with smooth input handling and physics-based movement."
+- "I'll analyze the current project structure to understand the existing architecture and identify the best location for the new gameplay systems."
+
+Your commentary:"""
+
+
+def _create_tool_execution_prompt(current_step: PlanStep, step_context: Dict[str, Any]) -> str:
+    """Create a focused prompt for tool execution without narration distractions."""
+    return f"""Execute step {step_context['step_index'] + 1}: {current_step.description}
+
+Required Tool: {current_step.tool_name}
+Success Criteria: {current_step.success_criteria}
+
+Call the {current_step.tool_name} tool with appropriate parameters to complete this development step. Focus on creating working game development deliverables that meet the success criteria."""
+
+
+def _is_generic_response(narration: str) -> bool:
+    """Check if the generated narration is too generic or low-quality."""
+    generic_phrases = [
+        "i'll help you", "let me assist", "i can help", "sure, i can",
+        "i'll do that", "let me do that", "i'll work on", "let me work on",
+        "i'll try to", "let me try", "i'll attempt", "let me attempt",
+        "i'll start by", "let me start", "i'll begin", "let me begin"
+    ]
+
+    narration_lower = narration.lower().strip()
+
+    # Check for generic phrases
+    for phrase in generic_phrases:
+        if phrase in narration_lower:
+            return True
+
+    # Check if it's too short or lacks specificity
+    if len(narration_lower) < 20:
+        return True
+
+    # Check if it mentions the specific tool or Unity/Unreal concepts
+    game_dev_terms = [
+        "unity", "unreal", "script", "shader", "material", "prefab", "scene",
+        "gameobject", "component", "asset", "texture", "mesh", "animation",
+        "physics", "collider", "rigidbody", "transform", "canvas", "ui"
+    ]
+
+    has_game_dev_context = any(term in narration_lower for term in game_dev_terms)
+
+    return not has_game_dev_context
+
+
+def _create_rich_pre_step_narration(current_step: PlanStep, step_context: Dict[str, Any]) -> str:
+    """Create rich, contextual narration for a development step using the narration engine."""
+    # Tool-specific narration templates
+    tool_narrations = {
+        "search": f"Searching for Unity/Unreal resources and tutorials related to: {current_step.description}",
+        "get_project_info": f"Analyzing the current project structure and configuration to understand: {current_step.description}",
+        "get_script_snippets": f"Retrieving code templates and examples for: {current_step.description}",
+        "create_asset": f"Creating a new game asset: {current_step.description}",
+        "write_file": f"Writing code for: {current_step.description}",
+        "scene_management": f"Setting up scene elements for: {current_step.description}",
+        "compile_and_test": f"Compiling and testing the implementation: {current_step.description}",
+        "edit_project_config": f"Configuring project settings for: {current_step.description}"
+    }
+
+    base_narration = tool_narrations.get(
+        current_step.tool_name,
+        f"Executing {current_step.tool_name} for: {current_step.description}"
+    )
+
+    # Add step context
+    step_info = f" (Step {step_context['step_index'] + 1} of {step_context['total_steps']})"
+
+    return base_narration + step_info
 
 
 async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
@@ -1083,13 +1148,95 @@ def _create_rich_pre_step_narration(step: 'PlanStep', context: Dict[str, Any]) -
     return intros[hash_val % len(intros)]
 
 
-def _create_step_transition(current_step: 'PlanStep', next_step: 'PlanStep') -> str:
+async def _generate_llm_narration(model, current_step, step_context) -> str:
+    """Generate LLM narration when forced tool calls return empty content."""
+    step_num = step_context.get("step_index", 0) + 1
+    total_steps = step_context.get("total_steps", 1)
+    goal = step_context.get("goal", "")
+    
+    narration_prompt = f"""You are about to execute step {step_num} of {total_steps} for: "{goal}"
+
+Current step: {current_step.description}
+Tool to use: {current_step.tool_name}
+
+Write 1-2 natural, engaging sentences explaining what you're about to do with this tool. Be specific about the task and sound knowledgeable about Unity/Unreal development. Don't mention step numbers or be overly formal.
+
+Examples:
+- "I'll search for the latest Unity water shader techniques to find proven approaches for realistic water rendering."
+- "Let me analyze your project structure to understand the current setup and determine the best integration approach."
+- "Time to create the script with production-ready C# code that follows Unity conventions."
+
+Your narration:"""
+    
+    narration_messages = [
+        {"role": "system", "content": "You are providing natural, engaging narration for a Unity/Unreal development step. Write 1-2 sentences that sound professional and specific to the task. Be conversational but knowledgeable."},
+        {"role": "user", "content": narration_prompt}
+    ]
+    
+    try:
+        narration_response = await model.ainvoke(narration_messages)
+        generated_text = get_message_text(narration_response).strip()
+        
+        # Validate the generated narration
+        if len(generated_text) > 10 and not _is_generic_narration(generated_text):
+            return generated_text
+        else:
+            # Fallback if LLM generates poor narration
+            return _create_fallback_narration(current_step, step_context)
+    
+    except Exception:
+        # Fallback on any error
+        return _create_fallback_narration(current_step, step_context)
+
+
+def _is_generic_narration(text: str) -> bool:
+    """Check if the narration is too generic."""
+    generic_phrases = [
+        "i will",
+        "let me help",
+        "processing request",
+        "working on it",
+        "task completed",
+        "executing step"
+    ]
+    
+    text_lower = text.lower().strip()
+    
+    # Too short or too generic
+    if len(text_lower) < 15:
+        return True
+    
+    for phrase in generic_phrases:
+        if phrase in text_lower and len(text_lower) < 60:
+            return True
+    
+    return False
+
+
+def _create_fallback_narration(step, context) -> str:
+    """Create fallback narration if LLM generation fails."""
+    tool_name = step.tool_name
+    
+    fallbacks = {
+        "search": "I'll search for current best practices and documentation for this implementation.",
+        "get_project_info": "Let me analyze your project structure and configuration.",
+        "write_file": "Time to create the script with production-ready code.",
+        "compile_and_test": "I'll build the project to verify everything integrates properly.",
+        "get_script_snippets": "Let me gather proven code patterns for this functionality.",
+        "create_asset": "I'll create the game asset with proper Unity configuration.",
+        "scene_management": "Time to set up the scene with the required objects and layout.",
+        "edit_project_config": "I'll adjust the project settings for optimal configuration."
+    }
+    
+    return fallbacks.get(tool_name, f"I'll use {tool_name} to complete this development step.")
+
+
+def create_dynamic_step_message(step: 'PlanStep', step_num: int, total_steps: int, goal: str) -> str:
     """Create natural transition narration between steps."""
     transitions = [
-        f"Excellent! Now that {current_step.tool_name} is complete, let's move on to {next_step.description.lower()}.",
-        f"Perfect. With that done, the next step is to {next_step.description.lower()}.",
-        f"Great progress! Moving forward to {next_step.description.lower()}.",
-        ""  # Sometimes no transition for flow
+        f"Excellent! Now that {step.tool_name} is complete, let's move on to the next step.",
+        f"Perfect. With that done, the next step is to continue with the implementation.",
+        f"Great progress! Moving forward to the next step."
     ]
     
     import hashlib
