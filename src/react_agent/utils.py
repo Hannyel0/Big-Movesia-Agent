@@ -819,3 +819,125 @@ def format_plan_for_display(plan: Any) -> str:
 def create_user_friendly_step_message(step: Any, step_num: int, total_steps: int, goal: str) -> str:
     """Create user-friendly step message - alias for create_dynamic_step_message."""
     return create_dynamic_step_message(step, step_num, total_steps, goal)
+
+
+# Helper functions for rich narration
+def _create_rich_pre_step_narration(step: 'PlanStep', context: Dict[str, Any]) -> str:
+    """Create rich, contextual pre-step narration."""
+    step_num = context.get("step_index", 0) + 1
+    total_steps = context.get("total_steps", 1)
+    
+    # Tool-specific introductions with variety
+    tool_intros = {
+        "search": [
+            f"**Step {step_num}/{total_steps}**: Researching current Unity best practices and tutorials...\n\nI'm looking for the most up-to-date and authoritative sources to ensure we're following modern game development patterns.",
+            f"**Researching ({step_num}/{total_steps})**: Let me find the latest Unity documentation and community solutions for this specific implementation.",
+            f"**Step {step_num}**: Diving into Unity resources to find proven approaches for your request..."
+        ],
+        "get_project_info": [
+            f"**Step {step_num}/{total_steps}**: Analyzing your project structure...\n\nI'm examining your Unity setup, installed packages, and current configuration to tailor the solution perfectly to your environment.",
+            f"**Project Analysis ({step_num}/{total_steps})**: Scanning your project to understand the existing setup and dependencies.",
+            f"**Step {step_num}**: Inspecting your Unity project to ensure compatibility..."
+        ],
+        "write_file": [
+            f"**Step {step_num}/{total_steps}**: Creating your script...\n\nI'm writing production-ready C# code that follows Unity conventions and integrates seamlessly with your project.",
+            f"**Code Generation ({step_num}/{total_steps})**: Building the script with proper namespaces, optimized logic, and clear documentation.",
+            f"**Step {step_num}**: Writing the implementation to your project..."
+        ],
+        "compile_and_test": [
+            f"**Step {step_num}/{total_steps}**: Running build validation...\n\nI'm compiling the project to ensure everything integrates properly and checking for any issues.",
+            f"**Testing ({step_num}/{total_steps})**: Verifying that the new code compiles cleanly and works with your existing systems.",
+            f"**Step {step_num}**: Building the project to validate the implementation..."
+        ]
+    }
+    
+    # Get varied intro for this tool
+    tool_name = step.tool_name or "process"
+    intros = tool_intros.get(tool_name, [f"**Step {step_num}/{total_steps}**: {step.description}"])
+    
+    # Select with variety
+    hash_val = int(hashlib.md5(f"{step_num}_{tool_name}".encode()).hexdigest(), 16)
+    return intros[hash_val % len(intros)]
+
+
+async def _generate_llm_narration(model, current_step, step_context) -> str:
+    """Generate LLM narration when forced tool calls return empty content."""
+    step_num = step_context.get("step_index", 0) + 1
+    total_steps = step_context.get("total_steps", 1)
+    goal = step_context.get("goal", "")
+    
+    narration_prompt = f"""You are about to execute step {step_num} of {total_steps} for: "{goal}"
+
+Current step: {current_step.description}
+Tool to use: {current_step.tool_name}
+
+Write 1-2 natural, engaging sentences explaining what you're about to do with this tool. Be specific about the task and sound knowledgeable about Unity/Unreal development. Don't mention step numbers or be overly formal.
+
+Examples:
+- "I'll search for the latest Unity water shader techniques to find proven approaches for realistic water rendering."
+- "Let me analyze your project structure to understand the current setup and determine the best integration approach."
+- "Time to create the script with production-ready C# code that follows Unity conventions."
+
+Your narration:"""
+    
+    narration_messages = [
+        {"role": "system", "content": "You are providing natural, engaging narration for a Unity/Unreal development step. Write 1-2 sentences that sound professional and specific to the task. Be conversational but knowledgeable."},
+        {"role": "user", "content": narration_prompt}
+    ]
+    
+    try:
+        narration_response = await model.ainvoke(narration_messages)
+        generated_text = get_message_text(narration_response).strip()
+        
+        # Validate the generated narration
+        if len(generated_text) > 10 and not _is_generic_narration(generated_text):
+            return generated_text
+        else:
+            # Fallback if LLM generates poor narration
+            return _create_fallback_narration(current_step, step_context)
+    
+    except Exception:
+        # Fallback on any error
+        return _create_fallback_narration(current_step, step_context)
+
+
+def _is_generic_narration(text: str) -> bool:
+    """Check if the narration is too generic."""
+    generic_phrases = [
+        "i will",
+        "let me help",
+        "processing request",
+        "working on it",
+        "task completed",
+        "executing step"
+    ]
+    
+    text_lower = text.lower().strip()
+    
+    # Too short or too generic
+    if len(text_lower) < 15:
+        return True
+    
+    for phrase in generic_phrases:
+        if phrase in text_lower and len(text_lower) < 60:
+            return True
+    
+    return False
+
+
+def _create_fallback_narration(step, context) -> str:
+    """Create fallback narration if LLM generation fails."""
+    tool_name = step.tool_name
+    
+    fallbacks = {
+        "search": "I'll search for current best practices and documentation for this implementation.",
+        "get_project_info": "Let me analyze your project structure and configuration.",
+        "write_file": "Time to create the script with production-ready code.",
+        "compile_and_test": "I'll build the project to verify everything integrates properly.",
+        "get_script_snippets": "Let me gather proven code patterns for this functionality.",
+        "create_asset": "I'll create the game asset with proper Unity configuration.",
+        "scene_management": "Time to set up the scene with the required objects and layout.",
+        "edit_project_config": "I'll adjust the project settings for optimal configuration."
+    }
+    
+    return fallbacks.get(tool_name, f"I'll use {tool_name} to complete this development step.")
