@@ -6,9 +6,7 @@ import json
 from typing import Any, Dict
 
 from langchain_core.messages import AIMessage, ToolMessage
-from langchain_core.pydantic_v1 import BaseModel, Field
 from langgraph.runtime import Runtime
-from typing import Literal
 
 from react_agent.context import Context
 from react_agent.state import (
@@ -24,15 +22,13 @@ from react_agent.utils import get_message_text, get_model
 narration_engine = NarrationEngine()
 
 
-
-
 def _create_step_transition(current_step, next_step) -> str:
     """Create transition narration between steps."""
     return f"✅ Step completed successfully! Moving on to: {next_step.description}"
 
 
 async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Enhanced assessment with rich post-tool narration."""
+    """Enhanced assessment with rich post-tool narration and retry awareness."""
     context = runtime.context
     model = get_model(context.assessment_model or context.model)
     
@@ -55,7 +51,7 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
                 tool_result = {"message": content}
             break
     
-    # GENERATE RICH POST-TOOL NARRATION
+    # GENERATE RICH POST-TOOL NARRATION with retry awareness
     post_tool_narration = None
     if tool_result and tool_name:
         step_context = {
@@ -63,7 +59,9 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
             "total_steps": len(state.plan.steps),
             "goal": state.plan.goal,
             "tool_name": tool_name,
-            "description": current_step.description
+            "description": current_step.description,
+            "retry_count": state.retry_count,  # Include retry context
+            "assessment": state.current_assessment  # Include previous assessment
         }
         
         # Use the narration engine to create rich, contextual narration
@@ -89,17 +87,24 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     
     tool_results_text = "\n".join(recent_tool_results) if recent_tool_results else "No recent tool results found"
     
+    # Include retry context in assessment
+    retry_context = ""
+    if state.retry_count > 0:
+        retry_context = f"\n\nThis is retry attempt #{state.retry_count + 1}."
+        if state.current_assessment:
+            retry_context += f" Previous attempt failed because: {state.current_assessment.reason}"
+    
     # Now perform the assessment using structured output
     assessment_request = f"""Assess if the current step has been successfully completed:
 
 Overall Goal: {state.plan.goal}
 Current Step ({state.step_index + 1}/{len(state.plan.steps)}): {current_step.description}
 Success Criteria: {current_step.success_criteria}
-Tool Used: {tool_name}
+Tool Used: {tool_name}{retry_context}
 
 Tool Result Summary: {json.dumps(tool_result, indent=2) if tool_result else "No result captured"}
 
-Determine if the step succeeded, needs retry, or is blocked."""
+Determine if the step succeeded, needs retry, or is blocked. Consider that this might be a retry attempt."""
     
     # Static assessment prompt - cacheable
     static_assessment_content = """You are evaluating game development step completion with focus on deliverable quality and tool effectiveness.
@@ -122,6 +127,7 @@ Assessment outcomes:
 - "retry": Implementation incomplete or doesn't meet game dev standards
 - "blocked": Technical limitation preventing proper implementation
 
+For retry attempts, be more lenient if there's clear progress being made.
 Judge based on professional game development quality and deliverables."""
 
     # Structure for optimal caching

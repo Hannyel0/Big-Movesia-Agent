@@ -10,7 +10,7 @@ from langchain_core.messages import AnyMessage
 from langgraph.graph import add_messages
 from langgraph.managed import IsLastStep
 from typing_extensions import Annotated
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict  # Fixed: Use pydantic directly
 
 
 # Type-constrained tool names based on available tools
@@ -71,7 +71,7 @@ class AssessmentOutcome(BaseModel):
 
 @dataclass
 class InputState:
-    """Input state for the agent."""
+    """Input state for the agent."""    
     
     messages: Annotated[Sequence[AnyMessage], add_messages] = field(
         default_factory=list

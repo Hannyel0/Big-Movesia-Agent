@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from langchain_core.messages import AIMessage
-from langchain_core.pydantic_v1 import BaseModel, Field
 from langgraph.runtime import Runtime
 
 from react_agent.context import Context
@@ -20,8 +19,6 @@ from react_agent.state import (
 from react_agent.utils import get_model
 
 
-
-
 def create_smart_default_plan(user_goal: str) -> List[PlanStep]:
     """Create an intelligent default plan based on the user's goal."""
     # Import here to avoid circular imports
@@ -32,31 +29,43 @@ def create_smart_default_plan(user_goal: str) -> List[PlanStep]:
 
 
 async def repair(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Replan after encountering issues using structured outputs."""
+    """Replan after encountering issues using structured outputs with context awareness."""
     context = runtime.context
     model = get_model(context.planning_model or context.model)
     
     if not state.plan:
         return {}
     
-    # Create a user-friendly message about trying a different approach
-    user_message = "Let me try a different approach to better help you with this."
+    # Create a user-friendly message about trying a different approach with context
+    retry_info = f" (after {state.retry_count} retries)" if state.retry_count > 0 else ""
+    user_message = f"Let me try a different approach{retry_info} to better help you with this."
     
     # Gather information about what went wrong
     current_step = state.plan.steps[state.step_index]
     assessment = state.current_assessment
     
+    # Include more context about previous attempts
+    failure_context = ""
+    if assessment:
+        failure_context = f"\nIssue: {assessment.reason}"
+        if assessment.fix:
+            failure_context += f"\nPrevious fix suggestion: {assessment.fix}"
+    
+    if current_step.error_messages:
+        failure_context += f"\nRecent errors: {'; '.join(current_step.error_messages[-3:])}"
+    
     repair_request = f"""The current execution plan needs adjustment for: "{state.plan.goal}"
 
-Issue: {assessment.reason if assessment else "Unknown issue"}
 Failed Step: {current_step.description}
 Recommended Tool: {current_step.tool_name}
+Retry Count: {state.retry_count}{failure_context}
 
 Create a revised plan that:
 1. Addresses the specific issue encountered
-2. Uses different tools or approaches
+2. Uses different tools or approaches where appropriate
 3. Maintains focus on the original goal
 4. Has clear, achievable steps
+5. Considers what has already been attempted
 
 VALID TOOL NAMES: search, get_project_info, create_asset, write_file, edit_project_config, get_script_snippets, compile_and_test, scene_management
 
@@ -71,6 +80,7 @@ Common game development issues to address:
 - Missing integration with existing game systems
 - Compilation errors or runtime issues
 - Incorrect tool usage for game development tasks
+- Repeated failures with the same approach
 
 Create a revised development plan that:
 - Uses the correct Unity/Unreal development workflow
@@ -78,10 +88,11 @@ Create a revised development plan that:
 - Creates properly integrated game features
 - Includes adequate testing and validation
 - Addresses the specific development failure
+- Tries different approaches than what previously failed
 
 VALID TOOL NAMES: search, get_project_info, create_asset, write_file, edit_project_config, get_script_snippets, compile_and_test, scene_management
 
-Focus on professional game development practices and working implementations."""
+Focus on professional game development practices and working implementations. Learn from previous failures."""
 
     # Structure for optimal caching
     messages = [
@@ -113,7 +124,7 @@ Focus on professional game development practices and working implementations."""
         return {
             "plan": revised_plan,
             "step_index": 0,
-            "retry_count": 0,
+            "retry_count": 0,  # Reset retry count for new plan
             "current_assessment": None,
             "plan_revision_count": state.plan_revision_count + 1,
             "messages": [AIMessage(content=user_message)]
@@ -130,7 +141,7 @@ Focus on professional game development practices and working implementations."""
         return {
             "plan": fallback_plan,
             "step_index": 0,
-            "retry_count": 0,
+            "retry_count": 0,  # Reset retry count
             "current_assessment": None,
             "plan_revision_count": state.plan_revision_count + 1,
             "messages": [AIMessage(content="I'll try a simpler approach to help you.")]

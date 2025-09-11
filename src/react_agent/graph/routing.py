@@ -29,7 +29,7 @@ def route_after_act(state: State) -> Literal["tools", "assess"]:
     return "assess"
 
 
-def route_after_assess(state: State) -> Literal["advance_step", "act", "repair", "finish"]:
+def route_after_assess(state: State) -> Literal["advance_step", "increment_retry", "repair", "finish"]:
     """Route based on assessment outcome."""
     if not state.current_assessment:
         return "finish"
@@ -43,7 +43,7 @@ def route_after_assess(state: State) -> Literal["advance_step", "act", "repair",
     elif state.current_assessment.outcome == "retry":
         if state.retry_count >= state.max_retries_per_step:
             return "repair"
-        return "act"
+        return "increment_retry"
     
     else:  # blocked
         return "repair"

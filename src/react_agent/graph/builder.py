@@ -13,7 +13,7 @@ from react_agent.graph.nodes.act import act
 from react_agent.graph.nodes.assess import assess
 from react_agent.graph.nodes.repair import repair
 from react_agent.graph.nodes.finish import finish
-from react_agent.graph.nodes.progress import advance_step
+from react_agent.graph.nodes.progress import advance_step, increment_retry
 from react_agent.graph.routing import (
     should_continue,
     route_after_plan,
@@ -34,6 +34,7 @@ def create_graph() -> StateGraph:
     builder.add_node("assess", assess)
     builder.add_node("repair", repair)
     builder.add_node("advance_step", advance_step)
+    builder.add_node("increment_retry", increment_retry)  # NEW: Missing retry node
     builder.add_node("finish", finish)
     
     # Add edges
@@ -43,6 +44,7 @@ def create_graph() -> StateGraph:
     builder.add_edge("tools", "assess")
     builder.add_conditional_edges("assess", route_after_assess)
     builder.add_edge("advance_step", "act")
+    builder.add_edge("increment_retry", "act")  # NEW: Connect retry to act
     builder.add_conditional_edges("repair", route_after_repair)
     builder.add_edge("finish", "__end__")
     

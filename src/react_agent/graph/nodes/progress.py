@@ -64,7 +64,7 @@ async def advance_step(
         "plan": updated_plan,
         "step_index": next_index,
         "completed_steps": completed,
-        "retry_count": 0,
+        "retry_count": 0,  # Reset retry count for new step
         "current_assessment": None
     }
     
@@ -72,3 +72,14 @@ async def advance_step(
         result["messages"] = [progress_message]
     
     return result
+
+
+async def increment_retry(
+    state: State,
+    runtime: Runtime[Context]
+) -> Dict[str, Any]:
+    """Increment retry count for the current step."""
+    return {
+        "retry_count": state.retry_count + 1,
+        "current_assessment": None  # Clear previous assessment
+    }
