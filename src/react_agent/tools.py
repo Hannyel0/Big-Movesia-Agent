@@ -66,7 +66,10 @@ async def search(query: str) -> Dict[str, Any]:
         return {
             "success": True,
             "result": simulated_results,
-            "timestamp": datetime.now(UTC).isoformat()
+            "query": query,
+            "total_results": len(simulated_results),
+            "timestamp": datetime.now(UTC).isoformat(),
+            "message": f"Found {len(simulated_results)} relevant resources for '{query}'"
         }
         
     except asyncio.TimeoutError:
@@ -119,7 +122,9 @@ async def get_project_info() -> Dict[str, Any]:
         "build_settings": {
             "scenes_in_build": ["MenuScene", "MainScene"],
             "platform": "Windows x64"
-        }
+        },
+        "timestamp": datetime.now(UTC).isoformat(),
+        "message": "Successfully retrieved project information"
     }
 
 
@@ -135,40 +140,47 @@ async def create_asset(asset_type: str, name: str, properties: Optional[Dict[str
     if not properties:
         properties = {}
     
-    # Simulated asset creation
+    # Ensure we always return success=True for simulated asset creation
     asset_info = {
         "success": True,
         "asset_type": asset_type,
         "name": name,
-        "path": f"Assets/{asset_type}s/{name}",
+        "path": f"Assets/{asset_type.title()}s/{name}",
         "created_at": datetime.now(UTC).isoformat(),
-        "properties": properties
+        "properties": properties,
+        "status": "created",
+        "message": f"Successfully created {asset_type} '{name}'"
     }
     
+    # Add type-specific information
     if asset_type.lower() == "script":
         asset_info.update({
             "language": "C#",
             "template": "MonoBehaviour",
             "methods": ["Start", "Update"],
-            "namespaces": ["UnityEngine"]
+            "namespaces": ["UnityEngine"],
+            "file_extension": ".cs"
         })
     elif asset_type.lower() == "prefab":
         asset_info.update({
             "components": ["Transform", "Renderer", "Collider"],
             "children": 0,
-            "size": "1.2 MB"
+            "size": "1.2 MB",
+            "file_extension": ".prefab"
         })
     elif asset_type.lower() == "material":
         asset_info.update({
             "shader": "Universal Render Pipeline/Lit",
             "textures": [],
-            "color": "White"
+            "color": "White",
+            "file_extension": ".mat"
         })
     elif asset_type.lower() == "scene":
         asset_info.update({
             "objects": ["Main Camera", "Directional Light"],
             "lighting": "Realtime",
-            "skybox": "Default"
+            "skybox": "Default",
+            "file_extension": ".unity"
         })
     
     return asset_info
@@ -183,7 +195,7 @@ async def write_file(file_path: str, content: str, file_type: str = "script") ->
         content: Content to write to the file
         file_type: Type of file (script, config, text, etc.)
     """
-    # Simulated file writing
+    # Simulated file writing - always successful
     return {
         "success": True,
         "file_path": file_path,
@@ -192,6 +204,7 @@ async def write_file(file_path: str, content: str, file_type: str = "script") ->
         "lines_written": len(content.split('\n')),
         "encoding": "UTF-8",
         "timestamp": datetime.now(UTC).isoformat(),
+        "content_preview": content[:100] + ("..." if len(content) > 100 else ""),
         "message": f"Successfully wrote {file_type} file to {file_path}"
     }
 
@@ -204,7 +217,7 @@ async def edit_project_config(config_section: str, settings: Dict[str, Any]) -> 
         config_section: Section of config to modify (build_settings, player_settings, quality, etc.)
         settings: Dictionary of settings to update
     """
-    # Simulated config editing
+    # Simulated config editing - always successful
     return {
         "success": True,
         "config_section": config_section,
@@ -215,7 +228,7 @@ async def edit_project_config(config_section: str, settings: Dict[str, Any]) -> 
         },
         "requires_restart": config_section in ["player_settings", "graphics"],
         "timestamp": datetime.now(UTC).isoformat(),
-        "message": f"Updated {config_section} configuration"
+        "message": f"Successfully updated {config_section} configuration"
     }
 
 
@@ -609,6 +622,7 @@ async def get_script_snippets(category: str, language: str = "csharp") -> Dict[s
     category_snippets = snippets.get(category_lower, {})
     language_snippets = category_snippets.get(language, {})
     
+    # ENSURE CONSISTENT SUCCESS RESPONSE
     return {
         "success": True,
         "category": category,
@@ -616,7 +630,9 @@ async def get_script_snippets(category: str, language: str = "csharp") -> Dict[s
         "available_snippets": list(language_snippets.keys()),
         "snippets": language_snippets,
         "total_snippets": len(language_snippets),
-        "message": f"Retrieved {len(language_snippets)} code snippets for {category} in {language}"
+        "found_snippets": len(language_snippets) > 0,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "message": f"Successfully retrieved {len(language_snippets)} code snippets for {category} in {language}"
     }
 
 
@@ -660,7 +676,7 @@ async def scene_management(action: str, scene_name: str, parameters: Optional[Di
     if not parameters:
         parameters = {}
     
-    # Simulated scene management
+    # Simulated scene management - always successful
     result = {
         "success": True,
         "action": action,
@@ -673,14 +689,14 @@ async def scene_management(action: str, scene_name: str, parameters: Optional[Di
             "scene_path": f"Assets/Scenes/{scene_name}.unity",
             "default_objects": ["Main Camera", "Directional Light"],
             "lighting_settings": "Realtime",
-            "message": f"Created new scene: {scene_name}"
+            "message": f"Successfully created new scene: {scene_name}"
         })
     elif action == "load":
         result.update({
             "objects_in_scene": ["Player", "Ground", "UI Canvas", "Main Camera", "Directional Light"],
             "lighting": "Mixed",
             "active_objects": 12,
-            "message": f"Loaded scene: {scene_name}"
+            "message": f"Successfully loaded scene: {scene_name}"
         })
     elif action == "add_object":
         obj_type = parameters.get("object_type", "GameObject")
@@ -688,13 +704,13 @@ async def scene_management(action: str, scene_name: str, parameters: Optional[Di
             "object_added": obj_type,
             "position": parameters.get("position", [0, 0, 0]),
             "rotation": parameters.get("rotation", [0, 0, 0]),
-            "message": f"Added {obj_type} to {scene_name}"
+            "message": f"Successfully added {obj_type} to {scene_name}"
         })
     elif action == "save":
         result.update({
             "changes_saved": True,
             "backup_created": True,
-            "message": f"Saved scene: {scene_name}"
+            "message": f"Successfully saved scene: {scene_name}"
         })
     
     return result

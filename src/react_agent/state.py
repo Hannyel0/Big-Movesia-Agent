@@ -137,6 +137,9 @@ class State(InputState):
     
     runtime_context: Dict[str, Any] = field(default_factory=dict)
     """Runtime context information for tools and assessment."""
+    
+    runtime_metadata: Dict[str, Any] = field(default_factory=dict)
+    """Runtime metadata that can be used by nodes for routing and classification."""
 
 
 # Structured output schemas for LLM responses
