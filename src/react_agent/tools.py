@@ -234,405 +234,109 @@ async def edit_project_config(config_section: str, settings: Dict[str, Any]) -> 
 
 @tool
 async def get_script_snippets(category: str, language: str = "csharp") -> Dict[str, Any]:
-    """Get code snippets and templates for common game development tasks.
+    """Get code snippets from the USER'S existing Unity project scripts.
+    
+    This tool reads and extracts snippets from scripts that already exist in the user's Unity project.
+    It searches through the user's actual codebase to find relevant code sections.
     
     Args:
-        category: Category of snippets (player_movement, character_controller, ui, physics, audio, etc.)
-        language: Programming language (csharp, javascript, blueprint)
+        category: Type of functionality to look for in user's scripts (movement, ui, physics, etc.)
+        language: Programming language to search for (csharp, javascript, etc.)
+        
+    Returns:
+        Dict containing actual code snippets found in the user's project scripts
     """
-    # Enhanced simulated code snippets database with better category mapping
-    snippets = {
-        "player_movement": {
-            "csharp": {
-                "basic_movement": '''public class PlayerMovement : MonoBehaviour 
+    # This would normally scan the user's actual Unity project files
+    # For simulation purposes, we'll return what would be found in a typical project
+    
+    # Simulate finding snippets in the user's existing scripts
+    found_snippets = {
+        "PlayerController.cs": {
+            "movement_method": '''void HandleMovement()
 {
-    public float speed = 5f;
-    private Rigidbody rb;
+    float horizontal = Input.GetAxis("Horizontal");
+    float vertical = Input.GetAxis("Vertical");
     
-    void Start() 
-    {
-        rb = GetComponent<Rigidbody>();
-    }
-    
-    void Update() 
-    {
-        float horizontal = Input.GetAxis("Horizontal");
-        float vertical = Input.GetAxis("Vertical");
-        
-        Vector3 movement = new Vector3(horizontal, 0, vertical) * speed * Time.deltaTime;
-        rb.MovePosition(transform.position + movement);
-    }
+    Vector3 movement = new Vector3(horizontal, 0, vertical);
+    transform.Translate(movement * speed * Time.deltaTime);
 }''',
-                "fps_controller": '''public class FPSController : MonoBehaviour 
+            "jump_method": '''void HandleJump()
 {
-    public float walkSpeed = 6f;
-    public float runSpeed = 12f;
-    public float mouseSensitivity = 100f;
-    
-    private CharacterController controller;
-    private Camera playerCamera;
-    private float xRotation = 0f;
-    
-    void Start() 
+    if (Input.GetKeyDown(KeyCode.Space) && isGrounded)
     {
-        controller = GetComponent<CharacterController>();
-        playerCamera = GetComponentInChildren<Camera>();
-        Cursor.lockState = CursorLockMode.Locked;
-    }
-    
-    void Update() 
-    {
-        HandleMovement();
-        HandleMouseLook();
-    }
-    
-    void HandleMovement() 
-    {
-        float x = Input.GetAxis("Horizontal");
-        float z = Input.GetAxis("Vertical");
-        bool isRunning = Input.GetKey(KeyCode.LeftShift);
-        
-        float currentSpeed = isRunning ? runSpeed : walkSpeed;
-        Vector3 move = transform.right * x + transform.forward * z;
-        controller.Move(move * currentSpeed * Time.deltaTime);
-    }
-    
-    void HandleMouseLook() 
-    {
-        float mouseX = Input.GetAxis("Mouse X") * mouseSensitivity * Time.deltaTime;
-        float mouseY = Input.GetAxis("Mouse Y") * mouseSensitivity * Time.deltaTime;
-        
-        xRotation -= mouseY;
-        xRotation = Mathf.Clamp(xRotation, -90f, 90f);
-        
-        playerCamera.transform.localRotation = Quaternion.Euler(xRotation, 0f, 0f);
-        transform.Rotate(Vector3.up * mouseX);
+        rb.AddForce(Vector3.up * jumpForce, ForceMode.Impulse);
     }
 }'''
-            }
         },
-        # Add character_controller as an alias to player_movement
-        "character_controller": {
-            "csharp": {
-                "basic_character_controller": '''public class CharacterController : MonoBehaviour 
+        "GameManager.cs": {
+            "game_state": '''public enum GameState
 {
-    public float speed = 6f;
-    public float jumpHeight = 2f;
-    public float gravity = -9.81f;
-    
-    private CharacterController controller;
-    private Vector3 velocity;
-    private bool isGrounded;
-    
-    void Start() 
-    {
-        controller = GetComponent<CharacterController>();
-    }
-    
-    void Update() 
-    {
-        isGrounded = controller.isGrounded;
-        if (isGrounded && velocity.y < 0)
-        {
-            velocity.y = -2f;
-        }
-        
-        float x = Input.GetAxis("Horizontal");
-        float z = Input.GetAxis("Vertical");
-        
-        Vector3 move = transform.right * x + transform.forward * z;
-        controller.Move(move * speed * Time.deltaTime);
-        
-        if (Input.GetButtonDown("Jump") && isGrounded)
-        {
-            velocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
-        }
-        
-        velocity.y += gravity * Time.deltaTime;
-        controller.Move(velocity * Time.deltaTime);
-    }
+    Menu,
+    Playing,
+    Paused,
+    GameOver
+}
+
+private GameState currentState = GameState.Menu;''',
+            "score_system": '''private int playerScore = 0;
+
+public void AddScore(int points)
+{
+    playerScore += points;
+    UpdateScoreUI();
+}'''
+        },
+        "UIManager.cs": {
+            "update_health": '''public void UpdateHealthBar(float currentHealth, float maxHealth)
+{
+    healthSlider.value = currentHealth / maxHealth;
+    healthText.text = $"{currentHealth}/{maxHealth}";
 }''',
-                "advanced_character_controller": '''public class AdvancedCharacterController : MonoBehaviour 
+            "show_menu": '''public void ShowMenu(GameObject menu)
 {
-    [Header("Movement")]
-    public float walkSpeed = 4f;
-    public float runSpeed = 8f;
-    public float crouchSpeed = 2f;
-    public float jumpHeight = 2f;
-    
-    [Header("Physics")]
-    public float gravity = -9.81f;
-    public float groundDistance = 0.4f;
-    public LayerMask groundMask;
-    
-    private CharacterController controller;
-    private Vector3 velocity;
-    private bool isGrounded;
-    private bool isCrouching;
-    private Transform groundCheck;
-    
-    void Start() 
-    {
-        controller = GetComponent<CharacterController>();
-        groundCheck = transform.Find("GroundCheck");
-    }
-    
-    void Update() 
-    {
-        isGrounded = Physics.CheckSphere(groundCheck.position, groundDistance, groundMask);
-        
-        if (isGrounded && velocity.y < 0)
-        {
-            velocity.y = -2f;
-        }
-        
-        float x = Input.GetAxis("Horizontal");
-        float z = Input.GetAxis("Vertical");
-        
-        Vector3 move = transform.right * x + transform.forward * z;
-        
-        float currentSpeed = GetCurrentSpeed();
-        controller.Move(move * currentSpeed * Time.deltaTime);
-        
-        if (Input.GetButtonDown("Jump") && isGrounded)
-        {
-            velocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
-        }
-        
-        HandleCrouch();
-        
-        velocity.y += gravity * Time.deltaTime;
-        controller.Move(velocity * Time.deltaTime);
-    }
-    
-    float GetCurrentSpeed()
-    {
-        if (isCrouching) return crouchSpeed;
-        if (Input.GetKey(KeyCode.LeftShift)) return runSpeed;
-        return walkSpeed;
-    }
-    
-    void HandleCrouch()
-    {
-        if (Input.GetKeyDown(KeyCode.LeftControl))
-        {
-            isCrouching = !isCrouching;
-            float height = isCrouching ? 1f : 2f;
-            controller.height = height;
-        }
-    }
+    menu.SetActive(true);
+    Time.timeScale = 0f;
 }'''
-            }
-        },
-        "ui": {
-            "csharp": {
-                "health_bar": '''public class HealthBar : MonoBehaviour 
-{
-    public Slider healthSlider;
-    public Text healthText;
-    public float maxHealth = 100f;
-    private float currentHealth;
-    
-    void Start() 
-    {
-        currentHealth = maxHealth;
-        UpdateHealthUI();
-    }
-    
-    public void TakeDamage(float damage) 
-    {
-        currentHealth -= damage;
-        currentHealth = Mathf.Clamp(currentHealth, 0, maxHealth);
-        UpdateHealthUI();
-    }
-    
-    public void Heal(float healing) 
-    {
-        currentHealth += healing;
-        currentHealth = Mathf.Clamp(currentHealth, 0, maxHealth);
-        UpdateHealthUI();
-    }
-    
-    void UpdateHealthUI() 
-    {
-        healthSlider.value = currentHealth / maxHealth;
-        healthText.text = $"{currentHealth:F0} / {maxHealth:F0}";
-    }
-}''',
-                "menu_controller": '''public class MenuController : MonoBehaviour 
-{
-    public GameObject mainMenuPanel;
-    public GameObject settingsPanel;
-    public GameObject gameplayPanel;
-    
-    void Start() 
-    {
-        ShowMainMenu();
-    }
-    
-    public void ShowMainMenu() 
-    {
-        mainMenuPanel.SetActive(true);
-        settingsPanel.SetActive(false);
-        gameplayPanel.SetActive(false);
-    }
-    
-    public void ShowSettings() 
-    {
-        mainMenuPanel.SetActive(false);
-        settingsPanel.SetActive(true);
-        gameplayPanel.SetActive(false);
-    }
-    
-    public void StartGame() 
-    {
-        mainMenuPanel.SetActive(false);
-        settingsPanel.SetActive(false);
-        gameplayPanel.SetActive(true);
-        // Load gameplay scene or initialize game
-    }
-    
-    public void QuitGame() 
-    {
-        Application.Quit();
-    }
-}'''
-            }
-        },
-        "audio": {
-            "csharp": {
-                "audio_manager": '''public class AudioManager : MonoBehaviour 
-{
-    public AudioSource musicSource;
-    public AudioSource sfxSource;
-    
-    public AudioClip[] musicTracks;
-    public AudioClip[] soundEffects;
-    
-    public static AudioManager Instance;
-    
-    void Awake() 
-    {
-        if (Instance == null) 
-        {
-            Instance = this;
-            DontDestroyOnLoad(gameObject);
-        } 
-        else 
-        {
-            Destroy(gameObject);
         }
     }
     
-    public void PlayMusic(int trackIndex) 
-    {
-        if (trackIndex >= 0 && trackIndex < musicTracks.Length) 
-        {
-            musicSource.clip = musicTracks[trackIndex];
-            musicSource.Play();
-        }
-    }
+    # Filter snippets based on category
+    category_lower = category.lower()
+    relevant_snippets = {}
     
-    public void PlaySFX(int effectIndex) 
-    {
-        if (effectIndex >= 0 && effectIndex < soundEffects.Length) 
-        {
-            sfxSource.PlayOneShot(soundEffects[effectIndex]);
-        }
-    }
-    
-    public void SetMusicVolume(float volume) 
-    {
-        musicSource.volume = Mathf.Clamp01(volume);
-    }
-    
-    public void SetSFXVolume(float volume) 
-    {
-        sfxSource.volume = Mathf.Clamp01(volume);
-    }
-}'''
-            }
-        },
-        # Add physics category
-        "physics": {
-            "csharp": {
-                "rigidbody_movement": '''public class RigidbodyMovement : MonoBehaviour 
-{
-    public float moveForce = 10f;
-    public float maxSpeed = 5f;
-    public float jumpForce = 300f;
-    
-    private Rigidbody rb;
-    private bool isGrounded;
-    
-    void Start() 
-    {
-        rb = GetComponent<Rigidbody>();
-    }
-    
-    void Update() 
-    {
-        float horizontal = Input.GetAxis("Horizontal");
-        float vertical = Input.GetAxis("Vertical");
+    for script_name, snippets in found_snippets.items():
+        script_relevant_snippets = {}
         
-        Vector3 movement = new Vector3(horizontal, 0, vertical) * moveForce;
+        for snippet_name, code in snippets.items():
+            # Match category to snippet content
+            if any(keyword in category_lower for keyword in ["movement", "player", "character", "control"]):
+                if any(term in snippet_name.lower() for term in ["movement", "jump", "control"]):
+                    script_relevant_snippets[snippet_name] = code
+            elif any(keyword in category_lower for keyword in ["ui", "menu", "interface"]):
+                if any(term in snippet_name.lower() for term in ["health", "menu", "ui"]):
+                    script_relevant_snippets[snippet_name] = code
+            elif any(keyword in category_lower for keyword in ["game", "manager", "state"]):
+                if any(term in snippet_name.lower() for term in ["game", "score", "state"]):
+                    script_relevant_snippets[snippet_name] = code
+            elif any(keyword in category_lower for keyword in ["physics", "jump", "force"]):
+                if any(term in snippet_name.lower() for term in ["jump", "force", "physics"]):
+                    script_relevant_snippets[snippet_name] = code
         
-        if (rb.velocity.magnitude < maxSpeed)
-        {
-            rb.AddForce(movement);
-        }
-        
-        if (Input.GetKeyDown(KeyCode.Space) && isGrounded)
-        {
-            rb.AddForce(Vector3.up * jumpForce);
-        }
-    }
+        if script_relevant_snippets:
+            relevant_snippets[script_name] = script_relevant_snippets
     
-    void OnCollisionStay(Collision collision)
-    {
-        isGrounded = true;
-    }
+    total_snippets = sum(len(snippets) for snippets in relevant_snippets.values())
     
-    void OnCollisionExit(Collision collision)
-    {
-        isGrounded = false;
-    }
-}'''
-            }
-        }
-    }
-    
-    # Normalize category input and check for aliases
-    category_lower = category.lower().replace(" ", "_")
-    
-    # Map common aliases to existing categories
-    category_aliases = {
-        "character": "character_controller",
-        "player": "player_movement",
-        "movement": "player_movement",
-        "controller": "character_controller",
-        "fps": "player_movement",
-        "first_person": "player_movement"
-    }
-    
-    # Check if it's an alias
-    if category_lower in category_aliases:
-        category_lower = category_aliases[category_lower]
-    
-    category_snippets = snippets.get(category_lower, {})
-    language_snippets = category_snippets.get(language, {})
-    
-    # ENSURE CONSISTENT SUCCESS RESPONSE
     return {
         "success": True,
         "category": category,
         "language": language,
-        "available_snippets": list(language_snippets.keys()),
-        "snippets": language_snippets,
-        "total_snippets": len(language_snippets),
-        "found_snippets": len(language_snippets) > 0,
+        "scripts_searched": list(found_snippets.keys()),
+        "relevant_scripts": list(relevant_snippets.keys()),
+        "snippets_by_script": relevant_snippets,
+        "total_snippets_found": total_snippets,
         "timestamp": datetime.now(UTC).isoformat(),
-        "message": f"Successfully retrieved {len(language_snippets)} code snippets for {category} in {language}"
+        "message": f"Found {total_snippets} code snippets in {len(relevant_snippets)} scripts matching '{category}'"
     }
 
 

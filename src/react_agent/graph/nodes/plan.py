@@ -1,4 +1,4 @@
-"""Planning node for the ReAct agent."""
+"""Intelligent planning node for the ReAct agent with true LLM-driven reasoning."""
 
 from __future__ import annotations
 
@@ -26,256 +26,91 @@ from react_agent.utils import get_message_text, get_model
 
 
 # Build tools description once at module level for caching
-def _build_static_tools_description() -> str:
-    """Build static tools description for caching."""
+def _build_comprehensive_tools_description() -> str:
+    """Build comprehensive tools description with usage examples."""
     tools_info = []
     for tool in TOOLS:
-        tool_info = f"- {tool.name}: {tool.description}"
+        tool_info = f"**{tool.name}**: {tool.description}\n"
+        
         if hasattr(tool, 'name') and tool.name in TOOL_METADATA:
             metadata = TOOL_METADATA[tool.name]
-            tool_info += f" (Best for: {', '.join(metadata['best_for'])})"
+            tool_info += f"   - Best for: {', '.join(metadata['best_for'])}\n"
+            tool_info += f"   - Reliability: {metadata['reliability']}, Cost: {metadata['cost']}\n"
+        
+        # Add practical usage examples
+        if tool.name == "search":
+            tool_info += "   - Example uses: Research Unity patterns, find tutorials, troubleshoot errors\n"
+        elif tool.name == "get_script_snippets":
+            tool_info += "   - Example uses: Get movement code, UI templates, physics examples\n"
+        elif tool.name == "create_asset":
+            tool_info += "   - Example uses: Create scripts, prefabs, materials, scenes\n"
+        elif tool.name == "write_file":
+            tool_info += "   - Example uses: Generate complete scripts, config files, shaders\n"
+            
         tools_info.append(tool_info)
+    
     return "\n".join(tools_info)
 
 # Static tools description built once
-STATIC_TOOLS_DESCRIPTION = _build_static_tools_description()
+COMPREHENSIVE_TOOLS_DESCRIPTION = _build_comprehensive_tools_description()
 
 # Initialize narration components
 narration_engine = NarrationEngine()
 
 
+def _extract_conversation_context(state: State) -> str:
+    """Extract relevant context from the conversation history."""
+    context_parts = []
+    
+    # Look for previous attempts or mentions
+    for msg in state.messages[-5:]:  # Last 5 messages for context
+        if isinstance(msg, HumanMessage):
+            content = get_message_text(msg)
+            # Extract context clues
+            if "my project" in content.lower():
+                context_parts.append("User has an existing project")
+            if any(word in content.lower() for word in ["beginner", "new to", "learning", "tutorial"]):
+                context_parts.append("User appears to be learning/beginner level")
+            if any(word in content.lower() for word in ["advanced", "experienced", "complex", "sophisticated"]):
+                context_parts.append("User appears to be experienced")
+            if "error" in content.lower() or "problem" in content.lower():
+                context_parts.append("User is troubleshooting an issue")
+    
+    return "; ".join(context_parts) if context_parts else "No specific context detected"
 
 
-def analyze_user_goal(goal: str) -> Dict[str, Any]:
-    """Analyze the user's goal to determine required actions and tools."""
-    goal_lower = goal.lower()
+def _build_intelligent_planning_context(user_message: str, conversation_context: str) -> str:
+    """Build rich context for intelligent planning."""
     
-    analysis = {
-        "requires_search": False,
-        "requires_project_info": False,
-        "requires_code_generation": False,
-        "requires_asset_creation": False,
-        "requires_scene_work": False,
-        "requires_compilation": False,
-        "requires_config_changes": False,
-        "main_action_type": "unknown"
-    }
-    
-    # Determine what the user wants to do
-    if any(word in goal_lower for word in ["create script", "write script", "make script", "player controller", "fps controller", "movement script"]):
-        analysis.update({
-            "requires_search": True,
-            "requires_project_info": True,
-            "requires_code_generation": True,
-            "requires_asset_creation": True,
-            "requires_compilation": True,
-            "main_action_type": "script_creation"
-        })
-    
-    elif any(word in goal_lower for word in ["create prefab", "make prefab", "build prefab"]):
-        analysis.update({
-            "requires_project_info": True,
-            "requires_asset_creation": True,
-            "main_action_type": "prefab_creation"
-        })
-    
-    elif any(word in goal_lower for word in ["create scene", "new scene", "build level", "make level"]):
-        analysis.update({
-            "requires_project_info": True,
-            "requires_scene_work": True,
-            "main_action_type": "scene_creation"
-        })
-    
-    elif any(word in goal_lower for word in ["setup", "configure", "settings", "build settings"]):
-        analysis.update({
-            "requires_project_info": True,
-            "requires_config_changes": True,
-            "main_action_type": "configuration"
-        })
-    
-    elif any(word in goal_lower for word in ["how to", "tutorial", "learn", "guide", "best practices"]):
-        analysis.update({
-            "requires_search": True,
-            "requires_project_info": True,
-            "main_action_type": "tutorial_help"
-        })
-    
-    elif any(word in goal_lower for word in ["debug", "fix", "error", "problem", "issue"]):
-        analysis.update({
-            "requires_project_info": True,
-            "requires_compilation": True,
-            "main_action_type": "debugging"
-        })
-    
-    else:
-        analysis.update({
-            "requires_search": True,
-            "requires_project_info": True,
-            "main_action_type": "general_help"
-        })
-    
-    return analysis
+    return f"""PLANNING REQUEST ANALYSIS:
+User Request: "{user_message}"
+Conversation Context: {conversation_context}
 
+INTELLIGENT PLANNING GUIDELINES:
+1. **Analyze the specific request** - Don't use templates, understand what the user actually needs
+2. **Consider user expertise** - Adapt complexity based on their apparent skill level
+3. **Optimize for efficiency** - Sometimes 2 steps are better than 5, sometimes 6 steps are needed
+4. **Think about dependencies** - Some steps naturally depend on others, some can be parallel
+5. **Consider alternatives** - There might be multiple valid approaches, choose the best one
+6. **Factor in context** - Existing project? Learning exercise? Debugging? Each needs different approach
 
-def create_tool_aware_plan(goal: str, analysis: Dict[str, Any]) -> List[PlanStep]:
-    """Create a plan using only available tools based on goal analysis."""
-    steps = []
-    
-    action_type = analysis["main_action_type"]
-    
-    if action_type == "script_creation":
-        if analysis["requires_search"]:
-            steps.append(PlanStep(
-                description=f"Search for current best practices and tutorials for Unity script development related to: {goal}",
-                tool_name="search",  # Type-safe! Must be one of the ToolName literals
-                success_criteria="Found relevant, current information about Unity scripting best practices"
-            ))
-        
-        steps.append(PlanStep(
-            description="Get current project information to understand the development environment and setup",
-            tool_name="get_project_info", 
-            success_criteria="Retrieved project structure, Unity version, and installed packages",
-            dependencies=[0] if steps else []
-        ))
-        
-        steps.append(PlanStep(
-            description="Get appropriate code snippets and templates for the requested script functionality",
-            tool_name="get_script_snippets",
-            success_criteria="Retrieved relevant code templates that match the requirements",
-            dependencies=list(range(len(steps)))
-        ))
-        
-        steps.append(PlanStep(
-            description="Write the script file in the project with the generated code",
-            tool_name="write_file",
-            success_criteria="Successfully created and wrote the script file to the project",
-            dependencies=list(range(len(steps)))
-        ))
-        
-        steps.append(PlanStep(
-            description="Compile and test the script to ensure it works correctly",
-            tool_name="compile_and_test",
-            success_criteria="Script compiles without errors and integrates properly",
-            dependencies=list(range(len(steps)))
-        ))
-    
-    elif action_type == "prefab_creation":
-        steps.append(PlanStep(
-            description="Get current project information to understand available resources",
-            tool_name="get_project_info",
-            success_criteria="Retrieved project structure and available assets"
-        ))
-        
-        steps.append(PlanStep(
-            description=f"Create the requested prefab asset: {goal}",
-            tool_name="create_asset",
-            success_criteria="Successfully created prefab with appropriate components",
-            dependencies=[0]
-        ))
-    
-    elif action_type == "scene_creation":
-        steps.append(PlanStep(
-            description="Get project information to understand current scene structure",
-            tool_name="get_project_info",
-            success_criteria="Retrieved current project and scene information"
-        ))
-        
-        steps.append(PlanStep(
-            description=f"Create and set up the new scene: {goal}",
-            tool_name="scene_management",
-            success_criteria="Successfully created new scene with basic setup",
-            dependencies=[0]
-        ))
-    
-    elif action_type == "configuration":
-        steps.append(PlanStep(
-            description="Get current project configuration to understand what needs to be changed",
-            tool_name="get_project_info",
-            success_criteria="Retrieved current project settings and configuration"
-        ))
-        
-        steps.append(PlanStep(
-            description=f"Apply the requested configuration changes: {goal}",
-            tool_name="edit_project_config",
-            success_criteria="Successfully updated project configuration settings",
-            dependencies=[0]
-        ))
-        
-        steps.append(PlanStep(
-            description="Test the configuration changes by compiling the project",
-            tool_name="compile_and_test",
-            success_criteria="Project compiles successfully with new configuration",
-            dependencies=[1]
-        ))
-    
-    elif action_type == "tutorial_help":
-        steps.append(PlanStep(
-            description=f"Search for current tutorials and documentation about: {goal}",
-            tool_name="search",
-            success_criteria="Found comprehensive, up-to-date tutorial information"
-        ))
-        
-        steps.append(PlanStep(
-            description="Get project information to provide context-specific guidance",
-            tool_name="get_project_info",
-            success_criteria="Retrieved project details to tailor advice appropriately",
-            dependencies=[0]
-        ))
-        
-        if any(word in goal.lower() for word in ["script", "code", "programming", "controller", "system"]):
-            steps.append(PlanStep(
-                description="Get relevant code examples and snippets for hands-on learning",
-                tool_name="get_script_snippets",
-                success_criteria="Retrieved practical code examples for the tutorial topic",
-                dependencies=list(range(len(steps)))
-            ))
-    
-    elif action_type == "debugging":
-        steps.append(PlanStep(
-            description="Get current project information to understand the problem context",
-            tool_name="get_project_info",
-            success_criteria="Retrieved project structure and current state information"
-        ))
-        
-        steps.append(PlanStep(
-            description="Compile and test the project to identify specific issues",
-            tool_name="compile_and_test",
-            success_criteria="Identified compilation errors, warnings, or runtime issues",
-            dependencies=[0]
-        ))
-        
-        steps.append(PlanStep(
-            description="Search for solutions to the identified problems",
-            tool_name="search",
-            success_criteria="Found relevant troubleshooting information and solutions",
-            dependencies=[1]
-        ))
-    
-    else:  # general_help
-        steps.append(PlanStep(
-            description=f"Search for information and guidance about: {goal}",
-            tool_name="search",
-            success_criteria="Found relevant information about the requested topic"
-        ))
-        
-        steps.append(PlanStep(
-            description="Get project context to provide personalized advice",
-            tool_name="get_project_info",
-            success_criteria="Retrieved project information to give specific guidance",
-            dependencies=[0]
-        ))
-    
-    return steps
+TOOL SELECTION REASONING:
+- Don't always start with search - sometimes you can go straight to implementation
+- Don't always get project info first - depends on what you're doing
+- Don't always compile at the end - sometimes it's not needed
+- Think about what the user ACTUALLY needs, not what the template says
 
+FLEXIBLE APPROACH EXAMPLES:
+- Simple script request: Might just need get_script_snippets → write_file
+- Complex system: Might need search → get_project_info → multiple create_asset → write_file → compile_and_test
+- Debugging: Might need get_project_info → compile_and_test → search → write_file
+- Learning request: Might need search → get_script_snippets with detailed explanations
 
-def create_smart_default_plan(user_goal: str) -> List[PlanStep]:
-    """Create an intelligent default plan based on the user's goal."""
-    analysis = analyze_user_goal(user_goal)
-    return create_tool_aware_plan(user_goal, analysis)
+CREATE A PLAN THAT MAKES SENSE FOR THIS SPECIFIC REQUEST, NOT A GENERIC TEMPLATE."""
 
 
 async def plan(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Enhanced planning with rich introductory narration."""
+    """Intelligent planning with true LLM reasoning and contextual adaptation."""
     context = runtime.context
     
     # Use planning model or fall back to main model
@@ -291,101 +126,105 @@ async def plan(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     if not user_message:
         return {"messages": [AIMessage(content="I didn't receive a clear request. Could you please let me know what you'd like help with?")]}
     
-    # Analyze the goal to understand what tools we'll need
-    analysis = analyze_user_goal(user_message)
+    # Extract conversation context for intelligent planning
+    conversation_context = _extract_conversation_context(state)
     
-    # Create action guidance
-    action_guidance = ""
-    if analysis["main_action_type"] == "script_creation":
-        action_guidance = """
-For script creation tasks:
-1. Start with 'search' to find current best practices
-2. Use 'get_project_info' to understand the Unity setup
-3. Use 'get_script_snippets' to get code templates
-4. Use 'write_file' to create the actual script
-5. Use 'compile_and_test' to verify it works"""
+    # Build intelligent planning context
+    planning_context = _build_intelligent_planning_context(user_message, conversation_context)
     
-    elif analysis["main_action_type"] == "tutorial_help":
-        action_guidance = """
-For tutorial/learning tasks:
-1. Use 'search' to find current tutorials and documentation
-2. Use 'get_project_info' to provide context-specific advice
-3. Optionally use 'get_script_snippets' for code examples"""
-    
-    # Enhanced planning prompt for structured output
-    planning_request = f"""Create a tactical Unity/game development plan for: "{user_message}"
+    # TRULY INTELLIGENT PLANNING PROMPT - No templates, pure reasoning
+    intelligent_planning_request = f"""{planning_context}
 
-VALID TOOL NAMES: search, get_project_info, create_asset, write_file, edit_project_config, get_script_snippets, compile_and_test, scene_management
+Now create an intelligent, context-aware plan. Consider:
 
-{action_guidance}
+SPECIFIC REQUEST ANALYSIS:
+- What exactly is the user trying to accomplish?
+- What's the most efficient path to get there?
+- What level of detail/explanation do they need?
+- Are there any shortcuts or optimizations possible?
 
-Create a plan that uses ONLY the available tools above. Every step MUST specify a valid tool_name from the list.
-Focus on 2-5 logical steps that solve the user's request effectively."""
-    
-    # Structure messages for optimal caching - static content first
-    # System prompt with tools info - this will be cached
-    static_system_content = f"""{PLANNING_PROMPT}
+TOOL STRATEGY REASONING:
+- Which tools are essential vs nice-to-have for this request?
+- What's the logical dependency chain?
+- Can any steps be combined or eliminated?
+- Should I prioritize speed, thoroughness, or education?
 
-Your available game development tools:
-{STATIC_TOOLS_DESCRIPTION}
+CONTEXTUAL ADAPTATIONS:
+- Does this user seem to need detailed guidance or quick results?
+- Is this a one-off task or part of a larger learning journey?
+- Are there project-specific considerations I should account for?
 
-IMPORTANT: Every step must use a specific tool from your toolkit. No generic or non-executable steps.
+Create a smart, efficient plan that solves the user's actual need rather than following a rigid template."""
 
-Plan Structure Guidelines:
-- Start with research (search) for best practices and current approaches
-- Gather project context (get_project_info) to understand the current setup
-- Use code generation tools (get_script_snippets) for implementation details
-- Create/modify assets (create_asset, write_file) for concrete deliverables
-- Test implementations (compile_and_test) to ensure quality
-- Configure settings (edit_project_config) when needed
-- Manage scenes (scene_management) for level/world changes
+    # CORRECTED SYSTEM CONTENT for intelligent planning
+    intelligent_system_content = f"""You are an expert Unity/game development planning assistant with access to these tools:
 
-Create plans that result in working game features, not just documentation."""
+{COMPREHENSIVE_TOOLS_DESCRIPTION}
 
-    # Construct messages with static content first for caching
+TOOL USAGE CLARIFICATION:
+**get_script_snippets**: Reads and extracts code from the USER'S existing Unity project scripts
+- Use when you need to see what code the user already has
+- Use to understand current implementations before modifying them
+- Use to find existing patterns in their project to build upon
+- NOT for getting templates - this reads their actual codebase
+
+**search**: Research external Unity documentation, tutorials, best practices
+- Use for finding implementation approaches for new features
+- Use for troubleshooting and learning about Unity systems
+- Use when you need information not in the user's project
+
+**write_file**: Create new scripts or modify existing ones
+- Use after understanding current code (via get_script_snippets)
+- Use to implement new features or fix existing code
+
+INTELLIGENT PLANNING PRINCIPLES:
+- **To understand existing code**: get_script_snippets → analyze current implementation
+- **To learn new approaches**: search → research implementation methods  
+- **To build on existing code**: get_script_snippets → write_file (modification)
+- **To create new features**: search → write_file (new implementation)
+
+PLANNING EXAMPLES:
+- "Fix player movement" → get_script_snippets → analyze current code → write_file
+- "Add grass physics" → search → research approaches → write_file  
+- "Improve existing UI" → get_script_snippets → see current UI code → write_file
+- "Create AI enemy" → search → learn AI patterns → write_file
+
+CREATE PLANS BASED ON WHETHER YOU NEED TO READ EXISTING CODE OR RESEARCH NEW SOLUTIONS."""
+
+    # Structure messages for intelligent planning
     messages = [
-        {"role": "system", "content": static_system_content},
-        {"role": "user", "content": planning_request}
+        {"role": "system", "content": intelligent_system_content},
+        {"role": "user", "content": intelligent_planning_request}
     ]
     
     try:
-        # Use structured output to force proper JSON schema with type constraints
+        # Use structured output for reliable planning but with intelligent reasoning
         structured_model = model.with_structured_output(StructuredExecutionPlan)
         structured_response = await structured_model.ainvoke(messages)
         
         # Convert structured response to internal format
-        # NO MORE VALIDATION NEEDED! Type constraints guarantee valid tool names
         steps = []
         for step_data in structured_response.steps:
             step = PlanStep(
                 description=step_data.description,
                 success_criteria=step_data.success_criteria,
-                tool_name=step_data.tool_name,  # Already type-safe!
+                tool_name=step_data.tool_name,
                 dependencies=step_data.dependencies
             )
             steps.append(step)
         
         plan = ExecutionPlan(
             goal=structured_response.goal,
-            steps=steps
+            steps=steps,
+            metadata={
+                "planning_mode": "intelligent", 
+                "context_considered": conversation_context,
+                "original_request": user_message
+            }
         )
         
-        # CREATE RICH PLANNING NARRATION
-        planning_narration = narration_engine.create_planning_narration(plan, user_message)
-        
-        # Add streaming UI updates if supported
-        if context.runtime_metadata.get("supports_streaming"):
-            # Import here to avoid circular imports
-            from react_agent.narration import StreamingNarrator
-            streaming_narrator = StreamingNarrator()
-            
-            for i, step in enumerate(plan.steps):
-                ui_update = streaming_narrator.create_inline_update(
-                    f"📌 Step {i+1}: {step.description}",
-                    style="info"
-                )
-                if hasattr(runtime, 'push_ui_message'):
-                    runtime.push_ui_message(ui_update)
+        # CREATE CONTEXTUAL PLANNING NARRATION
+        planning_narration = _create_intelligent_planning_narration(plan, user_message, conversation_context)
         
         return {
             "plan": plan,
@@ -395,15 +234,15 @@ Create plans that result in working game features, not just documentation."""
         }
     
     except Exception as e:
-        # Fallback to analysis-based planning if structured output fails
-        fallback_steps = create_tool_aware_plan(user_message, analysis)
+        # Fallback to minimal intelligent planning
+        fallback_steps = _create_minimal_intelligent_plan(user_message, conversation_context)
         fallback_plan = ExecutionPlan(
             goal=user_message,
-            steps=fallback_steps
+            steps=fallback_steps,
+            metadata={"planning_mode": "intelligent_fallback"}
         )
         
-        fallback_narration = (f"I'll help you with **{user_message}**.\n\n"
-                             f"Let me work through this systematically using my Unity development tools.")
+        fallback_narration = f"I'll approach this intelligently based on your specific need: **{user_message}**"
         
         return {
             "plan": fallback_plan,
@@ -411,3 +250,149 @@ Create plans that result in working game features, not just documentation."""
             "retry_count": 0,
             "messages": [AIMessage(content=fallback_narration)]
         }
+
+
+def _create_intelligent_planning_narration(plan: ExecutionPlan, user_message: str, context: str) -> str:
+    """Create contextual planning narration that explains the intelligent reasoning."""
+    
+    narration = f"I'll help you with **{user_message}** using a tailored approach.\n\n"
+    
+    # Explain the reasoning based on plan characteristics
+    step_count = len(plan.steps)
+    
+    if step_count == 1:
+        narration += "This looks like a straightforward request that I can handle directly:\n"
+    elif step_count == 2:
+        narration += "I'll take a focused two-step approach:\n"
+    elif step_count <= 4:
+        narration += f"I've designed a {step_count}-step plan that balances efficiency with thoroughness:\n"
+    else:
+        narration += f"This requires a comprehensive {step_count}-step approach to ensure quality:\n"
+    
+    # List the steps with reasoning
+    for i, step in enumerate(plan.steps, 1):
+        narration += f"\n{i}. **{step.description}**"
+        
+        # Add contextual reasoning for why this step makes sense
+        if step.tool_name == "search" and i > 1:
+            narration += " (research needed for this specific implementation)"
+        elif step.tool_name == "get_project_info" and i > 2:
+            narration += " (checking your project setup for compatibility)"
+        elif step.tool_name == "get_script_snippets" and "search" not in [s.tool_name for s in plan.steps[:i-1]]:
+            narration += " (I have the code patterns you need)"
+        elif step.tool_name == "compile_and_test" and step_count > 3:
+            narration += " (ensuring everything integrates properly)"
+    
+    # Add context-aware conclusion
+    if "beginner" in context.lower():
+        narration += "\n\nI'll provide detailed explanations since you're learning."
+    elif "experienced" in context.lower():
+        narration += "\n\nI'll focus on efficient implementation given your experience."
+    elif "troubleshooting" in context.lower():
+        narration += "\n\nI'll prioritize identifying and fixing the issue quickly."
+    
+    return narration
+
+
+def _create_minimal_intelligent_plan(user_message: str, context: str) -> List[PlanStep]:
+    """Create a minimal intelligent plan when structured planning fails."""
+    
+    message_lower = user_message.lower()
+    
+    # INTELLIGENT analysis rather than rigid templates
+    
+    # Direct information requests
+    if any(starter in message_lower for starter in ["what is", "how does", "explain", "tell me about"]):
+        return [
+            PlanStep(
+                description=f"Research and provide comprehensive information about: {user_message}",
+                tool_name="search",
+                success_criteria="Found relevant, detailed information to answer the question"
+            )
+        ]
+    
+    # Quick implementation requests
+    if any(word in message_lower for word in ["simple", "basic", "quick"]) and "script" in message_lower:
+        return [
+            PlanStep(
+                description="Get proven code template for the requested functionality",
+                tool_name="get_script_snippets", 
+                success_criteria="Retrieved appropriate code template"
+            ),
+            PlanStep(
+                description="Create the script file with the implementation",
+                tool_name="write_file",
+                success_criteria="Successfully created working script file",
+                dependencies=[0]
+            )
+        ]
+    
+    # Debugging/problem-solving requests
+    if any(word in message_lower for word in ["error", "problem", "fix", "debug", "broken"]):
+        return [
+            PlanStep(
+                description="Analyze current project state to identify the issue",
+                tool_name="get_project_info",
+                success_criteria="Identified project configuration and potential issues"
+            ),
+            PlanStep(
+                description="Test compilation to pinpoint specific errors",
+                tool_name="compile_and_test",
+                success_criteria="Identified specific compilation or runtime issues", 
+                dependencies=[0]
+            ),
+            PlanStep(
+                description="Research solutions for the identified problems",
+                tool_name="search",
+                success_criteria="Found relevant troubleshooting information",
+                dependencies=[1]
+            )
+        ]
+    
+    # Complex creation requests  
+    if any(word in message_lower for word in ["complete", "full", "comprehensive", "system"]):
+        return [
+            PlanStep(
+                description="Research current best practices and approaches",
+                tool_name="search", 
+                success_criteria="Found comprehensive implementation guidance"
+            ),
+            PlanStep(
+                description="Understand project context and requirements",
+                tool_name="get_project_info",
+                success_criteria="Analyzed project setup and compatibility requirements"
+            ),
+            PlanStep(
+                description="Get detailed code examples and templates",
+                tool_name="get_script_snippets",
+                success_criteria="Retrieved comprehensive code patterns",
+                dependencies=[0, 1]
+            ),
+            PlanStep(
+                description="Implement the complete solution",
+                tool_name="write_file", 
+                success_criteria="Created working implementation file",
+                dependencies=[2]
+            ),
+            PlanStep(
+                description="Test and validate the implementation", 
+                tool_name="compile_and_test",
+                success_criteria="Verified solution works correctly",
+                dependencies=[3]
+            )
+        ]
+    
+    # Default intelligent approach
+    return [
+        PlanStep(
+            description=f"Analyze and understand the specific requirements for: {user_message}",
+            tool_name="get_project_info",
+            success_criteria="Gathered relevant context and project information"
+        ),
+        PlanStep(
+            description="Implement the requested functionality efficiently", 
+            tool_name="get_script_snippets" if "code" in message_lower or "script" in message_lower else "search",
+            success_criteria="Provided working solution for the request",
+            dependencies=[0]
+        )
+    ]
