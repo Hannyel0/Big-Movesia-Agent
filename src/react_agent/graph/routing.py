@@ -1,12 +1,53 @@
-"""Enhanced routing functions for the ReAct agent graph with complexity-based routing."""
+"""Simplified routing functions that prioritize completion detection."""
 
 from __future__ import annotations
-
 from typing import Literal
-
 from langchain_core.messages import AIMessage
-
 from react_agent.state import State
+
+
+def route_after_assess(state: State) -> Literal["advance_step", "increment_retry", "error_recovery", "finish"]:
+    """Simplified routing with absolute completion priority."""
+    
+    # Safety checks
+    if not state.current_assessment:
+        return "finish"
+    
+    if not state.plan or not state.plan.steps:
+        return "finish"
+    
+    # ABSOLUTE PRIORITY: Check if we're on or past the last step
+    last_step_index = len(state.plan.steps) - 1
+    is_on_or_past_last_step = state.step_index >= last_step_index
+    
+    # If we're on the last step AND it succeeded, ALWAYS finish
+    if is_on_or_past_last_step and state.current_assessment.outcome == "success":
+        return "finish"
+    
+    # If we somehow went past the last step, force finish
+    if state.step_index >= len(state.plan.steps):
+        return "finish"
+    
+    # Check for error recovery need (only if not completing)
+    if getattr(state, "needs_error_recovery", False) or state.runtime_metadata.get("needs_error_recovery"):
+        return "error_recovery"
+    
+    # Handle success on non-final steps
+    if state.current_assessment.outcome == "success":
+        return "advance_step"
+    
+    # Handle retry logic
+    if state.current_assessment.outcome == "retry":
+        if state.retry_count >= state.max_retries_per_step:
+            return "error_recovery"
+        return "increment_retry"
+    
+    # Handle blocked steps
+    if state.current_assessment.outcome == "blocked":
+        return "error_recovery"
+    
+    # Fallback to finish
+    return "finish"
 
 
 def should_continue(state: State) -> Literal["classify", "act"]:
@@ -54,40 +95,18 @@ def route_after_act(state: State) -> Literal["tools", "assess"]:
     return "assess"
 
 
-def route_after_assess(state: State) -> Literal["advance_step", "increment_retry", "repair", "finish"]:
-    """Route based on assessment outcome."""
-    if not state.current_assessment:
-        return "finish"
-    
-    if state.current_assessment.outcome == "success":
-        next_index = state.step_index + 1
-        if state.plan and next_index < len(state.plan.steps):
-            return "advance_step"
-        return "finish"
-    
-    elif state.current_assessment.outcome == "retry":
-        if state.retry_count >= state.max_retries_per_step:
-            return "repair"
-        return "increment_retry"
-    
-    else:  # blocked
-        return "repair"
-
-
-def route_after_repair(state: State) -> Literal["act", "finish"]:
-    """After repair, continue with action or finish if too many revisions."""
-    if state.plan_revision_count >= 2:
-        return "finish"
-    return "act"
+def route_after_error_recovery(state: State) -> Literal["act", "finish"]:
+    """Route after error recovery execution."""
+    if state.plan and state.step_index < len(state.plan.steps):
+        return "act"
+    return "finish"
 
 
 def route_classification_aware(state: State) -> Literal["direct_act", "simple_plan", "plan", "act"]:
     """Unified routing function that considers both classification and plan state."""
-    # If we have a plan, proceed with normal execution
     if state.plan is not None:
         return "act"
     
-    # No plan, check classification
     complexity_level = state.runtime_metadata.get("complexity_level")
     
     if complexity_level == "direct":
@@ -97,5 +116,4 @@ def route_classification_aware(state: State) -> Literal["direct_act", "simple_pl
     elif complexity_level == "complex_plan":
         return "plan"
     else:
-        # No classification yet, shouldn't happen but fallback to classification
-        return "plan"  # Conservative fallback
+        return "plan"

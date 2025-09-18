@@ -1,8 +1,12 @@
+"""Enhanced tools for the ReAct agent with sophisticated failure simulation and attempt tracking."""
+
 from __future__ import annotations
 from typing import Literal, Optional, Dict, Any, List
 import asyncio
 import json
+import os
 from datetime import datetime, UTC
+from collections import defaultdict
 
 from langchain_tavily import TavilySearch
 from langchain_core.tools import tool
@@ -11,24 +15,288 @@ from langgraph.runtime import get_runtime
 from react_agent.context import Context
 
 
+class EnhancedFailureTestConfig:
+    """Enhanced configuration for controlled failure testing with attempt tracking."""
+
+    def __init__(self):
+        self.enabled = os.getenv("TEST_FAILURES_ENABLED", "false").lower() == "true"
+        self.failure_patterns = self._load_failure_patterns()
+        # Track attempts per tool per failure pattern
+        self.attempt_counters: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        # Track which tools have been "fixed" (exceeded max failures)
+        self.fixed_tools: Dict[str, set] = defaultdict(set)
+
+    def _load_failure_patterns(self) -> Dict[str, Dict[str, Any]]:
+        """Load failure patterns with configurable failure counts."""
+        return {
+            # Configuration errors - fail first 2 times
+            "config_error": {
+                "tools": ["edit_project_config", "get_project_info"],
+                "error": "Configuration file corrupted or inaccessible",
+                "category": "configuration_error",
+                "recoverable": True,
+                "max_failures": 2,  # NEW: Max times this can fail before succeeding
+                "recovery_message": "Configuration has been restored and is now accessible"
+            },
+
+            # Missing dependency errors - fail first time only
+            "missing_dependency": {
+                "tools": ["write_file", "compile_and_test"],
+                "error": "Required Unity package 'com.unity.inputsystem' not found in project",
+                "category": "dependency_missing",
+                "recoverable": True,
+                "max_failures": 1,  # Fail only once
+                "recovery_message": "Required Unity package has been installed and is now available"
+            },
+
+            # Resource not found errors - fail first 3 times
+            "resource_missing": {
+                "tools": ["get_script_snippets", "scene_management"],
+                "error": "Specified script file 'PlayerController.cs' does not exist in project",
+                "category": "resource_not_found",
+                "recoverable": True,
+                "max_failures": 3,
+                "recovery_message": "Missing script files have been located and are now accessible"
+            },
+
+            # Permission/access errors - always fail (unrecoverable)
+            "permission_error": {
+                "tools": ["write_file", "edit_project_config"],
+                "error": "Access denied: insufficient permissions to modify project files",
+                "category": "permission_error",
+                "recoverable": False,
+                "max_failures": -1,  # -1 means always fail
+                "recovery_message": None
+            },
+
+            # Build/compilation errors - fail first 2 times
+            "build_error": {
+                "tools": ["compile_and_test", "write_file"],
+                "error": "Compilation failed: 3 errors, 7 warnings in PlayerController.cs",
+                "category": "build_error",
+                "recoverable": True,
+                "max_failures": 2,
+                "recovery_message": "Compilation errors have been resolved - build is now clean"
+            },
+
+            # Network/external service errors - fail first time only
+            "network_error": {
+                "tools": ["search"],
+                "error": "Network timeout: Unable to connect to search service",
+                "category": "network_error",
+                "recoverable": True,
+                "max_failures": 1,
+                "recovery_message": "Network connection has been restored"
+            },
+
+            # Invalid parameter errors - fail first time only
+            "invalid_parameter": {
+                "tools": ["create_asset", "scene_management"],
+                "error": "Invalid asset type 'InvalidType' - must be one of: script, prefab, material, scene",
+                "category": "invalid_parameter",
+                "recoverable": True,
+                "max_failures": 1,
+                "recovery_message": "Parameter validation has been updated - invalid parameters are now handled correctly"
+            },
+
+            # Project state errors - fail first 2 times
+            "project_state_error": {
+                "tools": ["get_project_info", "scene_management", "compile_and_test"],
+                "error": "Unity Editor is not running or project is not loaded",
+                "category": "project_state_error",
+                "recoverable": True,
+                "max_failures": 2,
+                "recovery_message": "Unity Editor has been started and project is now loaded"
+            }
+        }
+
+    def should_fail(self, tool_name: str) -> Optional[Dict[str, Any]]:
+        """Determine if a tool should fail based on attempt tracking."""
+        if not self.enabled:
+            return None
+
+        # Check environment variable for specific tool failure
+        specific_failure = os.getenv(f"FAIL_{tool_name.upper()}")
+        if specific_failure:
+            pattern_name = specific_failure
+        else:
+            # Check for general failure trigger
+            failure_trigger = os.getenv("TRIGGER_FAILURE")
+            if not failure_trigger:
+                return None
+            pattern_name = failure_trigger
+
+        # Find matching failure pattern
+        if pattern_name not in self.failure_patterns:
+            return None
+            
+        pattern = self.failure_patterns[pattern_name]
+        if tool_name not in pattern["tools"]:
+            return None
+
+        # Check if this tool+pattern combination has already been "fixed"
+        if pattern_name in self.fixed_tools[tool_name]:
+            return None  # Don't fail anymore - it's been "fixed"
+
+        max_failures = pattern["max_failures"]
+        
+        # Always fail if max_failures is -1 (unrecoverable)
+        if max_failures == -1:
+            current_attempts = self.attempt_counters[tool_name][pattern_name]
+            self.attempt_counters[tool_name][pattern_name] = current_attempts + 1
+            return {
+                "should_fail": True,
+                "error_message": pattern["error"],
+                "error_category": pattern["category"],
+                "recoverable": pattern["recoverable"],
+                "attempt_count": current_attempts + 1,
+                "max_failures": max_failures,
+                "recovery_message": pattern["recovery_message"]
+            }
+
+        # Check current attempt count for recoverable errors
+        current_attempts = self.attempt_counters[tool_name][pattern_name]
+        
+        if current_attempts < max_failures:
+            # Still within failure limit - fail this time
+            self.attempt_counters[tool_name][pattern_name] = current_attempts + 1
+            return {
+                "should_fail": True,
+                "error_message": pattern["error"],
+                "error_category": pattern["category"],
+                "recoverable": pattern["recoverable"],
+                "attempt_count": current_attempts + 1,
+                "max_failures": max_failures,
+                "recovery_message": pattern["recovery_message"]
+            }
+        else:
+            # Exceeded failure limit - mark as "fixed" and succeed
+            self.fixed_tools[tool_name].add(pattern_name)
+            return {
+                "should_fail": False,  # SUCCESS after being "fixed"
+                "was_fixed": True,
+                "recovery_message": pattern["recovery_message"],
+                "attempt_count": current_attempts + 1,
+                "max_failures": max_failures
+            }
+
+    def reset_failures(self, tool_name: Optional[str] = None, pattern_name: Optional[str] = None):
+        """Reset failure counters for testing purposes."""
+        if tool_name and pattern_name:
+            # Reset specific tool+pattern combination
+            if tool_name in self.attempt_counters:
+                self.attempt_counters[tool_name][pattern_name] = 0
+            if tool_name in self.fixed_tools:
+                self.fixed_tools[tool_name].discard(pattern_name)
+        elif tool_name:
+            # Reset all patterns for a specific tool
+            self.attempt_counters[tool_name].clear()
+            self.fixed_tools[tool_name].clear()
+        else:
+            # Reset everything
+            self.attempt_counters.clear()
+            self.fixed_tools.clear()
+
+    def get_failure_stats(self) -> Dict[str, Any]:
+        """Get current failure statistics for debugging."""
+        return {
+            "attempt_counters": dict(self.attempt_counters),
+            "fixed_tools": {tool: list(patterns) for tool, patterns in self.fixed_tools.items()},
+            "enabled_patterns": list(self.failure_patterns.keys()),
+            "active_trigger": os.getenv("TRIGGER_FAILURE"),
+            "tool_specific_triggers": {
+                key: value for key, value in os.environ.items() 
+                if key.startswith("FAIL_")
+            }
+        }
+
+# Global enhanced failure config instance
+failure_config = EnhancedFailureTestConfig()
+
+
+def _simulate_failure(tool_name: str, failure_info: Dict[str, Any]) -> Dict[str, Any]:
+    """Simulate a tool failure with realistic error information."""
+    base_result = {
+        "success": False,
+        "error": failure_info["error_message"],
+        "error_category": failure_info["error_category"],
+        "recoverable": failure_info["recoverable"],
+        "tool_name": tool_name,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "attempt_count": failure_info["attempt_count"]
+    }
+
+    # Add tool-specific failure details
+    if tool_name == "compile_and_test":
+        base_result.update({
+            "compilation_errors": [
+                {
+                    "file": "Assets/Scripts/PlayerController.cs",
+                    "line": 23,
+                    "error": "CS0103: The name 'InputSystem' does not exist in the current context"
+                },
+                {
+                    "file": "Assets/Scripts/PlayerController.cs",
+                    "line": 45,
+                    "error": "CS0246: The type or namespace name 'CharacterController' could not be found"
+                }
+            ],
+            "warnings": [
+                {
+                    "file": "Assets/Scripts/GameManager.cs",
+                    "line": 12,
+                    "warning": "CS0649: Field 'GameManager.playerScore' is never assigned to"
+                }
+            ]
+        })
+
+    elif tool_name == "write_file":
+        base_result.update({
+            "attempted_path": "Assets/Scripts/PlayerController.cs",
+            "file_size_attempted": 1247,
+            "partial_content_written": False
+        })
+
+    elif tool_name == "get_script_snippets":
+        base_result.update({
+            "searched_paths": [
+                "Assets/Scripts/",
+                "Assets/Standard Assets/",
+                "Packages/com.unity.standardassets/"
+            ],
+            "files_checked": 0,
+            "search_pattern": "movement, character controller"
+        })
+
+    elif tool_name == "scene_management":
+        base_result.update({
+            "attempted_scene": "MainScene.unity",
+            "attempted_action": "load_scene",
+            "current_scenes": []
+        })
+
+    elif tool_name == "search":
+        base_result.update({
+            "query": "Unity character controller tutorial",
+            "timeout_duration": "30 seconds",
+            "retry_attempts": 3
+        })
+
+    return base_result
+
+
 @tool
 async def search(query: str) -> Dict[str, Any]:
-    """Search for general web results about game development, Unity, Unreal Engine, and related topics.
-    
-    This function performs a search using the Tavily search engine, which provides
-    comprehensive, accurate, and trusted results. Particularly useful for finding
-    current game development tutorials, documentation, and best practices.
-    
-    Args:
-        query: The search query string
-    """
+    """Search for general web results about game development, Unity, Unreal Engine, and related topics."""
     try:
+        # Check for controlled failure with proper guard
+        failure_info = failure_config.should_fail("search")
+        if failure_info and failure_info.get("should_fail", False):
+            return _simulate_failure("search", failure_info)
+
         runtime = get_runtime(Context)
         timeout = runtime.context.tool_timeout_seconds
-        
-        # For testing, simulate successful search results instead of actual web search
-        # In production, you would use: wrapped = TavilySearch(max_results=runtime.context.max_search_results)
-        
+
         # Simulate realistic search results for testing
         simulated_results = [
             {
@@ -63,7 +331,15 @@ async def search(query: str) -> Dict[str, Any]:
             }
         ]
         
-        return {
+        # Handle recovery case or normal success
+        result = {
+            "success": True,
+            "result": simulated_results,
+            "query": query,
+            "total_results": len(simulated_results),
+            "timestamp": datetime.now(UTC).isoformat(),
+            "message": failure_info.get("recovery_message", f"Found {len(simulated_results)} relevant resources for '{query}'")
+        } if failure_info else {
             "success": True,
             "result": simulated_results,
             "query": query,
@@ -71,6 +347,7 @@ async def search(query: str) -> Dict[str, Any]:
             "timestamp": datetime.now(UTC).isoformat(),
             "message": f"Found {len(simulated_results)} relevant resources for '{query}'"
         }
+        return result
         
     except asyncio.TimeoutError:
         return {
@@ -88,12 +365,12 @@ async def search(query: str) -> Dict[str, Any]:
 
 @tool
 async def get_project_info() -> Dict[str, Any]:
-    """Get information about the current Unity or Unreal Engine project.
-    
-    Returns details about the active project including engine version, project structure,
-    installed packages, and current scene information.
-    """
-    # Simulated project info - in reality this would connect to the actual engine
+    """Get information about the current Unity or Unreal Engine project."""
+    # Check for controlled failure with proper guard
+    failure_info = failure_config.should_fail("get_project_info")
+    if failure_info and failure_info.get("should_fail", False):
+        return _simulate_failure("get_project_info", failure_info)
+
     return {
         "success": True,
         "engine": "Unity",
@@ -124,23 +401,21 @@ async def get_project_info() -> Dict[str, Any]:
             "platform": "Windows x64"
         },
         "timestamp": datetime.now(UTC).isoformat(),
-        "message": "Successfully retrieved project information"
+        "message": failure_info.get("recovery_message", "Successfully retrieved project information") if failure_info else "Successfully retrieved project information"
     }
 
 
 @tool
 async def create_asset(asset_type: str, name: str, properties: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Create a new asset in the game project.
-    
-    Args:
-        asset_type: Type of asset to create (script, prefab, material, scene, etc.)
-        name: Name for the new asset
-        properties: Optional properties/configuration for the asset
-    """
+    """Create a new asset in the game project."""
+    # Check for controlled failure with proper guard
+    failure_info = failure_config.should_fail("create_asset")
+    if failure_info and failure_info.get("should_fail", False):
+        return _simulate_failure("create_asset", failure_info)
+
     if not properties:
         properties = {}
-    
-    # Ensure we always return success=True for simulated asset creation
+
     asset_info = {
         "success": True,
         "asset_type": asset_type,
@@ -149,7 +424,7 @@ async def create_asset(asset_type: str, name: str, properties: Optional[Dict[str
         "created_at": datetime.now(UTC).isoformat(),
         "properties": properties,
         "status": "created",
-        "message": f"Successfully created {asset_type} '{name}'"
+        "message": failure_info.get("recovery_message", f"Successfully created {asset_type} '{name}'") if failure_info else f"Successfully created {asset_type} '{name}'"
     }
     
     # Add type-specific information
@@ -188,14 +463,12 @@ async def create_asset(asset_type: str, name: str, properties: Optional[Dict[str
 
 @tool
 async def write_file(file_path: str, content: str, file_type: str = "script") -> Dict[str, Any]:
-    """Write or create a file in the project (scripts, config files, etc.).
-    
-    Args:
-        file_path: Path where to create/write the file
-        content: Content to write to the file
-        file_type: Type of file (script, config, text, etc.)
-    """
-    # Simulated file writing - always successful
+    """Write or create a file in the project (scripts, config files, etc.)."""
+    # Check for controlled failure
+    failure_info = failure_config.should_fail("write_file")
+    if failure_info:
+        return _simulate_failure("write_file", failure_info)
+
     return {
         "success": True,
         "file_path": file_path,
@@ -211,13 +484,12 @@ async def write_file(file_path: str, content: str, file_type: str = "script") ->
 
 @tool
 async def edit_project_config(config_section: str, settings: Dict[str, Any]) -> Dict[str, Any]:
-    """Edit project configuration settings.
-    
-    Args:
-        config_section: Section of config to modify (build_settings, player_settings, quality, etc.)
-        settings: Dictionary of settings to update
-    """
-    # Simulated config editing - always successful
+    """Edit project configuration settings."""
+    # Check for controlled failure
+    failure_info = failure_config.should_fail("edit_project_config")
+    if failure_info:
+        return _simulate_failure("edit_project_config", failure_info)
+
     return {
         "success": True,
         "config_section": config_section,
@@ -234,21 +506,12 @@ async def edit_project_config(config_section: str, settings: Dict[str, Any]) -> 
 
 @tool
 async def get_script_snippets(category: str, language: str = "csharp") -> Dict[str, Any]:
-    """Get code snippets from the USER'S existing Unity project scripts.
-    
-    This tool reads and extracts snippets from scripts that already exist in the user's Unity project.
-    It searches through the user's actual codebase to find relevant code sections.
-    
-    Args:
-        category: Type of functionality to look for in user's scripts (movement, ui, physics, etc.)
-        language: Programming language to search for (csharp, javascript, etc.)
-        
-    Returns:
-        Dict containing actual code snippets found in the user's project scripts
-    """
-    # This would normally scan the user's actual Unity project files
-    # For simulation purposes, we'll return what would be found in a typical project
-    
+    """Get code snippets from the USER'S existing Unity project scripts."""
+    # Check for controlled failure
+    failure_info = failure_config.should_fail("get_script_snippets")
+    if failure_info:
+        return _simulate_failure("get_script_snippets", failure_info)
+
     # Simulate finding snippets in the user's existing scripts
     found_snippets = {
         "PlayerController.cs": {
@@ -342,13 +605,14 @@ public void AddScore(int points)
 
 @tool
 async def compile_and_test(target: str = "editor") -> Dict[str, Any]:
-    """Compile the project and run basic tests.
-    
-    Args:
-        target: Compilation target (editor, standalone, mobile, etc.)
-    """
-    # Simulated compilation process - always successful for testing
-    return {
+    """Compile the project and run basic tests."""
+    # Check for controlled failure with proper guard
+    failure_info = failure_config.should_fail("compile_and_test")
+    if failure_info and failure_info.get("should_fail", False):
+        return _simulate_failure("compile_and_test", failure_info)
+
+    # Handle recovery case or normal success
+    result = {
         "success": True,
         "target": target,
         "compilation_time": "12.3 seconds",
@@ -364,23 +628,22 @@ async def compile_and_test(target: str = "editor") -> Dict[str, Any]:
             ]
         },
         "timestamp": datetime.now(UTC).isoformat(),
-        "message": f"Successfully compiled for {target} with {2} warnings and {0} errors"
+        "message": failure_info.get("recovery_message", f"Successfully compiled for {target} with 2 warnings and 0 errors") if failure_info else f"Successfully compiled for {target} with 2 warnings and 0 errors"
     }
+    return result
 
 
 @tool
 async def scene_management(action: str, scene_name: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Manage scenes in the project (create, load, modify, etc.).
-    
-    Args:
-        action: Action to perform (create, load, save, add_object, remove_object, etc.)
-        scene_name: Name of the scene to work with
-        parameters: Additional parameters specific to the action
-    """
+    """Manage scenes in the project (create, load, modify, etc.)."""
+    # Check for controlled failure
+    failure_info = failure_config.should_fail("scene_management")
+    if failure_info:
+        return _simulate_failure("scene_management", failure_info)
+
     if not parameters:
         parameters = {}
-    
-    # Simulated scene management - always successful
+
     result = {
         "success": True,
         "action": action,
@@ -494,7 +757,36 @@ TOOL_METADATA = {
 }
 
 
-# Utility function to get available tool names for type validation
 def get_available_tool_names() -> List[str]:
     """Get list of available tool names for validation."""
     return [tool.name for tool in TOOLS]
+
+
+# Testing utilities
+def enable_failure_testing():
+    """Enable failure testing mode."""
+    failure_config.enabled = True
+    os.environ["TEST_FAILURES_ENABLED"] = "true"
+
+
+def disable_failure_testing():
+    """Disable failure testing mode."""
+    failure_config.enabled = False
+    os.environ["TEST_FAILURES_ENABLED"] = "false"
+
+
+def trigger_specific_failure(failure_type: str):
+    """Trigger a specific failure type for testing."""
+    os.environ["TRIGGER_FAILURE"] = failure_type
+
+
+def trigger_tool_failure(tool_name: str, failure_type: str):
+    """Trigger failure for a specific tool."""
+    os.environ[f"FAIL_{tool_name.upper()}"] = failure_type
+
+
+def clear_failure_triggers():
+    """Clear all failure triggers."""
+    failure_vars = [key for key in os.environ if key.startswith("FAIL_") or key == "TRIGGER_FAILURE"]
+    for var in failure_vars:
+        del os.environ[var]

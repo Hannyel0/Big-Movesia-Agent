@@ -1,53 +1,56 @@
-"""Progress node for the ReAct agent."""
+"""Simplified progress node with absolute bounds checking."""
 
 from __future__ import annotations
-
 from typing import Any, Dict
-
 from langchain_core.messages import AIMessage
 from langgraph.runtime import Runtime
-
 from react_agent.context import Context
-from react_agent.state import (
-    ExecutionPlan,
-    PlanStep,
-    State,
-    StepStatus,
-)
+from react_agent.state import ExecutionPlan, PlanStep, State, StepStatus
 
 
-async def advance_step(
-    state: State,
-    runtime: Runtime[Context]
-) -> Dict[str, Any]:
-    """Advance to the next step with progress update."""
-    if not state.plan:
-        return {}
+async def advance_step(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
+    """Advance to next step with absolute bounds checking and completion detection."""
     
-    # Add current step to completed steps
+    # Basic validation
+    if not state.plan or not state.plan.steps:
+        return {"messages": [AIMessage(content="ERROR: No plan to advance.")]}
+    
+    # Bounds checking
+    if state.step_index < 0:
+        return {"messages": [AIMessage(content="ERROR: Invalid negative step index.")]}
+    
+    if state.step_index >= len(state.plan.steps):
+        return {"messages": [AIMessage(content="ERROR: Step index beyond plan bounds.")]}
+    
+    # Add current step to completed list
     completed = state.completed_steps.copy()
     if state.step_index not in completed:
         completed.append(state.step_index)
     
-    # Move to next step
+    # Calculate next step index
     next_index = state.step_index + 1
     
-    # Update the current step status
-    updated_steps = []
-    for i, step in enumerate(state.plan.steps):
-        if i == state.step_index:
-            updated_step = PlanStep(
-                description=step.description,
-                tool_name=step.tool_name,
-                success_criteria=step.success_criteria,
-                dependencies=step.dependencies,
-                status=StepStatus.SUCCEEDED,
-                attempts=step.attempts,
-                error_messages=step.error_messages
-            )
-            updated_steps.append(updated_step)
-        else:
-            updated_steps.append(step)
+    # CRITICAL: If next step would be beyond bounds, we're done
+    if next_index >= len(state.plan.steps):
+        return {
+            "completed_steps": completed,
+            "current_assessment": None,
+            "messages": [AIMessage(content="All steps completed successfully!")]
+        }
+    
+    # Mark current step as succeeded
+    updated_steps = list(state.plan.steps)
+    current_step = updated_steps[state.step_index]
+    
+    updated_steps[state.step_index] = PlanStep(
+        description=current_step.description,
+        tool_name=current_step.tool_name,
+        success_criteria=current_step.success_criteria,
+        dependencies=current_step.dependencies,
+        status=StepStatus.SUCCEEDED,
+        attempts=current_step.attempts,
+        error_messages=current_step.error_messages
+    )
     
     updated_plan = ExecutionPlan(
         goal=state.plan.goal,
@@ -55,16 +58,22 @@ async def advance_step(
         metadata=state.plan.metadata
     )
     
-    # Optional: Add progress message for multi-step plans
+    # Create progress message
     progress_message = None
-    if len(state.plan.steps) > 2:  # Only for multi-step plans
-        progress_message = AIMessage(content=f"✅ Step {state.step_index + 1} completed. Moving to step {next_index + 1}...")
+    if len(state.plan.steps) > 2:
+        completed_step_num = state.step_index + 1  # 1-based for display
+        next_step_num = next_index + 1  # 1-based for display
+        next_step_description = state.plan.steps[next_index].description
+        
+        progress_message = AIMessage(
+            content=f"Step {completed_step_num} completed. Moving to step {next_step_num}: {next_step_description}"
+        )
     
     result = {
         "plan": updated_plan,
         "step_index": next_index,
         "completed_steps": completed,
-        "retry_count": 0,  # Reset retry count for new step
+        "retry_count": 0,
         "current_assessment": None
     }
     
@@ -74,12 +83,9 @@ async def advance_step(
     return result
 
 
-async def increment_retry(
-    state: State,
-    runtime: Runtime[Context]
-) -> Dict[str, Any]:
+async def increment_retry(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     """Increment retry count for the current step."""
     return {
         "retry_count": state.retry_count + 1,
-        "current_assessment": None  # Clear previous assessment
+        "current_assessment": None
     }

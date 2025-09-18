@@ -3,7 +3,7 @@
 from .plan import plan
 from .act import act, act_with_narration_guard
 from .assess import assess
-from .repair import repair
+from .error_recovery import execute_error_recovery
 from .finish import finish
 from .progress import advance_step
 
@@ -12,7 +12,7 @@ __all__ = [
     "act",
     "act_with_narration_guard",
     "assess",
-    "repair",
+    "execute_error_recovery",
     "finish",
     "advance_step",
 ]

@@ -140,6 +140,16 @@ class State(InputState):
     
     runtime_metadata: Dict[str, Any] = field(default_factory=dict)
     """Runtime metadata that can be used by nodes for routing and classification."""
+    
+    # --- Error recovery flags/state ---
+    needs_error_recovery: bool = field(default=False)
+    """Flag indicating that error recovery is needed."""
+    
+    error_recovery_active: bool = field(default=False)
+    """Flag indicating that error recovery is currently active."""
+    
+    error_context: Optional[Dict[str, Any]] = field(default=None)
+    """Context information about the error that needs recovery."""
 
 
 # Structured output schemas for LLM responses
