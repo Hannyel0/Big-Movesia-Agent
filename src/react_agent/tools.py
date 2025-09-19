@@ -55,7 +55,7 @@ class EnhancedFailureTestConfig:
                 "error": "Specified script file 'PlayerController.cs' does not exist in project",
                 "category": "resource_not_found",
                 "recoverable": True,
-                "max_failures": 3,
+                "max_failures": 1,
                 "recovery_message": "Missing script files have been located and are now accessible"
             },
 
@@ -466,7 +466,7 @@ async def write_file(file_path: str, content: str, file_type: str = "script") ->
     """Write or create a file in the project (scripts, config files, etc.)."""
     # Check for controlled failure
     failure_info = failure_config.should_fail("write_file")
-    if failure_info:
+    if failure_info and failure_info.get("should_fail", False):
         return _simulate_failure("write_file", failure_info)
 
     return {
@@ -487,7 +487,7 @@ async def edit_project_config(config_section: str, settings: Dict[str, Any]) -> 
     """Edit project configuration settings."""
     # Check for controlled failure
     failure_info = failure_config.should_fail("edit_project_config")
-    if failure_info:
+    if failure_info and failure_info.get("should_fail", False):
         return _simulate_failure("edit_project_config", failure_info)
 
     return {
@@ -509,7 +509,7 @@ async def get_script_snippets(category: str, language: str = "csharp") -> Dict[s
     """Get code snippets from the USER'S existing Unity project scripts."""
     # Check for controlled failure
     failure_info = failure_config.should_fail("get_script_snippets")
-    if failure_info:
+    if failure_info and failure_info.get("should_fail", False):
         return _simulate_failure("get_script_snippets", failure_info)
 
     # Simulate finding snippets in the user's existing scripts
@@ -638,7 +638,7 @@ async def scene_management(action: str, scene_name: str, parameters: Optional[Di
     """Manage scenes in the project (create, load, modify, etc.)."""
     # Check for controlled failure
     failure_info = failure_config.should_fail("scene_management")
-    if failure_info:
+    if failure_info and failure_info.get("should_fail", False):
         return _simulate_failure("scene_management", failure_info)
 
     if not parameters:

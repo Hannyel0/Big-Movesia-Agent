@@ -1,8 +1,9 @@
-"""Enhanced assessment node with intelligent error recovery integration."""
+"""Fixed assessment node with proper error recovery integration."""
 
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Dict
 
 from langchain_core.messages import AIMessage, ToolMessage
@@ -16,8 +17,9 @@ from react_agent.state import (
 )
 from react_agent.narration import NarrationEngine, StreamingNarrator
 from react_agent.utils import get_message_text, get_model
-from react_agent.graph.nodes.error_recovery import execute_error_recovery
 
+# Set up logging
+logger = logging.getLogger(__name__)
 
 # Initialize narration components
 narration_engine = NarrationEngine()
@@ -36,7 +38,7 @@ def _is_tool_result_successful(tool_result: dict, tool_name: str) -> bool:
     if tool_name == "create_asset":
         return bool(tool_result.get("asset_type") and tool_result.get("name"))
     elif tool_name == "get_script_snippets":
-        return bool(tool_result.get("snippets") or tool_result.get("available_snippets"))
+        return bool(tool_result.get("snippets") or tool_result.get("available_snippets") or tool_result.get("snippets_by_script"))
     elif tool_name == "write_file":
         return bool(tool_result.get("file_path") and tool_result.get("size_bytes") is not None)
     elif tool_name == "compile_and_test":
@@ -53,30 +55,148 @@ def _is_tool_result_successful(tool_result: dict, tool_name: str) -> bool:
     return len(tool_result) > 1
 
 
-def _is_critical_error(tool_result: dict, tool_name: str, assessment: AssessmentOutcome) -> bool:
-    """Determine if this is a critical error that needs recovery."""
-    if not tool_result:
-        return False
+async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
+    """Fixed assessment with proper error handling and recovery integration."""
+    logger.info(f"=== ASSESS DEBUG START ===")
+    logger.info(f"Step index: {state.step_index}")
+    logger.info(f"Plan steps: {len(state.plan.steps) if state.plan else 'No plan'}")
     
-    # Check for explicit failure
-    if tool_result.get("success") is False:
-        error_msg = tool_result.get("error", "").lower()
+    context = runtime.context
+    model = get_model(context.assessment_model or context.model)
+    
+    if not state.plan or state.step_index >= len(state.plan.steps):
+        logger.warning("Invalid plan or step index - returning empty")
+        return {}
+    
+    current_step = state.plan.steps[state.step_index]
+    logger.info(f"Assessing step: {current_step.description}")
+    logger.info(f"Tool: {current_step.tool_name}")
+    
+    # Extract the tool result from the last ToolMessage
+    tool_result = None
+    tool_name = current_step.tool_name
+    
+    for msg in reversed(state.messages[-10:]):
+        if isinstance(msg, ToolMessage):
+            try:
+                content = get_message_text(msg)
+                tool_result = json.loads(content) if content else {}
+                logger.info(f"Found tool result success flag: {tool_result.get('success')}")
+                break
+            except json.JSONDecodeError:
+                tool_result = {"message": content}
+                logger.info(f"Non-JSON tool result: {content[:100]}")
+                break
+    
+    if not tool_result:
+        logger.warning("No tool result found - creating default assessment")
+        assessment = AssessmentOutcome(
+            outcome="retry",
+            reason="No tool result found",
+            confidence=0.5
+        )
+        return {
+            "current_assessment": assessment,
+            "total_assessments": state.total_assessments + 1
+        }
+    
+    # Check if tool result indicates success
+    tool_looks_successful = _is_tool_result_successful(tool_result, tool_name)
+    logger.info(f"Tool appears successful: {tool_looks_successful}")
+    
+    # Create assessment based on tool result
+    if tool_looks_successful:
+        assessment = AssessmentOutcome(
+            outcome="success",
+            reason=f"Tool {tool_name} completed successfully with expected output",
+            confidence=0.9
+        )
+        logger.info("Created SUCCESS assessment")
+    else:
+        # Check for explicit error in tool result
+        tool_error = tool_result.get("error", "")
+        if tool_error:
+            assessment = AssessmentOutcome(
+                outcome="retry",
+                reason=f"Tool {tool_name} failed: {tool_error}",
+                confidence=0.8
+            )
+            logger.info(f"Created RETRY assessment due to error: {tool_error}")
+            
+            # FIXED: Check if this should trigger error recovery
+            if _should_trigger_error_recovery(tool_result, tool_error):
+                logger.info("Triggering error recovery")
+                error_context = {
+                    "tool_result": tool_result,
+                    "tool_name": tool_name,
+                    "step_description": current_step.description,
+                    "assessment": assessment,
+                    "retry_count": state.retry_count
+                }
+                
+                return {
+                    "current_assessment": assessment,
+                    "needs_error_recovery": True,
+                    "error_context": error_context,
+                    "total_assessments": state.total_assessments + 1
+                    # Removed the hardcoded message - let error recovery provide the diagnosis
+                }
+        else:
+            assessment = AssessmentOutcome(
+                outcome="success",  # If no explicit error, assume success
+                reason=f"Tool {tool_name} completed without explicit errors",
+                confidence=0.7
+            )
+            logger.info("Created SUCCESS assessment (no explicit error)")
+    
+    # Prepare messages with narration
+    messages_to_add = []
+    
+    # Handle completion or transitions
+    if assessment.outcome == "success":
+        next_index = state.step_index + 1
+        is_final_step = next_index >= len(state.plan.steps)
         
-        # Critical error patterns
+        if is_final_step:
+            completion_summary = await _generate_completion_summary(state, model, context)
+            messages_to_add.append(AIMessage(content=completion_summary))
+            logger.info("Added completion summary - this is the final step")
+        elif next_index < len(state.plan.steps):
+            next_step = state.plan.steps[next_index]
+            transition = f"✅ Step completed successfully! Moving on to: {next_step.description}"
+            messages_to_add.append(AIMessage(content=transition))
+            logger.info("Added transition message")
+    
+    result = {
+        "current_assessment": assessment,
+        "total_assessments": state.total_assessments + 1
+    }
+    
+    if messages_to_add:
+        result["messages"] = messages_to_add
+    
+    logger.info(f"Final assessment outcome: {assessment.outcome}")
+    logger.info(f"=== ASSESS DEBUG END ===")
+    
+    return result
+
+
+def _should_trigger_error_recovery(tool_result: dict, error_message: str) -> bool:
+    """Determine if this error should trigger error recovery."""
+    if not tool_result.get("success", True):  # Explicit failure
+        error_lower = error_message.lower()
+        
+        # Critical error patterns that need recovery
         critical_patterns = [
             "not found", "missing", "does not exist",
-            "permission denied", "access denied",
-            "compilation failed", "build failed",
-            "dependency error", "reference error",
-            "configuration error", "invalid parameter"
+            "compilation failed", "build failed", 
+            "dependency", "package", "import error",
+            "configuration error", "invalid parameter",
+            "permission denied", "access denied"
         ]
         
-        if any(pattern in error_msg for pattern in critical_patterns):
+        if any(pattern in error_lower for pattern in critical_patterns):
             return True
-    
-    # Check assessment outcome
-    if assessment and assessment.outcome in ["blocked", "retry"] and assessment.confidence > 0.7:
-        return True
     
     return False
 
@@ -134,179 +254,3 @@ Generate a brief, professional completion message (1-2 sentences) that starts wi
         
     except Exception as e:
         return f"Perfect! I've successfully completed all steps for: {state.plan.goal}"
-
-
-async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Enhanced assessment with intelligent error recovery integration."""
-    context = runtime.context
-    model = get_model(context.assessment_model or context.model)
-    
-    if not state.plan or state.step_index >= len(state.plan.steps):
-        return {}
-    
-    current_step = state.plan.steps[state.step_index]
-    
-    # Extract the tool result from the last ToolMessage
-    tool_result = None
-    tool_name = current_step.tool_name
-    
-    for msg in reversed(state.messages[-10:]):
-        if isinstance(msg, ToolMessage):
-            try:
-                content = get_message_text(msg)
-                tool_result = json.loads(content) if content else {}
-            except json.JSONDecodeError:
-                tool_result = {"message": content}
-            break
-    
-    # Check if tool result indicates success
-    tool_looks_successful = _is_tool_result_successful(tool_result, tool_name)
-    
-    # Generate post-tool narration
-    post_tool_narration = None
-    if tool_result and tool_name:
-        step_context = {
-            "step_index": state.step_index,
-            "total_steps": len(state.plan.steps),
-            "goal": state.plan.goal,
-            "tool_name": tool_name,
-            "description": current_step.description,
-            "retry_count": state.retry_count,
-            "assessment": state.current_assessment
-        }
-        
-        post_tool_narration = narration_engine.narrate_tool_result(
-            tool_name,
-            tool_result,
-            step_context
-        )
-    
-    # Enhanced assessment with error context
-    retry_context = ""
-    if state.retry_count > 0:
-        retry_context = f"\n\nThis is retry attempt #{state.retry_count + 1}."
-        if state.current_assessment:
-            retry_context += f" Previous attempt failed because: {state.current_assessment.reason}"
-    
-    # Assess success with better error detection
-    if tool_looks_successful and tool_name in ["create_asset", "get_script_snippets", "search", "get_project_info"]:
-        assessment = AssessmentOutcome(
-            outcome="success",
-            reason=f"Tool {tool_name} completed successfully with expected output format",
-            confidence=0.9
-        )
-    else:
-        # Detailed LLM assessment
-        assessment_request = f"""Assess if the current step has been successfully completed:
-
-Overall Goal: {state.plan.goal}
-Current Step ({state.step_index + 1}/{len(state.plan.steps)}): {current_step.description}
-Success Criteria: {current_step.success_criteria}
-Tool Used: {tool_name}{retry_context}
-
-Tool Result: {json.dumps(tool_result, indent=2) if tool_result else "No result captured"}
-
-ASSESSMENT CRITERIA:
-- For simulated tools: success if they return expected data structure
-- For errors: distinguish between retryable issues and systemic problems
-- Consider if the error indicates missing dependencies, configuration issues, or tool malfunctions
-
-Determine outcome (success/retry/blocked) and provide specific reasoning."""
-        
-        static_assessment_content = """You are evaluating game development step completion with focus on identifying recoverable errors.
-
-Assessment Guidelines:
-- SUCCESS: Tool returned expected data and format
-- RETRY: Temporary issue, different parameters might work
-- BLOCKED: Systemic issue requiring intervention (missing dependencies, configuration problems, etc.)
-
-Be specific about WHY something failed - this helps with error recovery.
-If blocked, clearly identify the type of problem (configuration, missing dependency, etc.)."""
-        
-        messages = [
-            {"role": "system", "content": static_assessment_content},
-            {"role": "user", "content": assessment_request}
-        ]
-        
-        try:
-            structured_model = model.with_structured_output(StructuredAssessment)
-            structured_assessment = await structured_model.ainvoke(messages)
-            
-            assessment = AssessmentOutcome(
-                outcome=structured_assessment.outcome,
-                reason=structured_assessment.reason,
-                fix=structured_assessment.fix or None,
-                confidence=structured_assessment.confidence
-            )
-            
-        except Exception as e:
-            if tool_looks_successful:
-                assessment = AssessmentOutcome(
-                    outcome="success",
-                    reason="Tool completed with expected output",
-                    confidence=0.8
-                )
-            else:
-                assessment = AssessmentOutcome(
-                    outcome="retry",
-                    reason=f"Assessment failed: {str(e)}",
-                    confidence=0.5
-                )
-    
-    # NEW: Check if this is a critical error that needs recovery
-    if assessment.outcome != "success" and _is_critical_error(tool_result, tool_name, assessment):
-        # Store error context for recovery
-        error_context = {
-            "tool_result": tool_result,
-            "tool_name": tool_name,
-            "step_description": current_step.description,
-            "assessment": assessment,
-            "retry_count": state.retry_count
-        }
-        
-        # Trigger error recovery instead of normal retry/repair
-        return {
-            "current_assessment": assessment,
-            "needs_error_recovery": True,
-            "error_context": error_context,
-            "messages": [AIMessage(content="I've detected an issue that needs systematic resolution. Let me analyze and fix this properly.")]
-        }
-    
-    # Prepare messages with narration
-    messages_to_add = []
-    if post_tool_narration:
-        messages_to_add.append(AIMessage(content=post_tool_narration))
-    
-    # Handle completion or transitions
-    if assessment.outcome == "success":
-        next_index = state.step_index + 1
-        is_final_step = next_index >= len(state.plan.steps)
-        
-        if is_final_step:
-            completion_summary = await _generate_completion_summary(state, model, context)
-            messages_to_add.append(AIMessage(content=completion_summary))
-        elif next_index < len(state.plan.steps):
-            next_step = state.plan.steps[next_index]
-            transition = f"✅ Step completed successfully! Moving on to: {next_step.description}"
-            messages_to_add.append(AIMessage(content=transition))
-    
-    result = {
-        "current_assessment": assessment,
-        "total_assessments": state.total_assessments + 1
-    }
-    
-    if messages_to_add:
-        result["messages"] = messages_to_add
-    
-    # Complete streaming narration if active
-    if context.runtime_metadata.get("supports_streaming"):
-        streaming_narrator = StreamingNarrator()
-        stream_id = f"step_{state.step_index}"
-        if assessment.outcome == "success":
-            streaming_narrator.complete_step(stream_id, "Step completed successfully!")
-        elif assessment.outcome == "retry":
-            streaming_narrator.update_step_progress(stream_id, "Retrying with adjustments...")
-        else:
-            streaming_narrator.complete_step(stream_id, "Step blocked - analyzing issue...")
-    
-    return result
