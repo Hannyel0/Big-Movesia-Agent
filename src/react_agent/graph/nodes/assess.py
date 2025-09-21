@@ -1,4 +1,4 @@
-"""Fixed assessment node with proper error recovery integration."""
+"""Enhanced assessment node with detailed error context extraction and forwarding."""
 
 from __future__ import annotations
 
@@ -25,6 +25,236 @@ logger = logging.getLogger(__name__)
 narration_engine = NarrationEngine()
 
 
+def _extract_detailed_tool_errors(tool_result: dict, tool_name: str) -> Dict[str, Any]:
+    """
+    Extract detailed error information from tool results for context-aware recovery.
+    
+    This is crucial for the error recovery system to understand what specifically
+    went wrong rather than just getting a generic error category.
+    """
+    detailed_context = {
+        "tool_name": tool_name,
+        "raw_result": tool_result,
+        "extracted_errors": [],
+        "error_count": 0,
+        "error_summary": "",
+        "specific_issues": []
+    }
+    
+    if tool_name == "compile_and_test":
+        # Extract compilation errors - this is the key fix for your issue
+        compilation_errors = tool_result.get("compilation_errors", [])
+        warnings_data = tool_result.get("warnings", [])
+        
+        # Process compilation errors
+        if isinstance(compilation_errors, list):
+            for error in compilation_errors:
+                if isinstance(error, dict):
+                    detailed_context["extracted_errors"].append({
+                        "type": "compilation_error",
+                        "file": error.get("file", ""),
+                        "line": error.get("line", 0),
+                        "error": error.get("error", ""),
+                        "severity": "error"
+                    })
+        
+        # Also check nested error structures (your actual tool output format)
+        if "details" in tool_result:
+            details = tool_result["details"]
+            if isinstance(details, dict):
+                # Check for errors in details
+                detail_errors = details.get("errors", [])
+                if isinstance(detail_errors, list):
+                    for error in detail_errors:
+                        if isinstance(error, dict):
+                            detailed_context["extracted_errors"].append({
+                                "type": "compilation_error",
+                                "file": error.get("file", ""),
+                                "line": error.get("line", 0),
+                                "error": error.get("error", ""),
+                                "severity": "error"
+                            })
+                
+                # Check for warnings in details (when warnings is an int count at top level)
+                detail_warnings = details.get("warnings", [])
+                if isinstance(detail_warnings, list):
+                    for warning in detail_warnings:
+                        if isinstance(warning, str):
+                            # Handle string format: "Unused variable 'tempVar' in PlayerController.cs line 23"
+                            detailed_context["extracted_errors"].append({
+                                "type": "compilation_warning",
+                                "file": "extracted from message",
+                                "line": 0,
+                                "error": warning,
+                                "severity": "warning"
+                            })
+                        elif isinstance(warning, dict):
+                            # Handle dict format
+                            detailed_context["extracted_errors"].append({
+                                "type": "compilation_warning",
+                                "file": warning.get("file", ""),
+                                "line": warning.get("line", 0),
+                                "error": warning.get("warning", ""),
+                                "severity": "warning"
+                            })
+        
+        # Process warnings (handle both int count and array formats)
+        if isinstance(warnings_data, list):
+            # warnings_data is an array of warning objects
+            for warning in warnings_data:
+                if isinstance(warning, dict):
+                    detailed_context["extracted_errors"].append({
+                        "type": "compilation_warning",
+                        "file": warning.get("file", ""),
+                        "line": warning.get("line", 0),
+                        "error": warning.get("warning", ""),
+                        "severity": "warning"
+                    })
+                elif isinstance(warning, str):
+                    # Handle string warnings
+                    detailed_context["extracted_errors"].append({
+                        "type": "compilation_warning",
+                        "file": "extracted from message",
+                        "line": 0,
+                        "error": warning,
+                        "severity": "warning"
+                    })
+        elif isinstance(warnings_data, int):
+            # warnings_data is just a count - actual warnings might be in details
+            logger.info(f"Found {warnings_data} warnings (count only, details might be nested)")
+        
+        # FALLBACK: Check for compilation errors at top level if none found yet
+        if not detailed_context["extracted_errors"]:
+            # Look for errors/warnings in different possible locations
+            top_level_errors = tool_result.get("errors", 0)
+            if isinstance(top_level_errors, int) and top_level_errors > 0:
+                # Create a generic error entry
+                detailed_context["extracted_errors"].append({
+                    "type": "compilation_error",
+                    "file": "multiple files",
+                    "line": 0,
+                    "error": f"Compilation failed with {top_level_errors} errors",
+                    "severity": "error"
+                })
+        
+        # Count actual errors (not warnings)
+        error_count = len([e for e in detailed_context["extracted_errors"] if e["severity"] == "error"])
+        detailed_context["error_count"] = error_count
+        
+        # Create summary for logging/diagnosis
+        if detailed_context["extracted_errors"]:
+            error_files = set()
+            error_types = set()
+            
+            for error in detailed_context["extracted_errors"]:
+                if error["severity"] == "error":
+                    file_name = error["file"].split("/")[-1] if error["file"] else "unknown"
+                    error_files.add(file_name)
+                    
+                    error_msg = error["error"].lower()
+                    if "inputsystem" in error_msg:
+                        error_types.add("InputSystem issues")
+                    elif "charactercontroller" in error_msg:
+                        error_types.add("CharacterController issues")
+                    elif "namespace" in error_msg or "using" in error_msg:
+                        error_types.add("namespace issues")
+                    elif "not found" in error_msg or "does not exist" in error_msg:
+                        error_types.add("missing references")
+                    elif "cs0103" in error_msg or "cs0246" in error_msg:
+                        error_types.add("compilation errors")
+            
+            if error_types:
+                detailed_context["error_summary"] = f"{error_count} errors in {len(error_files)} files: {', '.join(error_types)}"
+            else:
+                detailed_context["error_summary"] = f"{error_count} compilation errors found"
+            detailed_context["specific_issues"] = list(error_types)
+        else:
+            detailed_context["error_summary"] = "No specific errors extracted"
+        
+        logger.info(f"Extracted {error_count} compilation errors from tool result")
+        
+    elif tool_name == "write_file":
+        # Extract file writing errors
+        error_msg = tool_result.get("error", "")
+        if error_msg:
+            detailed_context["extracted_errors"].append({
+                "type": "file_error",
+                "file": tool_result.get("attempted_path", ""),
+                "error": error_msg,
+                "severity": "error"
+            })
+            detailed_context["error_count"] = 1
+            detailed_context["error_summary"] = f"File write error: {error_msg[:50]}"
+    
+    elif tool_name == "search":
+        # Extract search errors
+        error_msg = tool_result.get("error", "")
+        if error_msg:
+            detailed_context["extracted_errors"].append({
+                "type": "search_error",
+                "query": tool_result.get("query", ""),
+                "error": error_msg,
+                "severity": "error"
+            })
+            detailed_context["error_count"] = 1
+            detailed_context["error_summary"] = f"Search error: {error_msg[:50]}"
+    
+    else:
+        # Generic error extraction for other tools
+        error_msg = tool_result.get("error", "")
+        if error_msg:
+            detailed_context["extracted_errors"].append({
+                "type": "tool_error",
+                "tool": tool_name,
+                "error": error_msg,
+                "severity": "error"
+            })
+            detailed_context["error_count"] = 1
+            detailed_context["error_summary"] = f"{tool_name} error: {error_msg[:50]}"
+    
+    return detailed_context
+
+
+def _should_trigger_micro_retry(tool_result: dict, tool_name: str, retry_count: int) -> bool:
+    """
+    Check if this error should trigger micro-retry instead of normal retry.
+    
+    This function implements Tier 0 detection - identifying transient errors
+    that can be resolved with immediate retry rather than planning.
+    """
+    # Don't micro-retry if we've already tried multiple times
+    if retry_count >= 2:
+        return False
+        
+    if not tool_result.get("success", True):
+        error_message = tool_result.get("error", "").lower()
+        error_category = tool_result.get("error_category", "").lower()
+        
+        # Check for transient error categories
+        transient_categories = [
+            "network_error", "tool_malfunction", "timeout", 
+            "rate_limit", "service_unavailable"
+        ]
+        
+        if error_category in transient_categories:
+            logger.info(f"Detected transient error category: {error_category}")
+            return True
+        
+        # Check for transient patterns in error message
+        transient_patterns = [
+            "network", "timeout", "connection", "rate limit", 
+            "temporary", "try again", "service unavailable",
+            "internal server error", "502", "503", "504",
+            "connection reset", "connection refused", "dns"
+        ]
+        
+        if any(pattern in error_message for pattern in transient_patterns):
+            logger.info(f"Detected transient error pattern in: {error_message[:100]}")
+            return True
+    
+    return False
+
+
 def _is_tool_result_successful(tool_result: dict, tool_name: str) -> bool:
     """Check if a tool result indicates success based on tool-specific criteria."""
     if not tool_result:
@@ -42,6 +272,16 @@ def _is_tool_result_successful(tool_result: dict, tool_name: str) -> bool:
     elif tool_name == "write_file":
         return bool(tool_result.get("file_path") and tool_result.get("size_bytes") is not None)
     elif tool_name == "compile_and_test":
+        # For compilation, success means low/no errors
+        errors = tool_result.get("errors", 0)
+        compilation_errors = tool_result.get("compilation_errors", [])
+        
+        # Check if there are actual compilation errors
+        if compilation_errors and len(compilation_errors) > 0:
+            return False
+        if errors and errors > 0:
+            return False
+            
         return "compilation_time" in tool_result or "errors" in tool_result
     elif tool_name == "search":
         return bool(tool_result.get("result")) and len(tool_result.get("result", [])) > 0
@@ -56,7 +296,7 @@ def _is_tool_result_successful(tool_result: dict, tool_name: str) -> bool:
 
 
 async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Fixed assessment with proper error handling and recovery integration."""
+    """Enhanced assessment with detailed error context extraction and micro-retry detection."""
     logger.info(f"=== ASSESS DEBUG START ===")
     logger.info(f"Step index: {state.step_index}")
     logger.info(f"Plan steps: {len(state.plan.steps) if state.plan else 'No plan'}")
@@ -100,6 +340,32 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
             "total_assessments": state.total_assessments + 1
         }
     
+    # ENHANCED: Extract detailed error context before any decisions
+    detailed_error_context = _extract_detailed_tool_errors(tool_result, tool_name)
+    
+    # TIER 0: Check for micro-retry opportunity FIRST
+    if _should_trigger_micro_retry(tool_result, tool_name, state.retry_count):
+        logger.info("Triggering micro-retry for transient error")
+        
+        error_message = tool_result.get("error", "Unknown transient error")
+        assessment = AssessmentOutcome(
+            outcome="retry",  # Keep as retry, but flag for micro-retry
+            reason=f"Transient error in {tool_name}: {error_message}",
+            confidence=0.9
+        )
+        
+        return {
+            "current_assessment": assessment,
+            "should_micro_retry": True,  # NEW FLAG for micro-retry
+            "total_assessments": state.total_assessments + 1,
+            "runtime_metadata": {
+                **state.runtime_metadata,
+                "micro_retry_triggered": True,
+                "micro_retry_reason": error_message[:100]
+            }
+        }
+    
+    # Normal assessment flow continues...
     # Check if tool result indicates success
     tool_looks_successful = _is_tool_result_successful(tool_result, tool_name)
     logger.info(f"Tool appears successful: {tool_looks_successful}")
@@ -115,23 +381,33 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     else:
         # Check for explicit error in tool result
         tool_error = tool_result.get("error", "")
-        if tool_error:
+        if tool_error or detailed_error_context["error_count"] > 0:
+            # Use detailed error context for better assessment
+            if detailed_error_context["error_count"] > 0:
+                error_summary = detailed_error_context["error_summary"]
+                reason = f"Tool {tool_name} failed with {detailed_error_context['error_count']} errors: {error_summary}"
+            else:
+                reason = f"Tool {tool_name} failed: {tool_error}"
+            
             assessment = AssessmentOutcome(
                 outcome="retry",
-                reason=f"Tool {tool_name} failed: {tool_error}",
+                reason=reason,
                 confidence=0.8
             )
-            logger.info(f"Created RETRY assessment due to error: {tool_error}")
+            logger.info(f"Created RETRY assessment due to {detailed_error_context['error_count']} errors")
             
-            # FIXED: Check if this should trigger error recovery
-            if _should_trigger_error_recovery(tool_result, tool_error):
-                logger.info("Triggering error recovery")
+            # Check if this should trigger error recovery (non-transient errors)
+            if _should_trigger_error_recovery(tool_result, tool_error, detailed_error_context):
+                logger.info(f"Triggering error recovery for {detailed_error_context['error_count']} non-transient errors")
+                
+                # ENHANCED: Include detailed error context in error_context
                 error_context = {
                     "tool_result": tool_result,
                     "tool_name": tool_name,
                     "step_description": current_step.description,
                     "assessment": assessment,
-                    "retry_count": state.retry_count
+                    "retry_count": state.retry_count,
+                    "detailed_errors": detailed_error_context  # NEW: Include all detailed error info
                 }
                 
                 return {
@@ -139,7 +415,6 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
                     "needs_error_recovery": True,
                     "error_context": error_context,
                     "total_assessments": state.total_assessments + 1
-                    # Removed the hardcoded message - let error recovery provide the diagnosis
                 }
         else:
             assessment = AssessmentOutcome(
@@ -181,22 +456,37 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     return result
 
 
-def _should_trigger_error_recovery(tool_result: dict, error_message: str) -> bool:
-    """Determine if this error should trigger error recovery."""
+def _should_trigger_error_recovery(tool_result: dict, error_message: str, detailed_error_context: Dict[str, Any]) -> bool:
+    """Determine if this error should trigger error recovery (enhanced with detailed context)."""
     if not tool_result.get("success", True):  # Explicit failure
         error_lower = error_message.lower()
         
-        # Critical error patterns that need recovery
+        # Critical error patterns that need recovery (non-transient)
         critical_patterns = [
             "not found", "missing", "does not exist",
             "compilation failed", "build failed", 
             "dependency", "package", "import error",
             "configuration error", "invalid parameter",
-            "permission denied", "access denied"
+            "permission denied", "access denied",
+            "file not found", "directory not found",
+            "syntax error", "reference error",
+            "cs0103", "cs0246"  # Specific C# compilation errors
         ]
         
-        if any(pattern in error_lower for pattern in critical_patterns):
-            return True
+        # Only trigger recovery for non-transient errors
+        transient_patterns = [
+            "network", "timeout", "connection", "rate limit",
+            "temporary", "try again", "service unavailable"
+        ]
+        
+        # Check if it's a critical error but not transient
+        is_critical = any(pattern in error_lower for pattern in critical_patterns)
+        is_transient = any(pattern in error_lower for pattern in transient_patterns)
+        
+        # Also consider error count from detailed context
+        has_multiple_errors = detailed_error_context.get("error_count", 0) > 0
+        
+        return (is_critical or has_multiple_errors) and not is_transient
     
     return False
 

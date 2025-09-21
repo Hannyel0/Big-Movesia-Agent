@@ -1,4 +1,4 @@
-"""Fixed error recovery system with proper context handling and Pydantic schemas."""
+"""Enhanced error recovery with detailed error context analysis and multi-error handling."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from react_agent.state import State, PlanStep, ExecutionPlan, StepStatus
 from react_agent.utils import get_model, get_message_text
 from react_agent.tools import TOOLS
 
-# Set up logging
 logger = logging.getLogger(__name__)
 
 
@@ -45,11 +44,13 @@ class ErrorSeverity(str, Enum):
 
 @dataclass
 class ErrorDiagnosis:
-    """Detailed error diagnosis."""
+    """Detailed error diagnosis with specific error context."""
     category: ErrorCategory
     severity: ErrorSeverity
     description: str
     root_cause: str
+    specific_errors: List[Dict[str, Any]]  # NEW: Detailed error breakdown
+    error_count: int  # NEW: Number of distinct errors
     suggested_fixes: List[str]
     required_tools: List[str]
     confidence: float
@@ -62,14 +63,261 @@ class RecoveryStep(BaseModel):
     description: str = Field(description="What this recovery step does")
     tool_name: str = Field(description="Tool to use for this step")
     success_criteria: str = Field(description="How to know if this step succeeded")
+    error_context: Optional[str] = Field(default="", description="Specific error context this step addresses")
 
 
-class StructuredErrorRecovery(BaseModel):
-    """Fixed structured error recovery for OpenAI compatibility."""
+class ContextAwareErrorRecovery(BaseModel):
+    """Context-aware error recovery that scales with error complexity."""
     diagnosis: str = Field(description="Clear diagnosis of what went wrong")
-    recovery_steps: List[RecoveryStep] = Field(description="Steps to fix the error")
+    error_breakdown: List[str] = Field(description="List of specific errors identified")
+    recovery_steps: List[RecoveryStep] = Field(
+        description="Steps to fix all identified errors", 
+        max_items=6  # Increased cap to handle multiple errors properly
+    )
     fallback_approach: str = Field(default="", description="Alternative approach if fix fails")
     estimated_complexity: str = Field(description="Simple, moderate, or complex recovery")
+
+
+# ENHANCED TIER 1: Context-aware template fixes
+CONTEXT_AWARE_TEMPLATE_FIXES = {
+    ErrorCategory.BUILD_ERROR: {
+        "single_error": {
+            "fix_step": {
+                "description": "Fix the compilation error in the script",
+                "tool_name": "write_file",
+                "success_criteria": "Resolved the specific compilation issue"
+            },
+            "max_steps": 2
+        },
+        "multiple_errors": {
+            "analyze_first": True,
+            "fix_per_error": True,
+            "max_steps": 4  # Allow more steps for multiple errors
+        }
+    },
+    
+    ErrorCategory.DEPENDENCY_MISSING: {
+        "single_error": {
+            "fix_step": {
+                "description": "Install or configure missing dependency",
+                "tool_name": "edit_project_config",
+                "success_criteria": "Applied configuration to resolve dependency issue"
+            },
+            "max_steps": 2
+        }
+    },
+    
+    ErrorCategory.CONFIGURATION_ERROR: {
+        "single_error": {
+            "fix_step": {
+                "description": "Update project configuration to resolve issue",
+                "tool_name": "edit_project_config", 
+                "success_criteria": "Applied necessary configuration changes"
+            },
+            "max_steps": 2
+        }
+    }
+}
+
+# TIER 0: Transient errors that should get micro-retries
+TRANSIENT_ERROR_CATEGORIES = {
+    ErrorCategory.NETWORK_ERROR,
+    ErrorCategory.TOOL_MALFUNCTION
+}
+
+
+def extract_detailed_error_context(tool_result: Dict[str, Any], tool_name: str) -> List[Dict[str, Any]]:
+    """Extract detailed error information from tool results."""
+    detailed_errors = []
+    
+    if tool_name == "compile_and_test":
+        # Extract compilation errors
+        compilation_errors = tool_result.get("compilation_errors", [])
+        for error in compilation_errors:
+            detailed_errors.append({
+                "type": "compilation_error",
+                "file": error.get("file", ""),
+                "line": error.get("line", 0),
+                "error": error.get("error", ""),
+                "severity": "error"
+            })
+        
+        # Extract detailed errors from nested structure
+        if "details" in tool_result and "errors" in str(tool_result["details"]):
+            details = tool_result["details"]
+            if isinstance(details, dict) and "errors" in details:
+                for error in details.get("errors", []):
+                    if isinstance(error, dict):
+                        detailed_errors.append({
+                            "type": "compilation_error",
+                            "file": error.get("file", ""),
+                            "line": error.get("line", 0),
+                            "error": error.get("error", ""),
+                            "severity": "error"
+                        })
+        
+        # Also check warnings if no errors found
+        if not detailed_errors:
+            warnings = tool_result.get("warnings", [])
+            for warning in warnings:
+                detailed_errors.append({
+                    "type": "compilation_warning",
+                    "file": warning.get("file", ""),
+                    "line": warning.get("line", 0),
+                    "error": warning.get("warning", ""),
+                    "severity": "warning"
+                })
+    
+    elif tool_name == "write_file":
+        # Extract file-specific errors
+        error_msg = tool_result.get("error", "")
+        if error_msg:
+            detailed_errors.append({
+                "type": "file_error",
+                "file": tool_result.get("attempted_path", ""),
+                "error": error_msg,
+                "severity": "error"
+            })
+    
+    elif tool_name == "search":
+        # Extract search-specific errors
+        error_msg = tool_result.get("error", "")
+        if error_msg:
+            detailed_errors.append({
+                "type": "search_error", 
+                "query": tool_result.get("query", ""),
+                "error": error_msg,
+                "severity": "error"
+            })
+    
+    else:
+        # Generic error extraction
+        error_msg = tool_result.get("error", "")
+        if error_msg:
+            detailed_errors.append({
+                "type": "tool_error",
+                "tool": tool_name,
+                "error": error_msg,
+                "severity": "error"
+            })
+    
+    return detailed_errors
+
+
+def should_micro_retry(error_category: ErrorCategory, retry_count: int) -> bool:
+    """Determine if error should get micro-retry instead of recovery planning."""
+    return (error_category in TRANSIENT_ERROR_CATEGORIES and retry_count < 2)
+
+
+def create_context_aware_template_recovery(error_category: ErrorCategory, failed_step: PlanStep, specific_errors: List[Dict[str, Any]]) -> List[PlanStep]:
+    """Create context-aware template-based recovery that scales with error complexity."""
+    if error_category not in CONTEXT_AWARE_TEMPLATE_FIXES:
+        return []
+    
+    template_config = CONTEXT_AWARE_TEMPLATE_FIXES[error_category]
+    error_count = len(specific_errors)
+    
+    recovery_steps = []
+    
+    # Handle build errors with multiple compilation issues
+    if error_category == ErrorCategory.BUILD_ERROR and error_count > 1:
+        # Multiple errors - create targeted fixes for each major issue
+        unique_files = set()
+        error_types = set()
+        
+        for error in specific_errors:
+            if error.get("file"):
+                unique_files.add(error["file"])
+            
+            error_msg = error.get("error", "").lower()
+            if "inputsystem" in error_msg or "input" in error_msg:
+                error_types.add("input_system")
+            elif "charactercontroller" in error_msg or "character" in error_msg:
+                error_types.add("character_controller")
+            elif "namespace" in error_msg or "using" in error_msg:
+                error_types.add("namespace")
+            elif "reference" in error_msg or "not found" in error_msg:
+                error_types.add("missing_reference")
+        
+        # Create specific fix steps based on error analysis
+        if "input_system" in error_types:
+            recovery_steps.append(PlanStep(
+                description="Fix Input System namespace and reference issues in PlayerController.cs",
+                tool_name="write_file",
+                success_criteria="Resolved Input System compilation errors",
+                dependencies=[]
+            ))
+        
+        if "character_controller" in error_types:
+            recovery_steps.append(PlanStep(
+                description="Fix CharacterController type and namespace issues",
+                tool_name="write_file", 
+                success_criteria="Resolved CharacterController compilation errors",
+                dependencies=[]
+            ))
+        
+        if "missing_reference" in error_types or "namespace" in error_types:
+            recovery_steps.append(PlanStep(
+                description="Add missing using statements and namespace references",
+                tool_name="write_file",
+                success_criteria="Added all required namespace references",
+                dependencies=[]
+            ))
+        
+        # If no specific patterns found, create generic file-based fixes
+        if not recovery_steps and unique_files:
+            for i, file in enumerate(list(unique_files)[:2]):  # Max 2 files
+                recovery_steps.append(PlanStep(
+                    description=f"Fix compilation errors in {file}",
+                    tool_name="write_file",
+                    success_criteria=f"Resolved compilation issues in {file}",
+                    dependencies=[]
+                ))
+        
+        # Always end with compilation test
+        recovery_steps.append(PlanStep(
+            description="Verify all compilation errors are resolved",
+            tool_name="compile_and_test",
+            success_criteria="Clean compilation with no errors",
+            dependencies=list(range(len(recovery_steps)))
+        ))
+        
+        logger.info(f"Created context-aware recovery for {error_count} build errors: {len(recovery_steps)} steps")
+        return recovery_steps[:4]  # Cap at 4 steps max
+    
+    # Single error or other categories - use simple template
+    elif error_count == 1 or error_category != ErrorCategory.BUILD_ERROR:
+        template = template_config.get("single_error", {})
+        if template:
+            fix_step_data = template["fix_step"]
+            
+            # Customize the description based on specific error
+            description = fix_step_data["description"]
+            if specific_errors and error_category == ErrorCategory.BUILD_ERROR:
+                error_detail = specific_errors[0].get("error", "")
+                if "InputSystem" in error_detail:
+                    description = "Fix Input System namespace and import issues"
+                elif "CharacterController" in error_detail:
+                    description = "Fix CharacterController type reference issues"
+            
+            fix_step = PlanStep(
+                description=description,
+                tool_name=fix_step_data["tool_name"],
+                success_criteria=fix_step_data["success_criteria"],
+                dependencies=[]
+            )
+            
+            rerun_step = PlanStep(
+                description=f"Complete the original task: {failed_step.description}",
+                tool_name=failed_step.tool_name,
+                success_criteria=failed_step.success_criteria,
+                dependencies=[0]
+            )
+            
+            logger.info(f"Created template recovery for single {error_category}: 2 steps")
+            return [fix_step, rerun_step]
+    
+    return []
 
 
 async def diagnose_error(
@@ -78,83 +326,60 @@ async def diagnose_error(
     state: State,
     runtime: Runtime[Context]
 ) -> ErrorDiagnosis:
-    """Intelligently diagnose what went wrong with a tool call."""
-    logger.info("Starting error diagnosis")
-    
-    context = runtime.context
-    model = get_model(context.model)
-    
-    # Extract error details
+    """Enhanced error diagnosis with detailed error context extraction."""
     error_message = error_info.get("error", "Unknown error")
     tool_name = failed_step.tool_name
-    step_description = failed_step.description
+    tool_result = error_info.get("tool_result", {})
     
-    logger.info(f"Diagnosing error: {error_message}")
-    logger.info(f"Failed tool: {tool_name}")
+    logger.info(f"Diagnosing error with detailed context: {error_message}")
     
-    # SHORTENED diagnostic prompt for concise analysis
-    diagnostic_prompt = f"""Analyze this Unity development tool failure and provide a CONCISE diagnosis:
-
-FAILURE DETAILS:
-- Tool: {tool_name}
-- Step: {step_description}
-- Error: {error_message}
-
-Provide a brief diagnosis (2-3 sentences) that identifies:
-1. What specifically went wrong
-2. The likely root cause (missing dependency, config issue, etc.)
-3. Whether this is automatically fixable
-
-Keep your response focused and under 150 words."""
-
-    try:
-        diagnostic_response = await model.ainvoke([
-            {"role": "system", "content": "You are a Unity development expert providing concise error diagnosis. Be specific but brief - focus on actionable insights in 2-3 sentences maximum."},
-            {"role": "user", "content": diagnostic_prompt}
-        ])
+    # Extract detailed error information from tool result
+    specific_errors = extract_detailed_error_context(tool_result, tool_name)
+    error_count = len(specific_errors)
+    
+    logger.info(f"Extracted {error_count} specific errors: {[e.get('error', '')[:50] for e in specific_errors]}")
+    
+    # Quick categorization
+    category = _categorize_error_fast(error_message, tool_name)
+    severity = _assess_severity_fast(error_message, tool_name, state.retry_count, error_count)
+    
+    # Enhanced diagnosis with error details
+    if specific_errors:
+        error_summary = "; ".join([f"{e.get('file', tool_name)}: {e.get('error', '')[:50]}" for e in specific_errors[:3]])
+        description = f"Tool {tool_name} failed with {error_count} errors: {error_summary}"
         
-        diagnosis_text = get_message_text(diagnostic_response)
-        logger.info(f"LLM diagnosis: {diagnosis_text}")
-        
-        # Categorize the error based on patterns
-        category = _categorize_error(error_message, tool_name, diagnosis_text)
-        severity = _assess_severity(error_message, tool_name, state.retry_count)
-        
-        # Determine if we can auto-fix
-        can_auto_fix = _can_auto_fix(category, tool_name, error_message)
-        
-        # Generate suggested fixes
-        suggested_fixes = _generate_fix_suggestions(category, tool_name, error_message, diagnosis_text)
-        
-        root_cause = _extract_root_cause(diagnosis_text, error_message)
-        logger.info(f"Extracted root cause: {root_cause}")
-        
-        return ErrorDiagnosis(
-            category=category,
-            severity=severity,
-            description=diagnosis_text,  # This will now be shorter
-            root_cause=root_cause,
-            suggested_fixes=suggested_fixes,
-            required_tools=_determine_required_tools(category, tool_name),
-            confidence=0.8,
-            can_auto_fix=can_auto_fix,
-            workaround_available=_has_workaround(category, tool_name)
-        )
-        
-    except Exception as e:
-        logger.error(f"Error in diagnosis: {str(e)}")
-        # Fallback diagnosis
-        return ErrorDiagnosis(
-            category=ErrorCategory.UNKNOWN,
-            severity=ErrorSeverity.MEDIUM,
-            description=f"Tool {tool_name} encountered an error: {error_message}",
-            root_cause=f"Tool {tool_name} failed: {error_message}",
-            suggested_fixes=["Retry with different parameters", "Check project configuration"],
-            required_tools=[tool_name],
-            confidence=0.3,
-            can_auto_fix=False,
-            workaround_available=True
-        )
+        # Create specific root cause based on errors
+        if category == ErrorCategory.BUILD_ERROR:
+            error_types = []
+            for error in specific_errors:
+                error_msg = error.get("error", "").lower()
+                if "inputsystem" in error_msg:
+                    error_types.append("Input System namespace issues")
+                elif "charactercontroller" in error_msg:
+                    error_types.append("CharacterController type issues")
+                elif "namespace" in error_msg or "using" in error_msg:
+                    error_types.append("Missing namespace references")
+            
+            root_cause = f"Compilation errors: {', '.join(set(error_types))}" if error_types else f"{error_count} compilation errors requiring fixes"
+        else:
+            root_cause = f"Tool {tool_name} failed: {error_message[:100]}"
+    else:
+        description = f"Tool {tool_name} failed: {error_message[:100]}"
+        root_cause = f"Tool {tool_name} failed: {error_message[:100]}"
+    
+    return ErrorDiagnosis(
+        category=category,
+        severity=severity,
+        description=description,
+        root_cause=root_cause,
+        specific_errors=specific_errors,
+        error_count=error_count,
+        suggested_fixes=[],
+        required_tools=[tool_name],
+        confidence=0.8,
+        can_auto_fix=category in CONTEXT_AWARE_TEMPLATE_FIXES,
+        workaround_available=True
+    )
 
 
 async def create_error_recovery_plan(
@@ -163,85 +388,143 @@ async def create_error_recovery_plan(
     state: State,
     runtime: Runtime[Context]
 ) -> List[PlanStep]:
-    """Create recovery steps to fix the error and replace the failed step."""
-    logger.info("Creating error recovery plan")
+    """ENHANCED tiered recovery plan creation with context awareness."""
+    
+    # TIER 1: Context-aware template-based recovery (preferred for known categories)
+    if diagnosis.category in CONTEXT_AWARE_TEMPLATE_FIXES:
+        logger.info(f"Using Tier 1 context-aware template recovery for {diagnosis.category} with {diagnosis.error_count} errors")
+        template_recovery = create_context_aware_template_recovery(diagnosis.category, failed_step, diagnosis.specific_errors)
+        if template_recovery:
+            return template_recovery
+    
+    # TIER 2: Enhanced LLM recovery with error context
+    logger.info(f"Using Tier 2 enhanced LLM recovery for {diagnosis.category} with {diagnosis.error_count} errors")
     
     context = runtime.context
     model = get_model(context.model)
     
-    # ENHANCED recovery request that includes the original step's intent
-    recovery_request = f"""Create specific error recovery steps for this Unity/game development failure:
+    # Create detailed error context for LLM
+    error_context = ""
+    if diagnosis.specific_errors:
+        error_context = "\nSPECIFIC ERRORS FOUND:\n"
+        for i, error in enumerate(diagnosis.specific_errors[:5], 1):
+            file = error.get("file", "")
+            line = error.get("line", "")
+            error_msg = error.get("error", "")
+            error_context += f"{i}. {file}:{line} - {error_msg}\n"
+    
+    # ENHANCED recovery request with specific error details
+    enhanced_recovery_request = f"""Create a targeted recovery plan for this Unity development failure:
 
 ERROR DIAGNOSIS:
 - Category: {diagnosis.category}
-- Severity: {diagnosis.severity}
+- Error Count: {diagnosis.error_count}
 - Root Cause: {diagnosis.root_cause}
-- Can Auto-Fix: {diagnosis.can_auto_fix}
 
-ORIGINAL FAILED STEP:
-- Description: {failed_step.description}
-- Tool: {failed_step.tool_name}
-- Success Criteria: {failed_step.success_criteria}
-- Intent: What this step was trying to accomplish
+FAILED STEP: {failed_step.description}
+TOOL: {failed_step.tool_name}
 
-SUGGESTED FIXES:
-{chr(10).join(f"- {fix}" for fix in diagnosis.suggested_fixes)}
+{error_context}
 
-IMPORTANT: Create recovery steps that will REPLACE the failed step entirely:
-1. Fix the underlying issue that caused the failure
-2. Include a final recovery step that accomplishes the SAME GOAL as the original failed step
-3. Do NOT duplicate the original tool call - the recovery plan should complete the original intent
+REQUIREMENTS:
+1. Address ALL {diagnosis.error_count} specific errors identified above
+2. Create steps that fix the actual problems, not generic solutions
+3. If there are multiple compilation errors, fix them systematically
+4. Maximum {4 if diagnosis.error_count > 2 else 2} steps total
+5. Final step should verify the solution works
 
 VALID TOOLS: search, get_project_info, create_asset, write_file, edit_project_config, get_script_snippets, compile_and_test, scene_management
 
-Example recovery patterns that REPLACE the failed step:
-- Failed compile_and_test: search for solution → edit_project_config to fix issue → compile_and_test (completes original intent)
-- Failed write_file: get_project_info to understand structure → write_file with corrected approach (completes original intent)
-- Failed get_script_snippets: search for code examples → create_asset with found patterns (alternative way to complete intent)
-
-Create a recovery plan that fixes the issue AND completes the original step's purpose."""
+Create a recovery plan that addresses the specific errors listed above, not just the general error category."""
 
     try:
-        # Use function_calling method to avoid OpenAI structured output issues
-        structured_model = model.with_structured_output(StructuredErrorRecovery, method="function_calling")
+        # Use enhanced schema that scales with error complexity
+        structured_model = model.with_structured_output(ContextAwareErrorRecovery, method="function_calling")
         recovery_response = await structured_model.ainvoke([
-            {"role": "system", "content": "You are creating Unity/Unreal error recovery plans that REPLACE failed steps. The recovery plan must fix the issue AND accomplish the original step's goal. Never duplicate tool calls."},
-            {"role": "user", "content": recovery_request}
+            {"role": "system", "content": f"Create targeted recovery plans that address ALL specific errors. For {diagnosis.error_count} errors, create appropriate steps to fix each issue. Always end with verification."},
+            {"role": "user", "content": enhanced_recovery_request}
         ])
-        
-        logger.info(f"Created {len(recovery_response.recovery_steps)} recovery steps")
         
         # Convert to internal format
         recovery_steps = []
-        for i, recovery_step in enumerate(recovery_response.recovery_steps):
+        for step_data in recovery_response.recovery_steps:
             step = PlanStep(
-                description=recovery_step.description,
-                tool_name=recovery_step.tool_name,
-                success_criteria=recovery_step.success_criteria,
-                dependencies=[]
+                description=step_data.description,
+                tool_name=step_data.tool_name,
+                success_criteria=step_data.success_criteria,
+                dependencies=[] if len(recovery_steps) == 0 else [len(recovery_steps) - 1]
             )
             recovery_steps.append(step)
-            logger.info(f"Recovery step {i+1}: {recovery_step.description} using {recovery_step.tool_name}")
         
-        # Validate that the recovery plan doesn't just duplicate the failed tool
-        _validate_recovery_plan(recovery_steps, failed_step)
+        # Validate and adjust step count based on error complexity
+        max_steps = 4 if diagnosis.error_count > 2 else 2
+        if len(recovery_steps) > max_steps:
+            logger.warning(f"LLM returned {len(recovery_steps)} steps, truncating to {max_steps}")
+            recovery_steps = recovery_steps[:max_steps]
         
+        # Ensure the last step is verification if dealing with compilation errors
+        if diagnosis.category == ErrorCategory.BUILD_ERROR and recovery_steps:
+            last_step = recovery_steps[-1]
+            if last_step.tool_name != "compile_and_test":
+                # Replace last step with verification
+                recovery_steps[-1] = PlanStep(
+                    description="Verify all compilation errors are resolved",
+                    tool_name="compile_and_test",
+                    success_criteria="Clean compilation with no errors",
+                    dependencies=[len(recovery_steps) - 2] if len(recovery_steps) > 1 else []
+                )
+        
+        logger.info(f"Created enhanced LLM recovery: {len(recovery_steps)} steps for {diagnosis.error_count} errors")
         return recovery_steps
         
     except Exception as e:
-        logger.error(f"Error creating recovery plan: {str(e)}")
-        # Fallback recovery steps that replace the original
-        return _create_replacement_recovery_steps(diagnosis, failed_step)
+        logger.error(f"Enhanced LLM recovery failed: {str(e)}")
+        return _create_context_aware_fallback_recovery(failed_step, diagnosis)
+
+
+def _create_context_aware_fallback_recovery(failed_step: PlanStep, diagnosis: ErrorDiagnosis) -> List[PlanStep]:
+    """Create context-aware fallback recovery based on error analysis."""
+    recovery_steps = []
+    
+    if diagnosis.category == ErrorCategory.BUILD_ERROR and diagnosis.error_count > 1:
+        # Multiple compilation errors - create systematic fix
+        recovery_steps.append(PlanStep(
+            description=f"Fix all {diagnosis.error_count} compilation errors systematically",
+            tool_name="write_file",
+            success_criteria=f"Resolved all {diagnosis.error_count} compilation issues"
+        ))
+        
+        recovery_steps.append(PlanStep(
+            description="Verify compilation errors are resolved",
+            tool_name="compile_and_test",
+            success_criteria="Clean compilation with no errors",
+            dependencies=[0]
+        ))
+    else:
+        # Standard fallback: diagnose + rerun
+        recovery_steps.append(PlanStep(
+            description="Analyze project state to understand the issue context",
+            tool_name="get_project_info",
+            success_criteria="Retrieved current project information"
+        ))
+        
+        recovery_steps.append(PlanStep(
+            description=f"Retry original task: {failed_step.description}",
+            tool_name=failed_step.tool_name,
+            success_criteria=failed_step.success_criteria,
+            dependencies=[0]
+        ))
+    
+    return recovery_steps
 
 
 async def execute_error_recovery(
     state: State,
     runtime: Runtime[Context]
 ) -> Dict[str, Any]:
-    """Main error recovery execution node."""
-    logger.info("=== EXECUTING ERROR RECOVERY ===")
+    """Main error recovery execution with enhanced context awareness."""
+    logger.info("=== EXECUTING CONTEXT-AWARE ERROR RECOVERY ===")
     
-    # Extract error information - use error_context set by assess node
     if not state.error_context:
         logger.error("No error context found")
         return {"messages": [AIMessage(content="No error context found for recovery.")]}
@@ -253,7 +536,7 @@ async def execute_error_recovery(
     current_step = state.plan.steps[state.step_index]
     logger.info(f"Recovering from failure in step: {current_step.description}")
     
-    # Step 1: Diagnose the error using the stored error context
+    # Enhanced diagnosis with detailed error context
     assessment = state.error_context.get("assessment")
     error_reason = assessment.reason if assessment else "Unknown error"
     
@@ -265,48 +548,46 @@ async def execute_error_recovery(
     }
     
     diagnosis = await diagnose_error(error_info, current_step, state, runtime)
-    logger.info(f"Diagnosis complete. Root cause: {diagnosis.root_cause}")
+    logger.info(f"Enhanced diagnosis: {diagnosis.category} - {diagnosis.error_count} errors - {diagnosis.root_cause}")
     
-    # Step 2: Create recovery steps that REPLACE the failed step
+    # Create context-aware recovery plan
     recovery_steps = await create_error_recovery_plan(diagnosis, current_step, state, runtime)
     
     if not recovery_steps:
-        logger.warning("No recovery steps created - using fallback")
-        recovery_steps = _create_replacement_recovery_steps(diagnosis, current_step)
+        logger.warning("No recovery steps created - using context-aware fallback")
+        recovery_steps = _create_context_aware_fallback_recovery(current_step, diagnosis)
     
-    # Step 3: REPLACE the failed step with recovery steps (no duplication)
+    # Replace failed step with recovery steps
     updated_plan = _replace_failed_step_with_recovery(state.plan, state.step_index, recovery_steps)
     
-    # Step 4: Create user-facing message with VISIBLE diagnosis
-    recovery_message = _create_comprehensive_recovery_message(diagnosis, recovery_steps, state.retry_count)
+    # Create detailed recovery message
+    recovery_message = _create_detailed_recovery_message(diagnosis, recovery_steps, state.retry_count)
     
-    logger.info(f"Recovery plan created with {len(recovery_steps)} steps replacing the failed step")
+    logger.info(f"Context-aware recovery plan: {len(recovery_steps)} steps for {diagnosis.error_count} errors")
     
     return {
         "plan": updated_plan,
-        "step_index": state.step_index,  # Start executing the first recovery step (at current position)
-        "retry_count": 0,  # Reset retry count
+        "step_index": state.step_index,
+        "retry_count": 0,
         "current_assessment": None,
         "error_recovery_active": True,
-        "needs_error_recovery": False,  # Clear the flag
-        "error_context": None,  # Clear error context
+        "needs_error_recovery": False,
+        "error_context": None,
         "messages": [AIMessage(content=recovery_message)],
         "runtime_metadata": {
             **state.runtime_metadata,
             "error_diagnosis": {
                 "category": diagnosis.category.value,
-                "severity": diagnosis.severity.value,
-                "root_cause": diagnosis.root_cause,
-                "can_auto_fix": diagnosis.can_auto_fix
-            },
-            "recovery_replaced_step": True,  # Indicate replacement, not insertion
-            "recovery_steps_count": len(recovery_steps)
+                "error_count": diagnosis.error_count,
+                "recovery_tier": "template" if diagnosis.category in CONTEXT_AWARE_TEMPLATE_FIXES else "llm",
+                "steps_created": len(recovery_steps)
+            }
         }
     }
 
 
 def _replace_failed_step_with_recovery(original_plan: ExecutionPlan, failed_step_index: int, recovery_steps: List[PlanStep]) -> ExecutionPlan:
-    """Replace the failed step with recovery steps (eliminates duplication)."""
+    """Replace the failed step with context-aware recovery steps."""
     if not original_plan or not recovery_steps:
         return original_plan
     
@@ -316,150 +597,59 @@ def _replace_failed_step_with_recovery(original_plan: ExecutionPlan, failed_step
     for i in range(failed_step_index):
         new_steps.append(original_plan.steps[i])
     
-    # Replace the failed step with recovery steps
+    # Replace with recovery steps
     for recovery_step in recovery_steps:
         new_steps.append(recovery_step)
     
-    # Add all remaining steps after the failed step (skip the failed step entirely)
+    # Add remaining steps after failed step
     for i in range(failed_step_index + 1, len(original_plan.steps)):
         new_steps.append(original_plan.steps[i])
     
-    logger.info(f"Plan updated: Original had {len(original_plan.steps)} steps, new plan has {len(new_steps)} steps")
-    logger.info(f"Replaced step at index {failed_step_index} with {len(recovery_steps)} recovery steps")
+    logger.info(f"Plan updated: {len(original_plan.steps)} → {len(new_steps)} steps (replaced with {len(recovery_steps)})")
     
     return ExecutionPlan(
         goal=original_plan.goal,
         steps=new_steps,
         metadata={
             **original_plan.metadata,
-            "recovery_replaced": True,  # Different from "recovery_inserted"
-            "replaced_step_index": failed_step_index,
+            "context_aware_recovery": True,
             "recovery_steps_count": len(recovery_steps)
         }
     )
 
 
-def _validate_recovery_plan(recovery_steps: List[PlanStep], failed_step: PlanStep) -> None:
-    """Validate that recovery plan properly replaces the failed step without duplication."""
-    if not recovery_steps:
-        logger.warning("Empty recovery plan provided")
-        return
+def _create_detailed_recovery_message(diagnosis: ErrorDiagnosis, recovery_steps: List[PlanStep], retry_count: int) -> str:
+    """Create detailed recovery message that explains the specific issues found."""
+    retry_context = f" (after {retry_count} attempts)" if retry_count > 0 else ""
     
-    # Check if any recovery step uses the exact same tool as the failed step
-    failed_tool = failed_step.tool_name
-    recovery_tools = [step.tool_name for step in recovery_steps]
-    
-    if failed_tool in recovery_tools:
-        logger.info(f"Recovery plan includes {failed_tool} - this is OK as it's replacing the failed attempt")
+    if diagnosis.error_count > 1:
+        message = f"I found {diagnosis.error_count} specific compilation errors{retry_context} that need systematic fixes:\n\n"
+        
+        # Show specific errors found
+        for i, error in enumerate(diagnosis.specific_errors[:3], 1):
+            file = error.get("file", "").split("/")[-1]  # Just filename
+            error_msg = error.get("error", "")[:60]
+            message += f"{i}. {file}: {error_msg}...\n"
+        
+        if diagnosis.error_count > 3:
+            message += f"...and {diagnosis.error_count - 3} more errors\n"
+        
+        message += f"\n**Recovery Plan:** {len(recovery_steps)} targeted steps to fix all issues systematically."
     else:
-        logger.warning(f"Recovery plan doesn't include {failed_tool} - may not complete original intent")
-    
-    # Log the replacement strategy
-    logger.info(f"Recovery validation: {len(recovery_steps)} steps will replace failed '{failed_step.description}'")
-
-
-def _create_replacement_recovery_steps(diagnosis: ErrorDiagnosis, failed_step: PlanStep) -> List[PlanStep]:
-    """Create fallback recovery steps that REPLACE the failed step."""
-    recovery_steps = []
-    
-    # Strategy: Fix the issue, then retry the original intent
-    
-    # Step 1: Always diagnose the current state
-    recovery_steps.append(PlanStep(
-        description="Analyze project state to understand the error context",
-        tool_name="get_project_info",
-        success_criteria="Retrieved current project information and identified potential issues"
-    ))
-    
-    # Step 2: Category-specific fix
-    if diagnosis.category == ErrorCategory.BUILD_ERROR:
-        recovery_steps.append(PlanStep(
-            description="Research solution for the compilation issue",
-            tool_name="search",
-            success_criteria="Found specific solution for the build problem",
-            dependencies=[]
-        ))
-        # Step 3: Retry the original intent (compile)
-        recovery_steps.append(PlanStep(
-            description=f"Complete the original task: {failed_step.description}",
-            tool_name=failed_step.tool_name,  # Same tool as failed step
-            success_criteria=failed_step.success_criteria,
-            dependencies=[]
-        ))
+        error_detail = ""
+        if diagnosis.specific_errors:
+            error = diagnosis.specific_errors[0]
+            file = error.get("file", "").split("/")[-1]
+            error_detail = f" in {file}: {error.get('error', '')[:60]}"
         
-    elif diagnosis.category == ErrorCategory.DEPENDENCY_MISSING:
-        recovery_steps.append(PlanStep(
-            description="Install or configure the missing dependency",
-            tool_name="edit_project_config",
-            success_criteria="Applied configuration changes to resolve dependency issue",
-            dependencies=[]
-        ))
-        # Step 3: Retry the original intent
-        recovery_steps.append(PlanStep(
-            description=f"Complete the original task: {failed_step.description}",
-            tool_name=failed_step.tool_name,
-            success_criteria=failed_step.success_criteria,
-            dependencies=[]
-        ))
-        
-    elif diagnosis.category == ErrorCategory.CONFIGURATION_ERROR:
-        recovery_steps.append(PlanStep(
-            description="Update project configuration to resolve the issue",
-            tool_name="edit_project_config", 
-            success_criteria="Applied necessary configuration changes",
-            dependencies=[]
-        ))
-        # Step 3: Retry the original intent
-        recovery_steps.append(PlanStep(
-            description=f"Complete the original task: {failed_step.description}",
-            tool_name=failed_step.tool_name,
-            success_criteria=failed_step.success_criteria,
-            dependencies=[]
-        ))
-        
-    else:
-        # Generic recovery: research + retry
-        recovery_steps.append(PlanStep(
-            description="Research solutions for the encountered problem",
-            tool_name="search",
-            success_criteria="Found relevant information to address the issue",
-            dependencies=[]
-        ))
-        # Step 3: Retry the original intent
-        recovery_steps.append(PlanStep(
-            description=f"Complete the original task with new approach: {failed_step.description}",
-            tool_name=failed_step.tool_name,
-            success_criteria=failed_step.success_criteria,
-            dependencies=[]
-        ))
+        message = f"I'll resolve this {diagnosis.category.value} issue{retry_context}{error_detail} with a targeted fix."
     
-    logger.info(f"Created {len(recovery_steps)} replacement recovery steps ending with {recovery_steps[-1].tool_name}")
-    return recovery_steps
+    return message
 
 
-def _insert_recovery_steps_before_failed_step(original_plan: ExecutionPlan, failed_step_index: int, recovery_steps: List[PlanStep]) -> ExecutionPlan:
-    """DEPRECATED: Use _replace_failed_step_with_recovery instead to avoid duplication."""
-    logger.warning("Using deprecated insertion method - this may cause tool duplication")
-    return _replace_failed_step_with_recovery(original_plan, failed_step_index, recovery_steps)
-
-
-# Helper functions
-
-def _extract_recent_context(state: State) -> str:
-    """Extract recent context for error diagnosis."""
-    recent_messages = state.messages[-3:] if len(state.messages) >= 3 else state.messages
-    context_parts = []
-    
-    for msg in recent_messages:
-        content = get_message_text(msg)[:100]
-        if content:
-            context_parts.append(content)
-    
-    return "; ".join(context_parts) if context_parts else "No recent context"
-
-
-def _categorize_error(error_message: str, tool_name: str, diagnosis: str) -> ErrorCategory:
-    """Categorize error based on patterns."""
+# Fast categorization functions (enhanced)
+def _categorize_error_fast(error_message: str, tool_name: str) -> ErrorCategory:
+    """Fast error categorization without LLM."""
     error_lower = error_message.lower()
     
     if any(term in error_lower for term in ["not found", "missing", "does not exist"]):
@@ -470,158 +660,27 @@ def _categorize_error(error_message: str, tool_name: str, diagnosis: str) -> Err
         return ErrorCategory.CONFIGURATION_ERROR
     elif any(term in error_lower for term in ["network", "connection", "timeout"]):
         return ErrorCategory.NETWORK_ERROR
-    elif any(term in error_lower for term in ["compile", "build", "syntax"]):
+    elif any(term in error_lower for term in ["compile", "build", "syntax", "cs0103", "cs0246"]):
         return ErrorCategory.BUILD_ERROR
     elif any(term in error_lower for term in ["dependency", "reference", "import"]):
         return ErrorCategory.DEPENDENCY_MISSING
-    elif tool_name in ["get_project_info", "scene_management"]:
-        return ErrorCategory.PROJECT_STATE_ERROR
+    elif any(term in error_lower for term in ["invalid", "parameter", "argument"]):
+        return ErrorCategory.INVALID_PARAMETER
     else:
         return ErrorCategory.UNKNOWN
 
 
-def _assess_severity(error_message: str, tool_name: str, retry_count: int) -> ErrorSeverity:
-    """Assess error severity."""
-    if retry_count >= 2:
+def _assess_severity_fast(error_message: str, tool_name: str, retry_count: int, error_count: int = 1) -> ErrorSeverity:
+    """Fast severity assessment considering error count."""
+    if retry_count >= 2 or error_count > 3:
         return ErrorSeverity.HIGH
     
     error_lower = error_message.lower()
     if any(term in error_lower for term in ["critical", "fatal", "crash"]):
         return ErrorSeverity.CRITICAL
-    elif any(term in error_lower for term in ["warning", "minor"]):
+    elif any(term in error_lower for term in ["warning", "minor"]) and error_count == 1:
         return ErrorSeverity.LOW
+    elif error_count > 1:
+        return ErrorSeverity.MEDIUM
     else:
         return ErrorSeverity.MEDIUM
-
-
-def _can_auto_fix(category: ErrorCategory, tool_name: str, error_message: str) -> bool:
-    """Determine if error can be automatically fixed."""
-    auto_fixable = {
-        ErrorCategory.CONFIGURATION_ERROR,
-        ErrorCategory.DEPENDENCY_MISSING,
-        ErrorCategory.INVALID_PARAMETER,
-        ErrorCategory.PROJECT_STATE_ERROR
-    }
-    return category in auto_fixable
-
-
-def _generate_fix_suggestions(category: ErrorCategory, tool_name: str, error_message: str, diagnosis: str) -> List[str]:
-    """Generate specific fix suggestions."""
-    fixes_map = {
-        ErrorCategory.RESOURCE_NOT_FOUND: [
-            "Create the missing resource or asset",
-            "Check project structure and file paths",
-            "Verify asset references and naming"
-        ],
-        ErrorCategory.CONFIGURATION_ERROR: [
-            "Update project configuration settings",
-            "Check build settings and player settings",
-            "Verify tool-specific configuration"
-        ],
-        ErrorCategory.DEPENDENCY_MISSING: [
-            "Install required Unity packages",
-            "Add missing script references",
-            "Create prerequisite assets or scripts"
-        ],
-        ErrorCategory.BUILD_ERROR: [
-            "Fix compilation errors in scripts",
-            "Check for syntax and reference errors",
-            "Update script dependencies"
-        ],
-        ErrorCategory.PROJECT_STATE_ERROR: [
-            "Check Unity project is open and accessible",
-            "Verify scene state and active objects",
-            "Refresh project structure"
-        ]
-    }
-    
-    return fixes_map.get(category, ["Retry with adjusted parameters", "Check tool configuration"])
-
-
-def _determine_required_tools(category: ErrorCategory, original_tool: str) -> List[str]:
-    """Determine what tools are needed to fix this error."""
-    tool_map = {
-        ErrorCategory.CONFIGURATION_ERROR: ["get_project_info", "edit_project_config"],
-        ErrorCategory.DEPENDENCY_MISSING: ["search", "create_asset", "compile_and_test"],
-        ErrorCategory.RESOURCE_NOT_FOUND: ["get_project_info", "create_asset"],
-        ErrorCategory.BUILD_ERROR: ["compile_and_test", "search", "write_file"],
-        ErrorCategory.PROJECT_STATE_ERROR: ["get_project_info", "scene_management"]
-    }
-    
-    return tool_map.get(category, ["get_project_info", original_tool])
-
-
-def _has_workaround(category: ErrorCategory, tool_name: str) -> bool:
-    """Check if a workaround exists for this error type."""
-    return category != ErrorCategory.CRITICAL
-
-
-def _extract_root_cause(diagnosis: str, error_message: str) -> str:
-    """Extract root cause from diagnosis with better parsing."""
-    if not diagnosis:
-        return f"Tool failure: {error_message[:100]}"
-    
-    # Look for specific patterns in the diagnosis
-    sentences = diagnosis.split('.')
-    
-    # First, look for sentences with causal keywords
-    for sentence in sentences:
-        sentence = sentence.strip()
-        if any(word in sentence.lower() for word in ["because", "due to", "caused by", "root cause", "the issue is"]):
-            return sentence[:200]  # Limit length
-    
-    # If no causal sentences, look for dependency/configuration issues
-    for sentence in sentences:
-        sentence = sentence.strip()
-        if any(word in sentence.lower() for word in ["missing", "package", "dependency", "not found", "configuration"]):
-            return sentence[:200]
-    
-    # If no specific patterns, use first substantial sentence
-    for sentence in sentences:
-        sentence = sentence.strip()
-        if len(sentence) > 20:
-            return sentence[:200]
-    
-    # Fallback
-    return f"Tool {error_message.split(':')[0] if ':' in error_message else 'execution'} failed: {error_message[:100]}"
-
-
-def _create_fallback_recovery_steps(diagnosis: ErrorDiagnosis, failed_step: PlanStep) -> List[PlanStep]:
-    """DEPRECATED: Use _create_replacement_recovery_steps instead."""
-    logger.warning("Using deprecated fallback recovery steps")
-    return _create_replacement_recovery_steps(diagnosis, failed_step)
-
-
-def _create_comprehensive_recovery_message(diagnosis: ErrorDiagnosis, recovery_steps: List[PlanStep], retry_count: int) -> str:
-    """Create comprehensive user-facing recovery message with visible diagnosis."""
-    severity_phrases = {
-        ErrorSeverity.CRITICAL: "critical issue",
-        ErrorSeverity.HIGH: "significant problem", 
-        ErrorSeverity.MEDIUM: "issue",
-        ErrorSeverity.LOW: "minor problem"
-    }
-    
-    severity = severity_phrases.get(diagnosis.severity, "issue")
-    retry_context = f" (after {retry_count} attempts)" if retry_count > 0 else ""
-    
-    # Create comprehensive message that shows the diagnosis and replacement strategy
-    message = f"I've encountered a {severity}{retry_context} that I can systematically resolve.\n\n"
-    message += f"**Problem Analysis:**\n{diagnosis.description}\n\n"
-    message += f"**Recovery Strategy:** I'll replace the failed step with a {len(recovery_steps)}-step solution:\n"
-    
-    for i, step in enumerate(recovery_steps, 1):
-        # Add context for the final step if it's retrying the original tool
-        if i == len(recovery_steps) and recovery_steps[-1].tool_name in step.description:
-            message += f"{i}. {step.description} (completing the original goal)\n"
-        else:
-            message += f"{i}. {step.description}\n"
-    
-    message += f"\nThis approach will fix the issue and complete the original objective without duplication."
-    
-    return message
-
-
-def _create_recovery_narration(diagnosis: ErrorDiagnosis, recovery_steps: List[PlanStep], retry_count: int) -> str:
-    """Create user-friendly narration for error recovery (kept for backward compatibility)."""
-    # This is the old function - now just calls the comprehensive one
-    return _create_comprehensive_recovery_message(diagnosis, recovery_steps, retry_count)

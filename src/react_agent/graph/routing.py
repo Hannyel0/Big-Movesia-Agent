@@ -1,4 +1,4 @@
-"""Simplified routing functions that prioritize completion detection."""
+"""Enhanced routing functions with micro-retry support and completion detection."""
 
 from __future__ import annotations
 from typing import Literal
@@ -6,8 +6,8 @@ from langchain_core.messages import AIMessage
 from react_agent.state import State
 
 
-def route_after_assess(state: State) -> Literal["advance_step", "increment_retry", "error_recovery", "finish"]:
-    """Simplified routing with absolute completion priority."""
+def route_after_assess(state: State) -> Literal["advance_step", "increment_retry", "micro_retry", "error_recovery", "finish"]:
+    """Enhanced routing with micro-retry support and absolute completion priority."""
     
     # Safety checks
     if not state.current_assessment:
@@ -15,6 +15,10 @@ def route_after_assess(state: State) -> Literal["advance_step", "increment_retry
     
     if not state.plan or not state.plan.steps:
         return "finish"
+    
+    # NEW: Check for micro-retry flag first (highest priority for transient errors)
+    if getattr(state, "should_micro_retry", False):
+        return "micro_retry"
     
     # ABSOLUTE PRIORITY: Check if we're on or past the last step
     last_step_index = len(state.plan.steps) - 1
@@ -100,6 +104,11 @@ def route_after_error_recovery(state: State) -> Literal["act", "finish"]:
     if state.plan and state.step_index < len(state.plan.steps):
         return "act"
     return "finish"
+
+
+def route_after_micro_retry(state: State) -> Literal["act"]:
+    """Route after micro-retry - always back to act to retry the tool."""
+    return "act"
 
 
 def route_classification_aware(state: State) -> Literal["direct_act", "simple_plan", "plan", "act"]:

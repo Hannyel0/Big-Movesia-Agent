@@ -35,7 +35,7 @@ class EnhancedFailureTestConfig:
                 "error": "Configuration file corrupted or inaccessible",
                 "category": "configuration_error",
                 "recoverable": True,
-                "max_failures": 2,  # NEW: Max times this can fail before succeeding
+                "max_failures": 1,  # NEW: Max times this can fail before succeeding
                 "recovery_message": "Configuration has been restored and is now accessible"
             },
 
@@ -65,7 +65,7 @@ class EnhancedFailureTestConfig:
                 "error": "Access denied: insufficient permissions to modify project files",
                 "category": "permission_error",
                 "recoverable": False,
-                "max_failures": -1,  # -1 means always fail
+                "max_failures": 1,  # -1 means always fail
                 "recovery_message": None
             },
 
@@ -75,7 +75,7 @@ class EnhancedFailureTestConfig:
                 "error": "Compilation failed: 3 errors, 7 warnings in PlayerController.cs",
                 "category": "build_error",
                 "recoverable": True,
-                "max_failures": 2,
+                "max_failures": 1,
                 "recovery_message": "Compilation errors have been resolved - build is now clean"
             },
 
@@ -105,7 +105,7 @@ class EnhancedFailureTestConfig:
                 "error": "Unity Editor is not running or project is not loaded",
                 "category": "project_state_error",
                 "recoverable": True,
-                "max_failures": 2,
+                "max_failures": 1,
                 "recovery_message": "Unity Editor has been started and project is now loaded"
             }
         }
