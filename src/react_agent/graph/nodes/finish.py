@@ -18,6 +18,88 @@ from react_agent.utils import get_message_text, get_model
 narration_engine = NarrationEngine()
 
 
+async def _generate_direct_action_response(state: State, model) -> str:
+    """Generate a response for direct actions that don't have plans."""
+    
+    # Extract the original user question
+    user_question = None
+    for msg in state.messages:
+        if hasattr(msg, 'type') and msg.type == 'human':
+            user_question = get_message_text(msg)
+            break
+    
+    # Find the tool result from the most recent tool execution
+    tool_results = []
+    for msg in reversed(state.messages):
+        if isinstance(msg, ToolMessage):
+            try:
+                result = json.loads(get_message_text(msg))
+                tool_name = msg.name or 'unknown'
+                tool_results.append({
+                    'tool': tool_name,
+                    'result': result,
+                    'success': result.get('success', True)
+                })
+            except:
+                continue
+    
+    if not tool_results:
+        return "I've processed your request. Let me know if you need anything else!"
+    
+    # Get the most recent tool result
+    latest_result = tool_results[0]
+    
+    # Create a prompt for the LLM to generate a natural response
+    response_prompt = f"""You just executed the '{latest_result['tool']}' tool to answer this question: "{user_question}"
+
+Tool Result:
+{json.dumps(latest_result['result'], indent=2)}
+
+Generate a natural, conversational response that:
+1. Directly answers the user's question using the tool result
+2. Extracts and presents the most relevant information
+3. Is concise but complete
+4. Sounds natural and helpful (not robotic)
+
+For example, if they asked "what is my project name?" and the result contains project_name: "MyGameProject", say something like:
+"Your project is called **MyGameProject**. It's running on Unity 2023.3.15f1."
+
+Generate your response now:"""
+    
+    try:
+        messages = [
+            {"role": "system", "content": "You are providing a direct, helpful answer to a Unity development question based on tool results. Be specific, extract the relevant info, and present it naturally."},
+            {"role": "user", "content": response_prompt}
+        ]
+        
+        response = await model.ainvoke(messages)
+        answer = get_message_text(response).strip()
+        
+        # Validate response quality
+        if len(answer) < 10:
+            # Fallback: extract key info directly
+            result_data = latest_result['result']
+            if latest_result['tool'] == 'get_project_info':
+                project_name = result_data.get('project_name', 'Unknown')
+                engine = result_data.get('engine', 'Unity')
+                version = result_data.get('version', '')
+                return f"Your project is **{project_name}**, running on {engine} {version}."
+            elif latest_result['tool'] == 'search':
+                results_count = len(result_data.get('result', []))
+                return f"I found {results_count} relevant resources for your query."
+            else:
+                return f"The {latest_result['tool']} operation completed successfully."
+        
+        return answer
+        
+    except Exception as e:
+        # Final fallback
+        if latest_result['tool'] == 'get_project_info':
+            project_name = latest_result['result'].get('project_name', 'your project')
+            return f"Your project is: {project_name}"
+        return "I've completed your request successfully."
+
+
 async def _generate_comprehensive_completion_summary(state: State, model, context: Context) -> str:
     """Generate a comprehensive AI completion summary based on the entire execution."""
     
@@ -183,9 +265,21 @@ Generate your contextual summary based on what actually happened in this session
 async def finish(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     """Enhanced finish node with AI-generated completion summary based on actual execution."""
     context = runtime.context
-    model = get_model(context.model)  # Use the main model for summaries
+    model = get_model(context.model)
     
-    # Generate AI-based completion summary instead of hardcoded template
+    # Check if this is a direct action (no plan) or a planned execution
+    if state.plan is None or len(state.plan.steps) == 0:
+        # DIRECT ACTION PATH - no plan exists
+        try:
+            direct_response = await _generate_direct_action_response(state, model)
+            return {"messages": [AIMessage(content=direct_response)]}
+        except Exception as e:
+            # Fallback for direct actions
+            return {
+                "messages": [AIMessage(content="I've processed your request. Let me know if you need anything else!")]
+            }
+    
+    # PLANNED EXECUTION PATH - generate comprehensive summary
     try:
         ai_completion_summary = await _generate_comprehensive_completion_summary(state, model, context)
     except Exception as e:
