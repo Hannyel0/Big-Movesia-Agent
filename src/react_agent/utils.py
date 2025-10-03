@@ -146,13 +146,7 @@ def create_dynamic_step_message(step: 'PlanStep', step_num: int, total_steps: in
             "find the most recent tutorials and docs",
             "explore what the Unity community recommends"
         ],
-        "get_project_info": [
-            "examine your project setup carefully",
-            "inspect the current Unity configuration",
-            "analyze your project structure and settings",
-            "check what you're working with here",
-            "understand your development environment"
-        ],
+        # ❌ REMOVED: "get_project_info" - no longer a tool
         "get_script_snippets": [
             "grab some proven code patterns for this",
             "fetch battle-tested script templates",
@@ -316,16 +310,7 @@ def create_varied_post_tool_message(tool_name: str, result: dict, step_num: int)
             ]
         return responses[hash_val % len(responses)]
     
-    elif tool_name == "get_project_info":
-        engine = result.get("engine", "Unity")
-        version = result.get("version", "")
-        responses = [
-            f"Got the full picture of your {engine} {version} setup.",
-            f"Project analysis complete - {engine} {version} environment mapped.",
-            f"Perfect! Understanding your {engine} project structure now.",
-            f"Project details captured - working with {engine} {version}."
-        ]
-        return responses[hash_val % len(responses)]
+    # ❌ REMOVED: get_project_info tool handling - no longer available
     
     elif tool_name == "get_script_snippets":
         count = result.get("total_snippets", 0)

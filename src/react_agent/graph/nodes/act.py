@@ -475,7 +475,6 @@ def _is_generic_response(narration: str) -> bool:
         "gameobject", "component", "asset", "texture", "mesh", "animation",
         "physics", "collider", "rigidbody", "transform", "canvas", "ui",
     ]
-
     has_game_dev_context = any(term in narration_lower for term in game_dev_terms)
     return not has_game_dev_context
 
@@ -486,7 +485,6 @@ def _create_rich_pre_step_narration(
     """Create rich, contextual narration for a development step with retry awareness."""
     base_narrations = {
         "search": f"Searching for Unity/Unreal resources and tutorials related to: {current_step.description}",
-        "get_project_info": f"Analyzing the current project structure and configuration to understand: {current_step.description}",
         "get_script_snippets": f"Retrieving code templates and examples for: {current_step.description}",
         "create_asset": f"Creating a new game asset: {current_step.description}",
         "write_file": f"Writing code for: {current_step.description}",

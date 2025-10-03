@@ -1,10 +1,11 @@
-"""Complexity classification node for the ReAct agent."""
+"""Complexity classification node for the ReAct agent with runtime config support."""
 
 from __future__ import annotations
 
 from typing import Any, Dict, Literal
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.runtime import Runtime
 from pydantic import BaseModel, Field
 
@@ -32,8 +33,43 @@ class ComplexityAssessment(BaseModel):
     )
 
 
-async def classify(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Classify request complexity using LLM to determine execution strategy."""
+async def classify(
+    state: State, 
+    config: RunnableConfig,
+    runtime: Runtime[Context]
+) -> Dict[str, Any]:
+    """Classify request complexity using LLM to determine execution strategy.
+    
+    Now reads runtime project context from config.configurable and stores it
+    in runtime_metadata for downstream nodes to access.
+    """
+    
+    # ✅ NEW: Extract project context from config.configurable
+    configurable = config.get("configurable", {})
+    project_id = configurable.get("project_id", "")
+    project_root = configurable.get("project_root", "")
+    project_name = configurable.get("project_name", "")
+    unity_version = configurable.get("unity_version", "")
+    sqlite_path = configurable.get("sqlite_path", "")
+    submitted_at = configurable.get("submitted_at", "")
+    
+    # ✅ NEW: Log project context for debugging
+    print(f"\n{'='*60}")
+    print(f"🔧 [Classify] Runtime Config Received:")
+    print(f"  Project ID: {project_id}")
+    print(f"  Project Root: {project_root}")
+    print(f"  Project Name: {project_name}")
+    print(f"  Unity Version: {unity_version}")
+    print(f"  SQLite Path: {sqlite_path}")
+    print(f"  Submitted At: {submitted_at}")
+    print(f"{'='*60}\n")
+    
+    # ✅ NEW: Validate that we received project context
+    if not project_id or not project_root:
+        print(f"⚠️  [Classify] WARNING: Missing critical project context!")
+        print(f"   - project_id: {project_id or 'MISSING'}")
+        print(f"   - project_root: {project_root or 'MISSING'}")
+    
     context = runtime.context
     model = get_model(context.model)
     
@@ -50,7 +86,13 @@ async def classify(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
             "runtime_metadata": {
                 **state.runtime_metadata,
                 "complexity_level": "complex_plan",
-                "complexity_reasoning": "No clear request found - defaulting to full planning"
+                "complexity_reasoning": "No clear request found - defaulting to full planning",
+                # ✅ NEW: Store project context in runtime_metadata
+                "project_id": project_id,
+                "project_root": project_root,
+                "project_name": project_name,
+                "unity_version": unity_version,
+                "sqlite_path": sqlite_path,
             }
         }
     
@@ -86,8 +128,12 @@ Classification Guidelines:
 
 Provide clear reasoning for your classification to help the system choose the optimal execution path."""
 
-    # Dynamic request content
+    # Dynamic request content with project context awareness
     classification_request = f"""Classify this Unity/game development request: "{user_request}"
+
+Project Context:
+- Unity Version: {unity_version or "Unknown"}
+- Project: {project_name or "Unknown"}
 
 Analyze the request and determine:
 1. How many distinct development steps would be required?
@@ -120,14 +166,25 @@ Provide your complexity classification with reasoning."""
             "Let me analyze this request and create an appropriate plan."
         )
         
-        # Store classification in runtime metadata for routing decisions
+        # ✅ NEW: Store classification AND project context in runtime metadata
         updated_metadata = {
             **state.runtime_metadata,
             "complexity_level": assessment.complexity_level,
             "complexity_reasoning": assessment.reasoning,
             "complexity_confidence": assessment.confidence,
-            "suggested_approach": assessment.suggested_approach
+            "suggested_approach": assessment.suggested_approach,
+            # ✅ NEW: Propagate project context to all downstream nodes
+            "project_id": project_id,
+            "project_root": project_root,
+            "project_name": project_name,
+            "unity_version": unity_version,
+            "sqlite_path": sqlite_path,
+            "config_received_at": submitted_at,
         }
+        
+        print(f"✅ [Classify] Classification complete: {assessment.complexity_level}")
+        print(f"   Confidence: {assessment.confidence:.2f}")
+        print(f"   Project context stored in runtime_metadata for downstream nodes\n")
         
         return {
             "runtime_metadata": updated_metadata,
@@ -136,6 +193,8 @@ Provide your complexity classification with reasoning."""
         
     except Exception as e:
         # Fallback classification with error handling
+        print(f"⚠️  [Classify] Error during classification: {e}")
+        
         # Analyze request length and keywords as backup
         request_words = len(user_request.split())
         
@@ -159,7 +218,13 @@ Provide your complexity classification with reasoning."""
                 "complexity_level": fallback_level,
                 "complexity_reasoning": fallback_reason,
                 "complexity_confidence": 0.5,
-                "classification_error": str(e)
+                "classification_error": str(e),
+                # ✅ NEW: Include project context even in fallback
+                "project_id": project_id,
+                "project_root": project_root,
+                "project_name": project_name,
+                "unity_version": unity_version,
+                "sqlite_path": sqlite_path,
             },
             "messages": [AIMessage(content=fallback_narration)]
         }

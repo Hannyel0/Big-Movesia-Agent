@@ -1,8 +1,13 @@
-"""Intelligent planning node for the ReAct agent with true LLM-driven reasoning."""
+"""Planning node that uses project context from runtime metadata.
+
+This demonstrates how ANY node can access the project context that was
+passed via config and stored in runtime_metadata by the classify node.
+"""
 
 from __future__ import annotations
 
 import json
+from datetime import datetime, UTC
 from typing import Any, Dict, List
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -110,13 +115,25 @@ CREATE A PLAN THAT MAKES SENSE FOR THIS SPECIFIC REQUEST, NOT A GENERIC TEMPLATE
 
 
 async def plan(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Intelligent planning with true LLM reasoning and contextual adaptation."""
-    context = runtime.context
+    """Create execution plan using LLM - now with project context awareness."""
     
-    # Use planning model or fall back to main model
+    # ✅ NEW: Access project context from runtime_metadata (stored by classify node)
+    project_id = state.runtime_metadata.get("project_id", "")
+    project_root = state.runtime_metadata.get("project_root", "")
+    project_name = state.runtime_metadata.get("project_name", "")
+    unity_version = state.runtime_metadata.get("unity_version", "")
+    
+    print(f"\n{'='*60}")
+    print(f"📋 [Plan] Creating plan with project context:")
+    print(f"  Project: {project_name} (ID: {project_id})")
+    print(f"  Root: {project_root}")
+    print(f"  Unity: {unity_version}")
+    print(f"{'='*60}\n")
+    
+    context = runtime.context
     model = get_model(context.planning_model or context.model)
     
-    # Extract the user query from messages
+    # Extract user request
     user_message = None
     for msg in reversed(state.messages):
         if isinstance(msg, HumanMessage):
@@ -124,7 +141,7 @@ async def plan(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
             break
     
     if not user_message:
-        return {"messages": [AIMessage(content="I didn't receive a clear request. Could you please let me know what you'd like help with?")]}
+        raise ValueError("No user request found in messages")
     
     # Extract conversation context for intelligent planning
     conversation_context = _extract_conversation_context(state)
@@ -156,10 +173,25 @@ CONTEXTUAL ADAPTATIONS:
 
 Create a smart, efficient plan that solves the user's actual need rather than following a rigid template."""
 
+    # ✅ NEW: Enhanced planning prompt with project context
+    project_context_str = f"""
+Current Project Context:
+- Project Name: {project_name or "Not specified"}
+- Unity Version: {unity_version or "Not specified"}
+- Project Root: {project_root or "Not specified"}
+
+Consider this context when creating your plan. For example:
+- If Unity version is known, ensure compatibility with that version
+- If project structure is available, reference existing assets
+- Plan steps should be appropriate for the project setup
+"""
+
     # CORRECTED SYSTEM CONTENT for intelligent planning
     intelligent_system_content = f"""You are an expert Unity/game development planning assistant with access to these tools:
 
 {COMPREHENSIVE_TOOLS_DESCRIPTION}
+
+{project_context_str if project_id else ""}
 
 TOOL USAGE CLARIFICATION:
 **get_script_snippets**: Reads and extracts code from the USER'S existing Unity project scripts
@@ -189,7 +221,9 @@ PLANNING EXAMPLES:
 - "Improve existing UI" → get_script_snippets → see current UI code → write_file
 - "Create AI enemy" → search → learn AI patterns → write_file
 
-CREATE PLANS BASED ON WHETHER YOU NEED TO READ EXISTING CODE OR RESEARCH NEW SOLUTIONS."""
+CREATE PLANS BASED ON WHETHER YOU NEED TO READ EXISTING CODE OR RESEARCH NEW SOLUTIONS.
+
+Remember: Every step must specify a concrete tool to use. No generic steps allowed."""
 
     # Structure messages for intelligent planning
     messages = [
@@ -213,17 +247,22 @@ CREATE PLANS BASED ON WHETHER YOU NEED TO READ EXISTING CODE OR RESEARCH NEW SOL
             )
             steps.append(step)
         
+        # When creating the final plan, you can also store project context in plan metadata:
         plan = ExecutionPlan(
             goal=structured_response.goal,
             steps=steps,
             metadata={
                 "planning_mode": "intelligent", 
                 "context_considered": conversation_context,
-                "original_request": user_message
+                "original_request": user_message,
+                "project_id": project_id,
+                "project_name": project_name,
+                "unity_version": unity_version,
+                "planned_at": datetime.now(UTC).isoformat(),
             }
         )
         
-        # CREATE CONTEXTUAL PLANNING NARRATION
+        # CREATE CONTEXTUAL PLANNING NARRRATION
         planning_narration = _create_intelligent_planning_narration(plan, user_message, conversation_context)
         
         return {

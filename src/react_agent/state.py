@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, ConfigDict  # Fixed: Use pydantic directl
 # Type-constrained tool names based on available tools
 ToolName = Literal[
     "search",
-    "get_project_info", 
+    # "get_project_info",  # ❌ REMOVED - read from runtime_metadata instead
     "create_asset",
     "write_file",
     "edit_project_config",

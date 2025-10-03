@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 from typing import Literal, Optional, Dict, Any, List
-import asyncio
 import json
 import os
 from datetime import datetime, UTC
@@ -10,6 +9,7 @@ from collections import defaultdict
 
 from langchain_tavily import TavilySearch
 from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
 from langgraph.runtime import get_runtime
 
 from react_agent.context import Context
@@ -31,7 +31,7 @@ class EnhancedFailureTestConfig:
         return {
             # Configuration errors - fail first 2 times
             "config_error": {
-                "tools": ["edit_project_config", "get_project_info"],
+                "tools": ["edit_project_config"],
                 "error": "Configuration file corrupted or inaccessible",
                 "category": "configuration_error",
                 "recoverable": True,
@@ -101,7 +101,7 @@ class EnhancedFailureTestConfig:
 
             # Project state errors - fail first 2 times
             "project_state_error": {
-                "tools": ["get_project_info", "scene_management", "compile_and_test"],
+                "tools": ["scene_management", "compile_and_test"],
                 "error": "Unity Editor is not running or project is not loaded",
                 "category": "project_state_error",
                 "recoverable": True,
@@ -361,48 +361,6 @@ async def search(query: str) -> Dict[str, Any]:
             "error": f"Search failed: {str(e)}",
             "timestamp": datetime.now(UTC).isoformat()
         }
-
-
-@tool
-async def get_project_info() -> Dict[str, Any]:
-    """Get information about the current Unity or Unreal Engine project."""
-    # Check for controlled failure with proper guard
-    failure_info = failure_config.should_fail("get_project_info")
-    if failure_info and failure_info.get("should_fail", False):
-        return _simulate_failure("get_project_info", failure_info)
-
-    return {
-        "success": True,
-        "engine": "Unity",
-        "version": "2023.3.15f1",
-        "project_name": "MyGameProject",
-        "current_scene": "MainScene.unity",
-        "target_platform": "PC, Mac & Linux Standalone",
-        "render_pipeline": "Universal Render Pipeline",
-        "installed_packages": [
-            "Unity UI",
-            "Post Processing",
-            "Cinemachine",
-            "Input System",
-            "Timeline",
-            "TextMeshPro"
-        ],
-        "project_structure": {
-            "Assets": {
-                "Scripts": ["PlayerController.cs", "GameManager.cs", "UIManager.cs"],
-                "Scenes": ["MainScene.unity", "MenuScene.unity"],
-                "Prefabs": ["Player.prefab", "Enemy.prefab", "UI_Canvas.prefab"],
-                "Materials": ["Ground.mat", "Player.mat", "Sky.mat"],
-                "Textures": ["ground_texture.png", "player_sprite.png"]
-            }
-        },
-        "build_settings": {
-            "scenes_in_build": ["MenuScene", "MainScene"],
-            "platform": "Windows x64"
-        },
-        "timestamp": datetime.now(UTC).isoformat(),
-        "message": failure_info.get("recovery_message", "Successfully retrieved project information") if failure_info else "Successfully retrieved project information"
-    }
 
 
 @tool
@@ -686,7 +644,7 @@ async def scene_management(action: str, scene_name: str, parameters: Optional[Di
 # Export tools - focused on game development
 TOOLS = [
     search,
-    get_project_info,
+    # get_project_info,  # ❌ REMOVED - now read from runtime_metadata
     create_asset,
     write_file,
     edit_project_config,
@@ -705,13 +663,7 @@ TOOL_METADATA = {
         "best_for": ["game dev tutorials", "Unity/Unreal documentation", "best practices", "troubleshooting"],
         "type_safe": True
     },
-    "get_project_info": {
-        "category": "project_management",
-        "cost": "low",
-        "reliability": "very_high",
-        "best_for": ["project inspection", "understanding current setup", "debugging"],
-        "type_safe": True
-    },
+    # "get_project_info": { ... },  # ❌ REMOVED
     "create_asset": {
         "category": "content_creation",
         "cost": "low", 
