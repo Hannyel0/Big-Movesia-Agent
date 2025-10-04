@@ -43,14 +43,14 @@ def _build_comprehensive_tools_description() -> str:
             tool_info += f"   - Reliability: {metadata['reliability']}, Cost: {metadata['cost']}\n"
         
         # Add practical usage examples
-        if tool.name == "search":
+        if tool.name == "search_project":
+            tool_info += "   - Example uses: Find assets by name, query GameObject hierarchy, check component usage\n"
+        elif tool.name == "code_snippets":
+            tool_info += "   - Example uses: Find movement code by functionality, locate UI patterns, discover physics implementations\n"
+        elif tool.name == "file_operation":
+            tool_info += "   - Example uses: Read existing scripts, write new implementations, modify code safely\n"
+        elif tool.name == "web_search":
             tool_info += "   - Example uses: Research Unity patterns, find tutorials, troubleshoot errors\n"
-        elif tool.name == "get_script_snippets":
-            tool_info += "   - Example uses: Get movement code, UI templates, physics examples\n"
-        elif tool.name == "create_asset":
-            tool_info += "   - Example uses: Create scripts, prefabs, materials, scenes\n"
-        elif tool.name == "write_file":
-            tool_info += "   - Example uses: Generate complete scripts, config files, shaders\n"
             
         tools_info.append(tool_info)
     
@@ -194,32 +194,38 @@ Consider this context when creating your plan. For example:
 {project_context_str if project_id else ""}
 
 TOOL USAGE CLARIFICATION:
-**get_script_snippets**: Reads and extracts code from the USER'S existing Unity project scripts
-- Use when you need to see what code the user already has
-- Use to understand current implementations before modifying them
-- Use to find existing patterns in their project to build upon
-- NOT for getting templates - this reads their actual codebase
+**search_project**: Query indexed Unity project database using natural language
+- Use to find assets, GameObjects, components, and dependencies in the project
+- Use to understand project structure and existing implementations
+- Use to check what's already available before creating new content
 
-**search**: Research external Unity documentation, tutorials, best practices
+**code_snippets**: Semantic search through C# scripts by functionality
+- Use to find existing code that does what you need
+- Use to discover implementations and patterns in the project
+- Use when you need to understand how something is already coded
+
+**file_operation**: Safe file I/O with validation and diff previews
+- Use to read existing scripts and understand current implementations
+- Use to write new files or modify existing ones safely
+- Use with validate_only=True to preview changes before applying
+
+**web_search**: Research external Unity documentation, tutorials, best practices
 - Use for finding implementation approaches for new features
 - Use for troubleshooting and learning about Unity systems
-- Use when you need information not in the user's project
-
-**write_file**: Create new scripts or modify existing ones
-- Use after understanding current code (via get_script_snippets)
-- Use to implement new features or fix existing code
+- Use when you need information not available in the project
 
 INTELLIGENT PLANNING PRINCIPLES:
-- **To understand existing code**: get_script_snippets → analyze current implementation
-- **To learn new approaches**: search → research implementation methods  
-- **To build on existing code**: get_script_snippets → write_file (modification)
-- **To create new features**: search → write_file (new implementation)
+- **To understand existing project**: search_project → discover assets and structure
+- **To find existing code**: code_snippets → locate relevant implementations
+- **To learn new approaches**: web_search → research implementation methods  
+- **To build on existing code**: code_snippets → file_operation (read/modify)
+- **To create new features**: web_search → file_operation (write new)
 
 PLANNING EXAMPLES:
-- "Fix player movement" → get_script_snippets → analyze current code → write_file
-- "Add grass physics" → search → research approaches → write_file  
-- "Improve existing UI" → get_script_snippets → see current UI code → write_file
-- "Create AI enemy" → search → learn AI patterns → write_file
+- "Fix player movement" → code_snippets → find movement code → file_operation (modify)
+- "Add grass physics" → web_search → research approaches → file_operation (write)  
+- "Improve existing UI" → search_project → find UI assets → code_snippets → file_operation (modify)
+- "Create AI enemy" → web_search → learn AI patterns → file_operation (write)
 
 CREATE PLANS BASED ON WHETHER YOU NEED TO READ EXISTING CODE OR RESEARCH NEW SOLUTIONS.
 
@@ -313,13 +319,13 @@ def _create_intelligent_planning_narration(plan: ExecutionPlan, user_message: st
         narration += f"\n{i}. **{step.description}**"
         
         # Add contextual reasoning for why this step makes sense
-        if step.tool_name == "search" and i > 1:
+        if step.tool_name == "web_search" and i > 1:
             narration += " (research needed for this specific implementation)"
-        elif step.tool_name == "get_project_info" and i > 2:
+        elif step.tool_name == "search_project" and i > 2:
             narration += " (checking your project setup for compatibility)"
-        elif step.tool_name == "get_script_snippets" and "search" not in [s.tool_name for s in plan.steps[:i-1]]:
+        elif step.tool_name == "code_snippets" and "web_search" not in [s.tool_name for s in plan.steps[:i-1]]:
             narration += " (I have the code patterns you need)"
-        elif step.tool_name == "compile_and_test" and step_count > 3:
+        elif step.tool_name == "file_operation" and step_count > 3:
             narration += " (ensuring everything integrates properly)"
     
     # Add context-aware conclusion
@@ -345,7 +351,7 @@ def _create_minimal_intelligent_plan(user_message: str, context: str) -> List[Pl
         return [
             PlanStep(
                 description=f"Research and provide comprehensive information about: {user_message}",
-                tool_name="search",
+                tool_name="web_search",
                 success_criteria="Found relevant, detailed information to answer the question"
             )
         ]
@@ -354,13 +360,13 @@ def _create_minimal_intelligent_plan(user_message: str, context: str) -> List[Pl
     if any(word in message_lower for word in ["simple", "basic", "quick"]) and "script" in message_lower:
         return [
             PlanStep(
-                description="Get proven code template for the requested functionality",
-                tool_name="get_script_snippets", 
-                success_criteria="Retrieved appropriate code template"
+                description="Find existing code patterns for the requested functionality",
+                tool_name="code_snippets", 
+                success_criteria="Retrieved appropriate code examples"
             ),
             PlanStep(
                 description="Create the script file with the implementation",
-                tool_name="write_file",
+                tool_name="file_operation",
                 success_criteria="Successfully created working script file",
                 dependencies=[0]
             )
@@ -371,18 +377,18 @@ def _create_minimal_intelligent_plan(user_message: str, context: str) -> List[Pl
         return [
             PlanStep(
                 description="Analyze current project state to identify the issue",
-                tool_name="get_project_info",
+                tool_name="search_project",
                 success_criteria="Identified project configuration and potential issues"
             ),
             PlanStep(
-                description="Test compilation to pinpoint specific errors",
-                tool_name="compile_and_test",
-                success_criteria="Identified specific compilation or runtime issues", 
+                description="Find existing code that might be causing the problem",
+                tool_name="code_snippets",
+                success_criteria="Located relevant code implementations", 
                 dependencies=[0]
             ),
             PlanStep(
                 description="Research solutions for the identified problems",
-                tool_name="search",
+                tool_name="web_search",
                 success_criteria="Found relevant troubleshooting information",
                 dependencies=[1]
             )
@@ -393,30 +399,30 @@ def _create_minimal_intelligent_plan(user_message: str, context: str) -> List[Pl
         return [
             PlanStep(
                 description="Research current best practices and approaches",
-                tool_name="search", 
+                tool_name="web_search", 
                 success_criteria="Found comprehensive implementation guidance"
             ),
             PlanStep(
                 description="Understand project context and requirements",
-                tool_name="get_project_info",
+                tool_name="search_project",
                 success_criteria="Analyzed project setup and compatibility requirements"
             ),
             PlanStep(
-                description="Get detailed code examples and templates",
-                tool_name="get_script_snippets",
+                description="Find existing code examples and patterns",
+                tool_name="code_snippets",
                 success_criteria="Retrieved comprehensive code patterns",
                 dependencies=[0, 1]
             ),
             PlanStep(
                 description="Implement the complete solution",
-                tool_name="write_file", 
+                tool_name="file_operation", 
                 success_criteria="Created working implementation file",
                 dependencies=[2]
             ),
             PlanStep(
-                description="Test and validate the implementation", 
-                tool_name="compile_and_test",
-                success_criteria="Verified solution works correctly",
+                description="Validate the implementation with project queries", 
+                tool_name="search_project",
+                success_criteria="Verified solution integrates correctly with project",
                 dependencies=[3]
             )
         ]
@@ -425,12 +431,12 @@ def _create_minimal_intelligent_plan(user_message: str, context: str) -> List[Pl
     return [
         PlanStep(
             description=f"Analyze and understand the specific requirements for: {user_message}",
-            tool_name="get_project_info",
+            tool_name="search_project",
             success_criteria="Gathered relevant context and project information"
         ),
         PlanStep(
             description="Implement the requested functionality efficiently", 
-            tool_name="get_script_snippets" if "code" in message_lower or "script" in message_lower else "search",
+            tool_name="code_snippets" if "code" in message_lower or "script" in message_lower else "web_search",
             success_criteria="Provided working solution for the request",
             dependencies=[0]
         )

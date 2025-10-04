@@ -14,56 +14,10 @@ from react_agent.tools import TOOLS
 from react_agent.utils import get_message_text, get_model
 
 
-def _format_project_info_response(state: State) -> str:
-    """Format project information from runtime_metadata into a readable response."""
-    project_id = state.runtime_metadata.get("project_id", "Unknown")
-    project_name = state.runtime_metadata.get("project_name", "Unknown")
-    project_root = state.runtime_metadata.get("project_root", "Unknown")
-    unity_version = state.runtime_metadata.get("unity_version", "Unknown")
-    sqlite_path = state.runtime_metadata.get("sqlite_path", "Unknown")
-    
-    # Check if we have real project data
-    if project_id and project_id != "Unknown" and project_name != "Unknown":
-        response = f"""**Current Unity Project Information**
-
-**Project Details:**
-- **Name:** {project_name}
-- **Project ID:** {project_id}
-- **Unity Version:** {unity_version}
-- **Root Directory:** {project_root}
-- **Database:** {sqlite_path}
-
-**Project Status:**
-- Engine: Unity
-- Target Platform: PC, Mac & Linux Standalone
-- Render Pipeline: Universal Render Pipeline
-
-**Available Packages:**
-- Unity UI
-- Post Processing
-- Cinemachine
-- Input System
-- Timeline
-- TextMeshPro
-
-Your project is currently connected and ready for development tasks. What would you like to work on?"""
-    else:
-        response = """I don't see a Unity project connected right now. To get project information, please:
-
-1. Open your Unity project in the Unity Editor
-2. Ensure the Movesia plugin is installed
-3. The connection should establish automatically
-
-Once connected, I'll be able to see your project structure, Unity version, and help with development tasks."""
-    
-    return response
 
 
 async def direct_act(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Execute simple requests directly without planning overhead.
-    
-    Now handles project info requests by reading from runtime_metadata instead of tool calls.
-    """
+    """Execute simple requests directly without planning overhead using production tools."""
     context = runtime.context
     model = get_model(context.model)
     
@@ -79,32 +33,14 @@ async def direct_act(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
             "messages": [AIMessage(content="I need a clear request to help you with your Unity development.")]
         }
     
-    # ✅ NEW: Check if this is a project info request - handle directly from runtime_metadata
-    request_lower = user_request.lower()
-    is_project_info_request = any(pattern in request_lower for pattern in [
-        "project info", "what's in my project", "project structure", 
-        "project details", "current project", "project status",
-        "my project", "about my project", "show me my project"
-    ])
-    
-    if is_project_info_request:
-        print(f"\n📊 [direct_act] Handling project info request directly from runtime_metadata")
-        project_info_response = _format_project_info_response(state)
-        return {
-            "messages": [AIMessage(content=project_info_response)]
-        }
-    
     # Analyze request to determine the most appropriate single tool or response
     analysis_prompt = f"""Analyze this Unity/game development request and determine the best direct response approach: "{user_request}"
 
 Available tools:
-- search: For finding tutorials, documentation, best practices
-- create_asset: For creating scripts, prefabs, materials, scenes
-- write_file: For writing script files or configurations
-- edit_project_config: For changing project settings
-- get_script_snippets: For code examples and templates
-- compile_and_test: For testing and compilation
-- scene_management: For scene operations
+- search_project: For querying project data, assets, hierarchy, components
+- code_snippets: For semantic search through C# scripts by functionality
+- file_operation: For reading, writing, modifying project files safely
+- web_search: For finding tutorials, documentation, best practices
 
 Response types:
 1. TOOL_CALL: Use a specific tool if the request clearly maps to one tool operation
@@ -206,38 +142,30 @@ Give practical guidance, explanations, or instructions based on your knowledge. 
 
 
 def _determine_tool_from_request(user_request: str, analysis_text: str) -> str:
-    """Determine the most appropriate tool based on request content.
-    
-    NOTE: get_project_info removed - handled directly in direct_act.
-    """
+    """Determine the most appropriate production tool based on request content."""
     request_lower = user_request.lower()
     
     # Direct tool mapping based on request patterns
     tool_patterns = {
-        # ❌ REMOVED: "get_project_info" - handled directly from runtime_metadata
-        "search": [
-            "search for", "find tutorials", "look up", "research", 
-            "documentation", "best practices", "how to"
+        "search_project": [
+            "project info", "what's in my project", "project structure", 
+            "project details", "current project", "my project", "find assets",
+            "show me assets", "list components", "project hierarchy"
         ],
-        "get_script_snippets": [
+        "code_snippets": [
             "code example", "script template", "code snippet", "show me code",
-            "example code", "sample script"
+            "example code", "sample script", "find code", "existing code",
+            "how is this implemented", "code that does"
         ],
-        "compile_and_test": [
-            "compile", "test", "build", "check for errors", "run test"
+        "file_operation": [
+            "create script", "write script", "create file", "generate code", 
+            "write code", "modify file", "read file", "update script",
+            "new script", "make script"
         ],
-        "create_asset": [
-            "create script", "new script", "make script", "create prefab",
-            "new prefab", "create material", "new material"
-        ],
-        "write_file": [
-            "write script", "create file", "generate code", "write code"
-        ],
-        "scene_management": [
-            "scene", "level", "create scene", "new scene", "manage scene"
-        ],
-        "edit_project_config": [
-            "settings", "configure", "project settings", "build settings"
+        "web_search": [
+            "search for", "find tutorials", "look up", "research", 
+            "documentation", "best practices", "how to", "learn about",
+            "Unity documentation", "tutorials"
         ]
     }
     
@@ -251,8 +179,8 @@ def _determine_tool_from_request(user_request: str, analysis_text: str) -> str:
         if any(pattern in request_lower for pattern in patterns):
             return tool_name
     
-    # Default to search for research-type requests
+    # Default to web_search for research-type requests
     if any(word in request_lower for word in ["how", "what", "why", "when", "where"]):
-        return "search"
+        return "web_search"
     
     return None

@@ -167,37 +167,65 @@ def _extract_detailed_tool_errors(tool_result: dict, tool_name: str) -> Dict[str
                 detailed_context["error_summary"] = f"{error_count} errors in {len(error_files)} files: {', '.join(error_types)}"
             else:
                 detailed_context["error_summary"] = f"{error_count} compilation errors found"
-            detailed_context["specific_issues"] = list(error_types)
         else:
             detailed_context["error_summary"] = "No specific errors extracted"
         
         logger.info(f"Extracted {error_count} compilation errors from tool result")
         
-    elif tool_name == "write_file":
-        # Extract file writing errors
+    elif tool_name == "file_operation":
+        # Extract file operation errors
         error_msg = tool_result.get("error", "")
         if error_msg:
+            operation = tool_result.get("operation", "unknown")
+            file_path = tool_result.get("file_path", "")
             detailed_context["extracted_errors"].append({
-                "type": "file_error",
-                "file": tool_result.get("attempted_path", ""),
+                "type": "file_operation_error",
+                "operation": operation,
+                "file": file_path,
                 "error": error_msg,
                 "severity": "error"
             })
             detailed_context["error_count"] = 1
-            detailed_context["error_summary"] = f"File write error: {error_msg[:50]}"
+            detailed_context["error_summary"] = f"File {operation} error: {error_msg[:50]}"
     
-    elif tool_name == "search":
-        # Extract search errors
+    elif tool_name == "web_search":
+        # Extract web search errors
         error_msg = tool_result.get("error", "")
         if error_msg:
             detailed_context["extracted_errors"].append({
-                "type": "search_error",
+                "type": "web_search_error",
                 "query": tool_result.get("query", ""),
                 "error": error_msg,
                 "severity": "error"
             })
             detailed_context["error_count"] = 1
-            detailed_context["error_summary"] = f"Search error: {error_msg[:50]}"
+            detailed_context["error_summary"] = f"Web search error: {error_msg[:50]}"
+    
+    elif tool_name == "search_project":
+        # Extract project search errors
+        error_msg = tool_result.get("error", "")
+        if error_msg:
+            detailed_context["extracted_errors"].append({
+                "type": "search_project_error",
+                "query": tool_result.get("query_description", ""),
+                "error": error_msg,
+                "severity": "error"
+            })
+            detailed_context["error_count"] = 1
+            detailed_context["error_summary"] = f"Project search error: {error_msg[:50]}"
+    
+    elif tool_name == "code_snippets":
+        # Extract code search errors
+        error_msg = tool_result.get("error", "")
+        if error_msg:
+            detailed_context["extracted_errors"].append({
+                "type": "code_search_error",
+                "query": tool_result.get("query", ""),
+                "error": error_msg,
+                "severity": "error"
+            })
+            detailed_context["error_count"] = 1
+            detailed_context["error_summary"] = f"Code search error: {error_msg[:50]}"
     
     else:
         # Generic error extraction for other tools
@@ -264,33 +292,15 @@ def _is_tool_result_successful(tool_result: dict, tool_name: str) -> bool:
     if "success" in tool_result:
         return tool_result["success"] is True
     
-    # Tool-specific success checks for simulated tools
-    if tool_name == "create_asset":
-        return bool(tool_result.get("asset_type") and tool_result.get("name"))
-    elif tool_name == "get_script_snippets":
-        return bool(tool_result.get("snippets") or tool_result.get("available_snippets") or tool_result.get("snippets_by_script"))
-    elif tool_name == "write_file":
-        return bool(tool_result.get("file_path") and tool_result.get("size_bytes") is not None)
-    elif tool_name == "compile_and_test":
-        # For compilation, success means low/no errors
-        errors = tool_result.get("errors", 0)
-        compilation_errors = tool_result.get("compilation_errors", [])
-        
-        # Check if there are actual compilation errors
-        if compilation_errors and len(compilation_errors) > 0:
-            return False
-        if errors and errors > 0:
-            return False
-            
-        return "compilation_time" in tool_result or "errors" in tool_result
-    elif tool_name == "search":
-        return bool(tool_result.get("result")) and len(tool_result.get("result", [])) > 0
-    elif tool_name == "get_project_info":
-        return bool(tool_result.get("engine") or tool_result.get("project_name"))
-    elif tool_name == "scene_management":
-        return bool(tool_result.get("action") and tool_result.get("scene_name"))
-    elif tool_name == "edit_project_config":
-        return bool(tool_result.get("config_section"))
+    # Tool-specific success checks for production tools
+    if tool_name == "search_project":
+        return bool(tool_result.get("results")) and tool_result.get("result_count", 0) > 0
+    elif tool_name == "code_snippets":
+        return bool(tool_result.get("snippets")) and tool_result.get("total_found", 0) > 0
+    elif tool_name == "file_operation":
+        return tool_result.get("success", False)
+    elif tool_name == "web_search":
+        return bool(tool_result.get("results")) and len(tool_result.get("results", [])) > 0
     
     return len(tool_result) > 1
 
@@ -506,20 +516,25 @@ async def _generate_completion_summary(state: State, model, context: Context) ->
                 result = json.loads(get_message_text(msg))
                 tool_name = msg.name or 'unknown'
                 if _is_tool_result_successful(result, tool_name):
-                    if tool_name == "write_file":
-                        recent_tool_results.append(f"Created file: {result.get('file_path', 'script file')}")
-                    elif tool_name == "create_asset":
-                        recent_tool_results.append(f"Created {result.get('asset_type', 'asset')}: {result.get('name', 'new asset')}")
-                    elif tool_name == "compile_and_test":
-                        errors = result.get('errors', 0)
-                        recent_tool_results.append(f"Compilation: {errors} errors, {result.get('warnings', 0)} warnings")
+                    if tool_name == "file_operation":
+                        operation = result.get('operation', 'operation')
+                        file_path = result.get('file_path', 'file')
+                        recent_tool_results.append(f"File {operation}: {file_path}")
+                    elif tool_name == "search_project":
+                        count = result.get('result_count', 0)
+                        recent_tool_results.append(f"Found {count} project items")
+                    elif tool_name == "code_snippets":
+                        count = result.get('total_found', 0)
+                        recent_tool_results.append(f"Found {count} code snippets")
+                    elif tool_name == "web_search":
+                        count = len(result.get('results', []))
+                        recent_tool_results.append(f"Found {count} web resources")
                     else:
                         recent_tool_results.append(f"{tool_name}: {result.get('message', 'completed successfully')}")
             except:
                 recent_tool_results.append(f"{msg.name}: completed")
     
     completion_prompt = f"""You have just completed all steps for the goal: "{state.plan.goal}"
-
 Completed Steps:
 {chr(10).join(completed_steps_summary)}
 

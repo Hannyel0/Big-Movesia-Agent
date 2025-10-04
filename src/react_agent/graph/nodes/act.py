@@ -484,13 +484,10 @@ def _create_rich_pre_step_narration(
 ) -> str:
     """Create rich, contextual narration for a development step with retry awareness."""
     base_narrations = {
-        "search": f"Searching for Unity/Unreal resources and tutorials related to: {current_step.description}",
-        "get_script_snippets": f"Retrieving code templates and examples for: {current_step.description}",
-        "create_asset": f"Creating a new game asset: {current_step.description}",
-        "write_file": f"Writing code for: {current_step.description}",
-        "scene_management": f"Setting up scene elements for: {current_step.description}",
-        "compile_and_test": f"Compiling and testing the implementation: {current_step.description}",
-        "edit_project_config": f"Configuring project settings for: {current_step.description}",
+        "search_project": f"Querying indexed project data for: {current_step.description}",
+        "code_snippets": f"Searching scripts semantically for: {current_step.description}",
+        "file_operation": f"Performing file operation for: {current_step.description}",
+        "web_search": f"Searching Unity/Unreal resources and tutorials for: {current_step.description}",
     }
 
     base_narration = base_narrations.get(

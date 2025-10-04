@@ -14,7 +14,6 @@ from pydantic import BaseModel, Field
 
 from react_agent.context import Context
 from react_agent.state import State, PlanStep, ExecutionPlan, StepStatus
-from react_agent.utils import get_model, get_message_text
 from react_agent.tools import TOOLS
 
 logger = logging.getLogger(__name__)
@@ -22,15 +21,18 @@ logger = logging.getLogger(__name__)
 
 class ErrorCategory(str, Enum):
     """Categories of errors that can occur."""
-    DEPENDENCY_MISSING = "dependency_missing"
-    CONFIGURATION_ERROR = "configuration_error"
-    RESOURCE_NOT_FOUND = "resource_not_found"
+    QUERY_ERROR = "query_error"  # search_project failures
+    SEARCH_ERROR = "search_error"  # code_snippets failures
+    FILE_ERROR = "file_error"  # file_operation failures
+    BUILD_ERROR = "build_error"  # compilation/build failures
+    DEPENDENCY_MISSING = "dependency_missing"  # missing dependencies
+    VALIDATION_ERROR = "validation_error"
     PERMISSION_ERROR = "permission_error"
     NETWORK_ERROR = "network_error"
+    CONFIGURATION_ERROR = "configuration_error"
+    RESOURCE_NOT_FOUND = "resource_not_found"
     INVALID_PARAMETER = "invalid_parameter"
     TOOL_MALFUNCTION = "tool_malfunction"
-    PROJECT_STATE_ERROR = "project_state_error"
-    BUILD_ERROR = "build_error"
     UNKNOWN = "unknown"
 
 

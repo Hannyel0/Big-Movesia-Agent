@@ -1,710 +1,804 @@
-"""Enhanced tools for the ReAct agent with sophisticated failure simulation and attempt tracking."""
+"""Production-ready tools for Unity agent with SQLite and Qdrant integration."""
 
 from __future__ import annotations
 from typing import Literal, Optional, Dict, Any, List
 import json
 import os
+import asyncio
+import difflib
 from datetime import datetime, UTC
-from collections import defaultdict
+from pathlib import Path
 
-from langchain_tavily import TavilySearch
 from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 from langgraph.runtime import get_runtime
+from langchain_tavily import TavilySearch
 
 from react_agent.context import Context
 
 
-class EnhancedFailureTestConfig:
-    """Enhanced configuration for controlled failure testing with attempt tracking."""
+# ============================================================================
+# SQL Query Generator (uses LLM to convert natural language to SQL)
+# ============================================================================
 
-    def __init__(self):
-        self.enabled = os.getenv("TEST_FAILURES_ENABLED", "false").lower() == "true"
-        self.failure_patterns = self._load_failure_patterns()
-        # Track attempts per tool per failure pattern
-        self.attempt_counters: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
-        # Track which tools have been "fixed" (exceeded max failures)
-        self.fixed_tools: Dict[str, set] = defaultdict(set)
+async def _generate_sql_query(
+    query_description: str,
+    tables_hint: Optional[List[str]],
+    context: Context
+) -> Dict[str, Any]:
+    """Generate SQL query from natural language using LLM."""
+    from react_agent.utils import get_model
+    
+    model = get_model(context.model)
+    
+    schema_info = """
+    Available tables and their schemas:
+    
+    assets (guid TEXT PRIMARY KEY, path TEXT, kind TEXT, mtime INTEGER, size INTEGER, 
+            hash TEXT, deleted INTEGER, updated_ts INTEGER, project_id TEXT)
+    - Contains all Unity assets (scripts, prefabs, scenes, materials, etc.)
+    
+    asset_deps (guid TEXT, dep TEXT, PRIMARY KEY (guid, dep))
+    - Contains asset dependencies
+    
+    scenes (guid TEXT PRIMARY KEY, path TEXT, updated_ts INTEGER, project_id TEXT)
+    - Contains scene information
+    
+    game_objects (id INTEGER PRIMARY KEY, guid TEXT, scene_path TEXT, name TEXT, 
+                  is_active INTEGER, tag TEXT, layer INTEGER, parent_id INTEGER, 
+                  project_id TEXT)
+    - Contains GameObject hierarchy from scenes
+    
+    components (id INTEGER PRIMARY KEY, game_object_id INTEGER, type TEXT, 
+                properties TEXT, project_id TEXT)
+    - Contains component data attached to GameObjects
+    
+    events (id INTEGER PRIMARY KEY, ts INTEGER, session TEXT, type TEXT, 
+            body TEXT, project_id TEXT)
+    - Contains Unity Editor events
+    """
+    
+    prompt = f"""You are a SQL query generator for a Unity project database.
 
-    def _load_failure_patterns(self) -> Dict[str, Dict[str, Any]]:
-        """Load failure patterns with configurable failure counts."""
-        return {
-            # Configuration errors - fail first 2 times
-            "config_error": {
-                "tools": ["edit_project_config"],
-                "error": "Configuration file corrupted or inaccessible",
-                "category": "configuration_error",
-                "recoverable": True,
-                "max_failures": 1,  # NEW: Max times this can fail before succeeding
-                "recovery_message": "Configuration has been restored and is now accessible"
-            },
+{schema_info}
 
-            # Missing dependency errors - fail first time only
-            "missing_dependency": {
-                "tools": ["write_file", "compile_and_test"],
-                "error": "Required Unity package 'com.unity.inputsystem' not found in project",
-                "category": "dependency_missing",
-                "recoverable": True,
-                "max_failures": 1,  # Fail only once
-                "recovery_message": "Required Unity package has been installed and is now available"
-            },
+User query: "{query_description}"
+{f"Focus on tables: {', '.join(tables_hint)}" if tables_hint else ""}
 
-            # Resource not found errors - fail first 3 times
-            "resource_missing": {
-                "tools": ["get_script_snippets", "scene_management"],
-                "error": "Specified script file 'PlayerController.cs' does not exist in project",
-                "category": "resource_not_found",
-                "recoverable": True,
-                "max_failures": 1,
-                "recovery_message": "Missing script files have been located and are now accessible"
-            },
+Generate a valid SQLite query to answer this question. The query should:
+1. Use proper JOINs when querying multiple tables
+2. Filter by project_id when available in context
+3. Include helpful column aliases for readability
+4. Use appropriate WHERE clauses for filtering
+5. Return relevant columns only
 
-            # Permission/access errors - always fail (unrecoverable)
-            "permission_error": {
-                "tools": ["write_file", "edit_project_config"],
-                "error": "Access denied: insufficient permissions to modify project files",
-                "category": "permission_error",
-                "recoverable": False,
-                "max_failures": 1,  # -1 means always fail
-                "recovery_message": None
-            },
+Respond with ONLY the SQL query, no explanations."""
 
-            # Build/compilation errors - fail first 2 times
-            "build_error": {
-                "tools": ["compile_and_test", "write_file"],
-                "error": "Compilation failed: 3 errors, 7 warnings in PlayerController.cs",
-                "category": "build_error",
-                "recoverable": True,
-                "max_failures": 1,
-                "recovery_message": "Compilation errors have been resolved - build is now clean"
-            },
-
-            # Network/external service errors - fail first time only
-            "network_error": {
-                "tools": ["search"],
-                "error": "Network timeout: Unable to connect to search service",
-                "category": "network_error",
-                "recoverable": True,
-                "max_failures": 1,
-                "recovery_message": "Network connection has been restored"
-            },
-
-            # Invalid parameter errors - fail first time only
-            "invalid_parameter": {
-                "tools": ["create_asset", "scene_management"],
-                "error": "Invalid asset type 'InvalidType' - must be one of: script, prefab, material, scene",
-                "category": "invalid_parameter",
-                "recoverable": True,
-                "max_failures": 1,
-                "recovery_message": "Parameter validation has been updated - invalid parameters are now handled correctly"
-            },
-
-            # Project state errors - fail first 2 times
-            "project_state_error": {
-                "tools": ["scene_management", "compile_and_test"],
-                "error": "Unity Editor is not running or project is not loaded",
-                "category": "project_state_error",
-                "recoverable": True,
-                "max_failures": 1,
-                "recovery_message": "Unity Editor has been started and project is now loaded"
-            }
-        }
-
-    def should_fail(self, tool_name: str) -> Optional[Dict[str, Any]]:
-        """Determine if a tool should fail based on attempt tracking."""
-        if not self.enabled:
-            return None
-
-        # Check environment variable for specific tool failure
-        specific_failure = os.getenv(f"FAIL_{tool_name.upper()}")
-        if specific_failure:
-            pattern_name = specific_failure
-        else:
-            # Check for general failure trigger
-            failure_trigger = os.getenv("TRIGGER_FAILURE")
-            if not failure_trigger:
-                return None
-            pattern_name = failure_trigger
-
-        # Find matching failure pattern
-        if pattern_name not in self.failure_patterns:
-            return None
-            
-        pattern = self.failure_patterns[pattern_name]
-        if tool_name not in pattern["tools"]:
-            return None
-
-        # Check if this tool+pattern combination has already been "fixed"
-        if pattern_name in self.fixed_tools[tool_name]:
-            return None  # Don't fail anymore - it's been "fixed"
-
-        max_failures = pattern["max_failures"]
-        
-        # Always fail if max_failures is -1 (unrecoverable)
-        if max_failures == -1:
-            current_attempts = self.attempt_counters[tool_name][pattern_name]
-            self.attempt_counters[tool_name][pattern_name] = current_attempts + 1
-            return {
-                "should_fail": True,
-                "error_message": pattern["error"],
-                "error_category": pattern["category"],
-                "recoverable": pattern["recoverable"],
-                "attempt_count": current_attempts + 1,
-                "max_failures": max_failures,
-                "recovery_message": pattern["recovery_message"]
-            }
-
-        # Check current attempt count for recoverable errors
-        current_attempts = self.attempt_counters[tool_name][pattern_name]
-        
-        if current_attempts < max_failures:
-            # Still within failure limit - fail this time
-            self.attempt_counters[tool_name][pattern_name] = current_attempts + 1
-            return {
-                "should_fail": True,
-                "error_message": pattern["error"],
-                "error_category": pattern["category"],
-                "recoverable": pattern["recoverable"],
-                "attempt_count": current_attempts + 1,
-                "max_failures": max_failures,
-                "recovery_message": pattern["recovery_message"]
-            }
-        else:
-            # Exceeded failure limit - mark as "fixed" and succeed
-            self.fixed_tools[tool_name].add(pattern_name)
-            return {
-                "should_fail": False,  # SUCCESS after being "fixed"
-                "was_fixed": True,
-                "recovery_message": pattern["recovery_message"],
-                "attempt_count": current_attempts + 1,
-                "max_failures": max_failures
-            }
-
-    def reset_failures(self, tool_name: Optional[str] = None, pattern_name: Optional[str] = None):
-        """Reset failure counters for testing purposes."""
-        if tool_name and pattern_name:
-            # Reset specific tool+pattern combination
-            if tool_name in self.attempt_counters:
-                self.attempt_counters[tool_name][pattern_name] = 0
-            if tool_name in self.fixed_tools:
-                self.fixed_tools[tool_name].discard(pattern_name)
-        elif tool_name:
-            # Reset all patterns for a specific tool
-            self.attempt_counters[tool_name].clear()
-            self.fixed_tools[tool_name].clear()
-        else:
-            # Reset everything
-            self.attempt_counters.clear()
-            self.fixed_tools.clear()
-
-    def get_failure_stats(self) -> Dict[str, Any]:
-        """Get current failure statistics for debugging."""
-        return {
-            "attempt_counters": dict(self.attempt_counters),
-            "fixed_tools": {tool: list(patterns) for tool, patterns in self.fixed_tools.items()},
-            "enabled_patterns": list(self.failure_patterns.keys()),
-            "active_trigger": os.getenv("TRIGGER_FAILURE"),
-            "tool_specific_triggers": {
-                key: value for key, value in os.environ.items() 
-                if key.startswith("FAIL_")
-            }
-        }
-
-# Global enhanced failure config instance
-failure_config = EnhancedFailureTestConfig()
-
-
-def _simulate_failure(tool_name: str, failure_info: Dict[str, Any]) -> Dict[str, Any]:
-    """Simulate a tool failure with realistic error information."""
-    base_result = {
-        "success": False,
-        "error": failure_info["error_message"],
-        "error_category": failure_info["error_category"],
-        "recoverable": failure_info["recoverable"],
-        "tool_name": tool_name,
-        "timestamp": datetime.now(UTC).isoformat(),
-        "attempt_count": failure_info["attempt_count"]
+    response = await model.ainvoke([{"role": "user", "content": prompt}])
+    sql_query = response.content.strip()
+    
+    # Clean up the query (remove markdown code blocks if present)
+    if sql_query.startswith("```sql"):
+        sql_query = sql_query.replace("```sql", "").replace("```", "").strip()
+    elif sql_query.startswith("```"):
+        sql_query = sql_query.replace("```", "").strip()
+    
+    return {
+        "query": sql_query,
+        "original_request": query_description
     }
-
-    # Add tool-specific failure details
-    if tool_name == "compile_and_test":
-        base_result.update({
-            "compilation_errors": [
-                {
-                    "file": "Assets/Scripts/PlayerController.cs",
-                    "line": 23,
-                    "error": "CS0103: The name 'InputSystem' does not exist in the current context"
-                },
-                {
-                    "file": "Assets/Scripts/PlayerController.cs",
-                    "line": 45,
-                    "error": "CS0246: The type or namespace name 'CharacterController' could not be found"
-                }
-            ],
-            "warnings": [
-                {
-                    "file": "Assets/Scripts/GameManager.cs",
-                    "line": 12,
-                    "warning": "CS0649: Field 'GameManager.playerScore' is never assigned to"
-                }
-            ]
-        })
-
-    elif tool_name == "write_file":
-        base_result.update({
-            "attempted_path": "Assets/Scripts/PlayerController.cs",
-            "file_size_attempted": 1247,
-            "partial_content_written": False
-        })
-
-    elif tool_name == "get_script_snippets":
-        base_result.update({
-            "searched_paths": [
-                "Assets/Scripts/",
-                "Assets/Standard Assets/",
-                "Packages/com.unity.standardassets/"
-            ],
-            "files_checked": 0,
-            "search_pattern": "movement, character controller"
-        })
-
-    elif tool_name == "scene_management":
-        base_result.update({
-            "attempted_scene": "MainScene.unity",
-            "attempted_action": "load_scene",
-            "current_scenes": []
-        })
-
-    elif tool_name == "search":
-        base_result.update({
-            "query": "Unity character controller tutorial",
-            "timeout_duration": "30 seconds",
-            "retry_attempts": 3
-        })
-
-    return base_result
 
 
 @tool
-async def search(query: str) -> Dict[str, Any]:
-    """Search for general web results about game development, Unity, Unreal Engine, and related topics."""
+async def search_project(
+    query_description: str,
+    config: RunnableConfig,
+    tables: Optional[List[str]] = None,
+    return_format: Literal["structured", "natural_language"] = "structured"
+) -> Dict[str, Any]:
+    """Search the Unity project using natural language queries.
+    
+    Converts natural language to SQL and queries the indexed SQLite database containing
+    scenes, assets, hierarchy, components, dependencies, and events.
+    
+    Args:
+        query_description: Natural language description of what to find
+        tables: Optional hint about which tables to query (assets, scenes, game_objects, components, events)
+        return_format: How to format results - "structured" returns raw data, "natural_language" returns readable text
+        
+    Returns:
+        Query results with the generated SQL for transparency
+    """
     try:
-        # Check for controlled failure with proper guard
-        failure_info = failure_config.should_fail("search")
-        if failure_info and failure_info.get("should_fail", False):
-            return _simulate_failure("search", failure_info)
-
         runtime = get_runtime(Context)
-        timeout = runtime.context.tool_timeout_seconds
-
-        # Simulate realistic search results for testing
-        simulated_results = [
-            {
-                "title": f"Unity Best Practices for {query}",
-                "url": "https://docs.unity3d.com/best-practices",
-                "content": f"Comprehensive guide covering {query} implementation in Unity with examples and code snippets.",
-                "score": 0.95
-            },
-            {
-                "title": f"Unity Forum Discussion: {query}",
-                "url": "https://forum.unity.com/threads/character-controller",
-                "content": f"Community discussion about {query} with solutions to common problems and debugging tips.",
-                "score": 0.88
-            },
-            {
-                "title": f"Unity Manual: {query}",
-                "url": "https://docs.unity3d.com/manual/character-controller",
-                "content": f"Official Unity documentation for {query} with API reference and implementation examples.",
-                "score": 0.92
-            },
-            {
-                "title": f"YouTube Tutorial: {query}",
-                "url": "https://youtube.com/unity-tutorial",
-                "content": f"Step-by-step video tutorial covering {query} implementation in Unity 2023.",
-                "score": 0.85
-            },
-            {
-                "title": f"Unity Learn: {query}",
-                "url": "https://learn.unity.com/tutorial/character-movement",
-                "content": f"Interactive Unity Learn tutorial for {query} with downloadable project files.",
-                "score": 0.90
+        context = runtime.context
+        
+        # Get project context from config
+        configurable = config.get("configurable", {})
+        project_id = configurable.get("project_id")
+        sqlite_path = configurable.get("sqlite_path")
+        
+        if not sqlite_path or not os.path.exists(sqlite_path):
+            return {
+                "success": False,
+                "error": "SQLite database not found. Ensure Unity project is connected.",
+                "query_description": query_description
             }
-        ]
         
-        # Handle recovery case or normal success
-        result = {
+        # Generate SQL query from natural language
+        query_result = await _generate_sql_query(query_description, tables, context)
+        sql_query = query_result["query"]
+        
+        # Inject project_id filter if not already present
+        if project_id and "project_id" in sql_query and "project_id =" not in sql_query:
+            # Add WHERE clause or extend existing one
+            if "WHERE" in sql_query.upper():
+                sql_query = sql_query.replace("WHERE", f"WHERE project_id = '{project_id}' AND", 1)
+            else:
+                sql_query = sql_query.rstrip(";") + f" WHERE project_id = '{project_id}'"
+        
+        # Execute query
+        import sqlite3
+        conn = sqlite3.connect(sqlite_path)
+        conn.row_factory = sqlite3.Row  # Enable column name access
+        cursor = conn.cursor()
+        
+        cursor.execute(sql_query)
+        rows = cursor.fetchall()
+        
+        # Convert to list of dicts
+        results = [dict(row) for row in rows]
+        
+        conn.close()
+        
+        # Format results based on return_format
+        if return_format == "natural_language" and results:
+            formatted = _format_results_natural_language(results, query_description)
+        else:
+            formatted = results
+        
+        return {
             "success": True,
-            "result": simulated_results,
-            "query": query,
-            "total_results": len(simulated_results),
-            "timestamp": datetime.now(UTC).isoformat(),
-            "message": failure_info.get("recovery_message", f"Found {len(simulated_results)} relevant resources for '{query}'")
-        } if failure_info else {
-            "success": True,
-            "result": simulated_results,
-            "query": query,
-            "total_results": len(simulated_results),
-            "timestamp": datetime.now(UTC).isoformat(),
-            "message": f"Found {len(simulated_results)} relevant resources for '{query}'"
+            "results": formatted,
+            "result_count": len(results),
+            "sql_query": sql_query,
+            "query_description": query_description,
+            "timestamp": datetime.now(UTC).isoformat()
         }
-        return result
         
-    except asyncio.TimeoutError:
+    except Exception as e:
         return {
             "success": False,
-            "error": f"Search timed out after {timeout} seconds",
+            "error": f"Query execution failed: {str(e)}",
+            "query_description": query_description,
+            "sql_query": query_result.get("query", "N/A") if 'query_result' in locals() else "N/A"
+        }
+
+
+def _format_results_natural_language(results: List[Dict], query: str) -> str:
+    """Format SQL results into natural language."""
+    if not results:
+        return f"No results found for: {query}"
+    
+    count = len(results)
+    summary = f"Found {count} result{'s' if count != 1 else ''} for '{query}':\n\n"
+    
+    for i, row in enumerate(results[:10], 1):  # Limit to 10 for readability
+        summary += f"{i}. "
+        # Format key fields from the row
+        key_fields = []
+        if "name" in row:
+            key_fields.append(f"{row['name']}")
+        if "path" in row:
+            key_fields.append(f"({row['path']})")
+        if "kind" in row or "type" in row:
+            key_fields.append(f"[{row.get('kind') or row.get('type')}]")
+        
+        summary += " ".join(key_fields) + "\n"
+    
+    if count > 10:
+        summary += f"\n... and {count - 10} more results"
+    
+    return summary
+
+
+# ============================================================================
+# Code Snippets (Qdrant Vector Search)
+# ============================================================================
+
+@tool
+async def code_snippets(
+    query: str,
+    config: RunnableConfig,
+    filter_by: Optional[Dict[str, Any]] = None,
+    top_k: int = 5,
+    include_context: bool = True
+) -> Dict[str, Any]:
+    """Search through Unity C# scripts using semantic meaning via vector search.
+    
+    Finds code by WHAT IT DOES, not just what it's called. Uses Qdrant vector database
+    to perform semantic search through indexed scripts.
+    
+    Args:
+        query: Natural language description of what code you're looking for
+        filter_by: Optional filters (file_type, namespace, etc.)
+        top_k: Number of results to return (default 5)
+        include_context: Include surrounding code context
+        
+    Returns:
+        Ranked scripts with relevance scores and code snippets
+    """
+    try:
+        runtime = get_runtime(Context)
+        context = runtime.context
+        
+        # Get project context
+        configurable = config.get("configurable", {})
+        project_id = configurable.get("project_id")
+        
+        if not project_id:
+            return {
+                "success": False,
+                "error": "Project ID not available. Ensure Unity project is connected."
+            }
+        
+        # Generate query embedding
+        from react_agent.utils import get_model
+        model = get_model(context.model)
+        
+        # Use OpenAI embeddings (you'll need to adjust based on your embedding model)
+        embedding_response = await _get_embedding(query, context)
+        query_vector = embedding_response["embedding"]
+        
+        # Search Qdrant
+        qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+        collection_name = os.getenv("QDRANT_COLLECTION", "movesia")
+        
+        import httpx
+        async with httpx.AsyncClient() as client:
+            search_payload = {
+                "vector": query_vector,
+                "limit": top_k,
+                "with_payload": True,
+                "filter": {
+                    "must": [
+                        {"key": "project_id", "match": {"value": project_id}},
+                        {"key": "kind", "match": {"value": "Script"}}
+                    ]
+                }
+            }
+            
+            # Add additional filters if provided
+            if filter_by:
+                for key, value in filter_by.items():
+                    search_payload["filter"]["must"].append({
+                        "key": key,
+                        "match": {"value": value}
+                    })
+            
+            response = await client.post(
+                f"{qdrant_url}/collections/{collection_name}/points/search",
+                json=search_payload,
+                timeout=30.0
+            )
+            
+            if response.status_code != 200:
+                return {
+                    "success": False,
+                    "error": f"Qdrant search failed: {response.text}"
+                }
+            
+            search_results = response.json()
+        
+        # Format results
+        snippets = []
+        for hit in search_results.get("result", []):
+            payload = hit.get("payload", {})
+            snippet = {
+                "file_path": payload.get("rel_path", "unknown"),
+                "line_range": payload.get("range", ""),
+                "relevance_score": hit.get("score", 0.0),
+                "code": payload.get("text", ""),
+                "file_hash": payload.get("file_hash", "")
+            }
+            
+            if include_context:
+                # Add context lines (if available in future enhancement)
+                snippet["context"] = "Full file context available on request"
+            
+            snippets.append(snippet)
+        
+        return {
+            "success": True,
+            "query": query,
+            "snippets": snippets,
+            "total_found": len(snippets),
             "timestamp": datetime.now(UTC).isoformat()
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Code search failed: {str(e)}",
+            "query": query
+        }
+
+
+async def _get_embedding(text: str, context: Context) -> Dict[str, Any]:
+    """Generate embedding for text using configured model."""
+    # This is a placeholder - you'll need to integrate with your actual embedding service
+    # For now, returning a mock embedding
+    # In production, use OpenAI embeddings or your configured embedding model
+    
+    try:
+        # Example using OpenAI (you'll need to adjust based on your setup)
+        import openai
+        client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        
+        response = await client.embeddings.create(
+            model="text-embedding-3-small",
+            input=text
+        )
+        
+        return {
+            "embedding": response.data[0].embedding,
+            "model": "text-embedding-3-small"
+        }
+    except Exception as e:
+        # Fallback to mock for development
+        import random
+        return {
+            "embedding": [random.random() for _ in range(1536)],
+            "model": "mock",
+            "error": str(e)
+        }
+
+
+# ============================================================================
+# File Operation (Unified File I/O)
+# ============================================================================
+
+@tool
+async def file_operation(
+    operation: Literal["read", "write", "modify", "delete", "move", "diff"],
+    file_path: str,
+    config: RunnableConfig,
+    content: Optional[str] = None,
+    modification_spec: Optional[Dict[str, Any]] = None,
+    validate_only: bool = False
+) -> Dict[str, Any]:
+    """Unified file I/O with Unity AssetDatabase integration.
+    
+    Handles all file manipulation safely with validation, diff generation,
+    and Unity-compatible operations.
+    
+    Args:
+        operation: Type of operation (read/write/modify/delete/move/diff)
+        file_path: Target file path (relative to project root)
+        content: Content for write/modify operations
+        modification_spec: Specification for surgical edits (line_ranges, patterns, replacements)
+        validate_only: If True, performs dry-run without actual changes
+        
+    Returns:
+        Operation result with diff preview and validation status
+    """
+    try:
+        runtime = get_runtime(Context)
+        
+        # Get project context
+        configurable = config.get("configurable", {})
+        project_root = configurable.get("project_root")
+        
+        if not project_root:
+            return {
+                "success": False,
+                "error": "Project root not available. Ensure Unity project is connected."
+            }
+        
+        # Resolve absolute path
+        abs_path = Path(project_root) / file_path
+        
+        # Validate path is within project
+        try:
+            abs_path = abs_path.resolve()
+            project_root_resolved = Path(project_root).resolve()
+            if not str(abs_path).startswith(str(project_root_resolved)):
+                return {
+                    "success": False,
+                    "error": f"Path {file_path} is outside project root"
+                }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Invalid file path: {str(e)}"
+            }
+        
+        # Execute operation
+        if operation == "read":
+            return await _file_read(abs_path, file_path)
+        
+        elif operation == "write":
+            if not content:
+                return {"success": False, "error": "Content required for write operation"}
+            return await _file_write(abs_path, file_path, content, validate_only)
+        
+        elif operation == "modify":
+            if not modification_spec:
+                return {"success": False, "error": "Modification spec required for modify operation"}
+            return await _file_modify(abs_path, file_path, modification_spec, validate_only)
+        
+        elif operation == "delete":
+            return await _file_delete(abs_path, file_path, validate_only)
+        
+        elif operation == "move":
+            if not modification_spec or "new_path" not in modification_spec:
+                return {"success": False, "error": "new_path required in modification_spec for move"}
+            new_path = Path(project_root) / modification_spec["new_path"]
+            return await _file_move(abs_path, new_path, file_path, modification_spec["new_path"], validate_only)
+        
+        elif operation == "diff":
+            if not content:
+                return {"success": False, "error": "Content required for diff operation"}
+            return await _file_diff(abs_path, file_path, content)
+        
+        else:
+            return {"success": False, "error": f"Unknown operation: {operation}"}
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"File operation failed: {str(e)}",
+            "operation": operation,
+            "file_path": file_path
+        }
+
+
+async def _file_read(abs_path: Path, rel_path: str) -> Dict[str, Any]:
+    """Read file contents."""
+    if not abs_path.exists():
+        return {
+            "success": False,
+            "error": f"File not found: {rel_path}"
+        }
+    
+    try:
+        content = abs_path.read_text(encoding="utf-8")
+        return {
+            "success": True,
+            "operation": "read",
+            "file_path": rel_path,
+            "content": content,
+            "size_bytes": len(content.encode("utf-8")),
+            "line_count": len(content.split("\n"))
         }
     except Exception as e:
         return {
             "success": False,
-            "error": f"Search failed: {str(e)}",
+            "error": f"Failed to read file: {str(e)}",
+            "file_path": rel_path
+        }
+
+
+async def _file_write(abs_path: Path, rel_path: str, content: str, validate_only: bool) -> Dict[str, Any]:
+    """Write content to file."""
+    # Generate diff if file exists
+    diff = ""
+    if abs_path.exists():
+        old_content = abs_path.read_text(encoding="utf-8")
+        diff = "\n".join(difflib.unified_diff(
+            old_content.splitlines(),
+            content.splitlines(),
+            fromfile=f"{rel_path} (original)",
+            tofile=f"{rel_path} (new)",
+            lineterm=""
+        ))
+    
+    if validate_only:
+        return {
+            "success": True,
+            "operation": "write",
+            "file_path": rel_path,
+            "validate_only": True,
+            "would_create": not abs_path.exists(),
+            "diff_preview": diff,
+            "size_bytes": len(content.encode("utf-8"))
+        }
+    
+    try:
+        # Ensure parent directory exists
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Write file
+        abs_path.write_text(content, encoding="utf-8")
+        
+        return {
+            "success": True,
+            "operation": "write",
+            "file_path": rel_path,
+            "created": not diff,
+            "diff": diff,
+            "size_bytes": len(content.encode("utf-8")),
+            "line_count": len(content.split("\n"))
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to write file: {str(e)}",
+            "file_path": rel_path
+        }
+
+
+async def _file_modify(abs_path: Path, rel_path: str, spec: Dict[str, Any], validate_only: bool) -> Dict[str, Any]:
+    """Modify file with surgical edits."""
+    if not abs_path.exists():
+        return {
+            "success": False,
+            "error": f"File not found: {rel_path}"
+        }
+    
+    try:
+        content = abs_path.read_text(encoding="utf-8")
+        lines = content.split("\n")
+        modified_lines = lines.copy()
+        
+        # Apply modifications based on spec
+        if "line_ranges" in spec:
+            # Modify specific line ranges
+            for line_range in spec["line_ranges"]:
+                start = line_range.get("start", 1) - 1  # Convert to 0-indexed
+                end = line_range.get("end", len(lines)) - 1
+                replacement = line_range.get("replacement", "")
+                
+                if 0 <= start <= end < len(modified_lines):
+                    modified_lines[start:end+1] = [replacement]
+        
+        elif "pattern_replacements" in spec:
+            # Pattern-based replacements
+            import re
+            for pattern_spec in spec["pattern_replacements"]:
+                pattern = pattern_spec.get("pattern")
+                replacement = pattern_spec.get("replacement", "")
+                
+                if pattern:
+                    modified_content = "\n".join(modified_lines)
+                    modified_content = re.sub(pattern, replacement, modified_content)
+                    modified_lines = modified_content.split("\n")
+        
+        new_content = "\n".join(modified_lines)
+        
+        # Generate diff
+        diff = "\n".join(difflib.unified_diff(
+            lines,
+            modified_lines,
+            fromfile=f"{rel_path} (original)",
+            tofile=f"{rel_path} (modified)",
+            lineterm=""
+        ))
+        
+        if validate_only:
+            return {
+                "success": True,
+                "operation": "modify",
+                "file_path": rel_path,
+                "validate_only": True,
+                "diff_preview": diff
+            }
+        
+        # Apply changes
+        abs_path.write_text(new_content, encoding="utf-8")
+        
+        return {
+            "success": True,
+            "operation": "modify",
+            "file_path": rel_path,
+            "diff": diff,
+            "modifications_applied": len(spec.get("line_ranges", [])) + len(spec.get("pattern_replacements", []))
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to modify file: {str(e)}",
+            "file_path": rel_path
+        }
+
+
+async def _file_delete(abs_path: Path, rel_path: str, validate_only: bool) -> Dict[str, Any]:
+    """Delete file."""
+    if not abs_path.exists():
+        return {
+            "success": False,
+            "error": f"File not found: {rel_path}"
+        }
+    
+    if validate_only:
+        return {
+            "success": True,
+            "operation": "delete",
+            "file_path": rel_path,
+            "validate_only": True,
+            "would_delete": True
+        }
+    
+    try:
+        abs_path.unlink()
+        return {
+            "success": True,
+            "operation": "delete",
+            "file_path": rel_path,
+            "deleted": True
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to delete file: {str(e)}",
+            "file_path": rel_path
+        }
+
+
+async def _file_move(abs_path: Path, new_abs_path: Path, rel_path: str, new_rel_path: str, validate_only: bool) -> Dict[str, Any]:
+    """Move/rename file."""
+    if not abs_path.exists():
+        return {
+            "success": False,
+            "error": f"Source file not found: {rel_path}"
+        }
+    
+    if new_abs_path.exists():
+        return {
+            "success": False,
+            "error": f"Destination already exists: {new_rel_path}"
+        }
+    
+    if validate_only:
+        return {
+            "success": True,
+            "operation": "move",
+            "from_path": rel_path,
+            "to_path": new_rel_path,
+            "validate_only": True,
+            "would_move": True
+        }
+    
+    try:
+        # Ensure destination directory exists
+        new_abs_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Move file
+        abs_path.rename(new_abs_path)
+        
+        return {
+            "success": True,
+            "operation": "move",
+            "from_path": rel_path,
+            "to_path": new_rel_path,
+            "moved": True
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to move file: {str(e)}",
+            "from_path": rel_path,
+            "to_path": new_rel_path
+        }
+
+
+async def _file_diff(abs_path: Path, rel_path: str, new_content: str) -> Dict[str, Any]:
+    """Generate diff without modifying file."""
+    if not abs_path.exists():
+        return {
+            "success": True,
+            "operation": "diff",
+            "file_path": rel_path,
+            "file_exists": False,
+            "diff": f"New file would be created:\n{new_content}"
+        }
+    
+    try:
+        old_content = abs_path.read_text(encoding="utf-8")
+        diff = "\n".join(difflib.unified_diff(
+            old_content.splitlines(),
+            new_content.splitlines(),
+            fromfile=f"{rel_path} (current)",
+            tofile=f"{rel_path} (proposed)",
+            lineterm=""
+        ))
+        
+        return {
+            "success": True,
+            "operation": "diff",
+            "file_path": rel_path,
+            "diff": diff,
+            "changes_detected": bool(diff)
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to generate diff: {str(e)}",
+            "file_path": rel_path
+        }
+
+
+# ============================================================================
+# Web Search (Keep existing Tavily search)
+# ============================================================================
+
+@tool
+async def web_search(query: str) -> Dict[str, Any]:
+    """Search the web for general information about game development, Unity, and related topics.
+    
+    Args:
+        query: Search query string
+        
+    Returns:
+        Search results with URLs, titles, and content
+    """
+    try:
+        tavily_api_key = os.getenv("TAVILY_API_KEY")
+        if not tavily_api_key:
+            return {
+                "success": False,
+                "error": "Tavily API key not configured"
+            }
+        
+        search = TavilySearch(api_key=tavily_api_key)
+        results = await search.ainvoke({"query": query})
+        
+        return {
+            "success": True,
+            "query": query,
+            "results": results,
+            "result_count": len(results),
             "timestamp": datetime.now(UTC).isoformat()
         }
-
-
-@tool
-async def create_asset(asset_type: str, name: str, properties: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Create a new asset in the game project."""
-    # Check for controlled failure with proper guard
-    failure_info = failure_config.should_fail("create_asset")
-    if failure_info and failure_info.get("should_fail", False):
-        return _simulate_failure("create_asset", failure_info)
-
-    if not properties:
-        properties = {}
-
-    asset_info = {
-        "success": True,
-        "asset_type": asset_type,
-        "name": name,
-        "path": f"Assets/{asset_type.title()}s/{name}",
-        "created_at": datetime.now(UTC).isoformat(),
-        "properties": properties,
-        "status": "created",
-        "message": failure_info.get("recovery_message", f"Successfully created {asset_type} '{name}'") if failure_info else f"Successfully created {asset_type} '{name}'"
-    }
-    
-    # Add type-specific information
-    if asset_type.lower() == "script":
-        asset_info.update({
-            "language": "C#",
-            "template": "MonoBehaviour",
-            "methods": ["Start", "Update"],
-            "namespaces": ["UnityEngine"],
-            "file_extension": ".cs"
-        })
-    elif asset_type.lower() == "prefab":
-        asset_info.update({
-            "components": ["Transform", "Renderer", "Collider"],
-            "children": 0,
-            "size": "1.2 MB",
-            "file_extension": ".prefab"
-        })
-    elif asset_type.lower() == "material":
-        asset_info.update({
-            "shader": "Universal Render Pipeline/Lit",
-            "textures": [],
-            "color": "White",
-            "file_extension": ".mat"
-        })
-    elif asset_type.lower() == "scene":
-        asset_info.update({
-            "objects": ["Main Camera", "Directional Light"],
-            "lighting": "Realtime",
-            "skybox": "Default",
-            "file_extension": ".unity"
-        })
-    
-    return asset_info
-
-
-@tool
-async def write_file(file_path: str, content: str, file_type: str = "script") -> Dict[str, Any]:
-    """Write or create a file in the project (scripts, config files, etc.)."""
-    # Check for controlled failure
-    failure_info = failure_config.should_fail("write_file")
-    if failure_info and failure_info.get("should_fail", False):
-        return _simulate_failure("write_file", failure_info)
-
-    return {
-        "success": True,
-        "file_path": file_path,
-        "file_type": file_type,
-        "size_bytes": len(content),
-        "lines_written": len(content.split('\n')),
-        "encoding": "UTF-8",
-        "timestamp": datetime.now(UTC).isoformat(),
-        "content_preview": content[:100] + ("..." if len(content) > 100 else ""),
-        "message": f"Successfully wrote {file_type} file to {file_path}"
-    }
-
-
-@tool
-async def edit_project_config(config_section: str, settings: Dict[str, Any]) -> Dict[str, Any]:
-    """Edit project configuration settings."""
-    # Check for controlled failure
-    failure_info = failure_config.should_fail("edit_project_config")
-    if failure_info and failure_info.get("should_fail", False):
-        return _simulate_failure("edit_project_config", failure_info)
-
-    return {
-        "success": True,
-        "config_section": config_section,
-        "updated_settings": settings,
-        "previous_values": {
-            # Simulated previous values
-            key: f"previous_{key}_value" for key in settings.keys()
-        },
-        "requires_restart": config_section in ["player_settings", "graphics"],
-        "timestamp": datetime.now(UTC).isoformat(),
-        "message": f"Successfully updated {config_section} configuration"
-    }
-
-
-@tool
-async def get_script_snippets(category: str, language: str = "csharp") -> Dict[str, Any]:
-    """Get code snippets from the USER'S existing Unity project scripts."""
-    # Check for controlled failure
-    failure_info = failure_config.should_fail("get_script_snippets")
-    if failure_info and failure_info.get("should_fail", False):
-        return _simulate_failure("get_script_snippets", failure_info)
-
-    # Simulate finding snippets in the user's existing scripts
-    found_snippets = {
-        "PlayerController.cs": {
-            "movement_method": '''void HandleMovement()
-{
-    float horizontal = Input.GetAxis("Horizontal");
-    float vertical = Input.GetAxis("Vertical");
-    
-    Vector3 movement = new Vector3(horizontal, 0, vertical);
-    transform.Translate(movement * speed * Time.deltaTime);
-}''',
-            "jump_method": '''void HandleJump()
-{
-    if (Input.GetKeyDown(KeyCode.Space) && isGrounded)
-    {
-        rb.AddForce(Vector3.up * jumpForce, ForceMode.Impulse);
-    }
-}'''
-        },
-        "GameManager.cs": {
-            "game_state": '''public enum GameState
-{
-    Menu,
-    Playing,
-    Paused,
-    GameOver
-}
-
-private GameState currentState = GameState.Menu;''',
-            "score_system": '''private int playerScore = 0;
-
-public void AddScore(int points)
-{
-    playerScore += points;
-    UpdateScoreUI();
-}'''
-        },
-        "UIManager.cs": {
-            "update_health": '''public void UpdateHealthBar(float currentHealth, float maxHealth)
-{
-    healthSlider.value = currentHealth / maxHealth;
-    healthText.text = $"{currentHealth}/{maxHealth}";
-}''',
-            "show_menu": '''public void ShowMenu(GameObject menu)
-{
-    menu.SetActive(true);
-    Time.timeScale = 0f;
-}'''
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Web search failed: {str(e)}",
+            "query": query
         }
-    }
-    
-    # Filter snippets based on category
-    category_lower = category.lower()
-    relevant_snippets = {}
-    
-    for script_name, snippets in found_snippets.items():
-        script_relevant_snippets = {}
-        
-        for snippet_name, code in snippets.items():
-            # Match category to snippet content
-            if any(keyword in category_lower for keyword in ["movement", "player", "character", "control"]):
-                if any(term in snippet_name.lower() for term in ["movement", "jump", "control"]):
-                    script_relevant_snippets[snippet_name] = code
-            elif any(keyword in category_lower for keyword in ["ui", "menu", "interface"]):
-                if any(term in snippet_name.lower() for term in ["health", "menu", "ui"]):
-                    script_relevant_snippets[snippet_name] = code
-            elif any(keyword in category_lower for keyword in ["game", "manager", "state"]):
-                if any(term in snippet_name.lower() for term in ["game", "score", "state"]):
-                    script_relevant_snippets[snippet_name] = code
-            elif any(keyword in category_lower for keyword in ["physics", "jump", "force"]):
-                if any(term in snippet_name.lower() for term in ["jump", "force", "physics"]):
-                    script_relevant_snippets[snippet_name] = code
-        
-        if script_relevant_snippets:
-            relevant_snippets[script_name] = script_relevant_snippets
-    
-    total_snippets = sum(len(snippets) for snippets in relevant_snippets.values())
-    
-    return {
-        "success": True,
-        "category": category,
-        "language": language,
-        "scripts_searched": list(found_snippets.keys()),
-        "relevant_scripts": list(relevant_snippets.keys()),
-        "snippets_by_script": relevant_snippets,
-        "total_snippets_found": total_snippets,
-        "timestamp": datetime.now(UTC).isoformat(),
-        "message": f"Found {total_snippets} code snippets in {len(relevant_snippets)} scripts matching '{category}'"
-    }
 
 
-@tool
-async def compile_and_test(target: str = "editor") -> Dict[str, Any]:
-    """Compile the project and run basic tests."""
-    # Check for controlled failure with proper guard
-    failure_info = failure_config.should_fail("compile_and_test")
-    if failure_info and failure_info.get("should_fail", False):
-        return _simulate_failure("compile_and_test", failure_info)
+# ============================================================================
+# Export Tools and Metadata
+# ============================================================================
 
-    # Handle recovery case or normal success
-    result = {
-        "success": True,
-        "target": target,
-        "compilation_time": "12.3 seconds",
-        "warnings": 2,
-        "errors": 0,
-        "details": {
-            "scripts_compiled": 47,
-            "assets_processed": 156,
-            "build_size": "45.2 MB",
-            "warnings": [
-                "Unused variable 'tempVar' in PlayerController.cs line 23",
-                "Missing reference in UIManager prefab"
-            ]
-        },
-        "timestamp": datetime.now(UTC).isoformat(),
-        "message": failure_info.get("recovery_message", f"Successfully compiled for {target} with 2 warnings and 0 errors") if failure_info else f"Successfully compiled for {target} with 2 warnings and 0 errors"
-    }
-    return result
-
-
-@tool
-async def scene_management(action: str, scene_name: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Manage scenes in the project (create, load, modify, etc.)."""
-    # Check for controlled failure
-    failure_info = failure_config.should_fail("scene_management")
-    if failure_info and failure_info.get("should_fail", False):
-        return _simulate_failure("scene_management", failure_info)
-
-    if not parameters:
-        parameters = {}
-
-    result = {
-        "success": True,
-        "action": action,
-        "scene_name": scene_name,
-        "timestamp": datetime.now(UTC).isoformat()
-    }
-    
-    if action == "create":
-        result.update({
-            "scene_path": f"Assets/Scenes/{scene_name}.unity",
-            "default_objects": ["Main Camera", "Directional Light"],
-            "lighting_settings": "Realtime",
-            "message": f"Successfully created new scene: {scene_name}"
-        })
-    elif action == "load":
-        result.update({
-            "objects_in_scene": ["Player", "Ground", "UI Canvas", "Main Camera", "Directional Light"],
-            "lighting": "Mixed",
-            "active_objects": 12,
-            "message": f"Successfully loaded scene: {scene_name}"
-        })
-    elif action == "add_object":
-        obj_type = parameters.get("object_type", "GameObject")
-        result.update({
-            "object_added": obj_type,
-            "position": parameters.get("position", [0, 0, 0]),
-            "rotation": parameters.get("rotation", [0, 0, 0]),
-            "message": f"Successfully added {obj_type} to {scene_name}"
-        })
-    elif action == "save":
-        result.update({
-            "changes_saved": True,
-            "backup_created": True,
-            "message": f"Successfully saved scene: {scene_name}"
-        })
-    
-    return result
-
-
-# Export tools - focused on game development
 TOOLS = [
-    search,
-    # get_project_info,  # ❌ REMOVED - now read from runtime_metadata
-    create_asset,
-    write_file,
-    edit_project_config,
-    get_script_snippets,
-    compile_and_test,
-    scene_management,
+    search_project,
+    code_snippets,
+    file_operation,
+    web_search,
 ]
 
-
-# Tool metadata for game development context - now includes type validation
 TOOL_METADATA = {
-    "search": {
+    "search_project": {
+        "category": "data_query",
+        "cost": "low",
+        "reliability": "very_high",
+        "best_for": ["finding assets", "querying hierarchy", "searching components", "checking dependencies"],
+        "description": "Natural language queries against indexed Unity project data"
+    },
+    "code_snippets": {
+        "category": "code_search",
+        "cost": "medium",
+        "reliability": "high",
+        "best_for": ["finding code by functionality", "semantic code search", "discovering implementations"],
+        "description": "Semantic search through C# scripts using vector embeddings"
+    },
+    "file_operation": {
+        "category": "file_management",
+        "cost": "low",
+        "reliability": "very_high",
+        "best_for": ["reading files", "writing scripts", "modifying code", "file manipulation"],
+        "description": "Safe file I/O with validation and diff generation"
+    },
+    "web_search": {
         "category": "information_retrieval",
         "cost": "medium",
         "reliability": "high",
-        "best_for": ["game dev tutorials", "Unity/Unreal documentation", "best practices", "troubleshooting"],
-        "type_safe": True
-    },
-    # "get_project_info": { ... },  # ❌ REMOVED
-    "create_asset": {
-        "category": "content_creation",
-        "cost": "low", 
-        "reliability": "very_high",
-        "best_for": ["creating scripts", "making prefabs", "new materials", "scenes"],
-        "type_safe": True
-    },
-    "write_file": {
-        "category": "file_management",
-        "cost": "low",
-        "reliability": "very_high", 
-        "best_for": ["writing scripts", "config files", "documentation", "shaders"],
-        "type_safe": True
-    },
-    "edit_project_config": {
-        "category": "configuration",
-        "cost": "low",
-        "reliability": "high",
-        "best_for": ["build settings", "player settings", "quality settings", "input configuration"],
-        "type_safe": True
-    },
-    "get_script_snippets": {
-        "category": "code_assistance",
-        "cost": "low",
-        "reliability": "very_high",
-        "best_for": ["code templates", "common patterns", "best practices", "quick implementation"],
-        "type_safe": True
-    },
-    "compile_and_test": {
-        "category": "development",
-        "cost": "medium",
-        "reliability": "high", 
-        "best_for": ["testing changes", "checking for errors", "build validation", "deployment prep"],
-        "type_safe": True
-    },
-    "scene_management": {
-        "category": "world_building",
-        "cost": "low",
-        "reliability": "very_high",
-        "best_for": ["scene creation", "object placement", "level design", "world setup"],
-        "type_safe": True
+        "best_for": ["Unity documentation", "tutorials", "best practices", "troubleshooting"],
+        "description": "Web search for Unity and game development information"
     }
 }
 
@@ -712,33 +806,3 @@ TOOL_METADATA = {
 def get_available_tool_names() -> List[str]:
     """Get list of available tool names for validation."""
     return [tool.name for tool in TOOLS]
-
-
-# Testing utilities
-def enable_failure_testing():
-    """Enable failure testing mode."""
-    failure_config.enabled = True
-    os.environ["TEST_FAILURES_ENABLED"] = "true"
-
-
-def disable_failure_testing():
-    """Disable failure testing mode."""
-    failure_config.enabled = False
-    os.environ["TEST_FAILURES_ENABLED"] = "false"
-
-
-def trigger_specific_failure(failure_type: str):
-    """Trigger a specific failure type for testing."""
-    os.environ["TRIGGER_FAILURE"] = failure_type
-
-
-def trigger_tool_failure(tool_name: str, failure_type: str):
-    """Trigger failure for a specific tool."""
-    os.environ[f"FAIL_{tool_name.upper()}"] = failure_type
-
-
-def clear_failure_triggers():
-    """Clear all failure triggers."""
-    failure_vars = [key for key in os.environ if key.startswith("FAIL_") or key == "TRIGGER_FAILURE"]
-    for var in failure_vars:
-        del os.environ[var]

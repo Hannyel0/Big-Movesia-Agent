@@ -79,14 +79,19 @@ Generate your response now:"""
         if len(answer) < 10:
             # Fallback: extract key info directly
             result_data = latest_result['result']
-            if latest_result['tool'] == 'get_project_info':
-                project_name = result_data.get('project_name', 'Unknown')
-                engine = result_data.get('engine', 'Unity')
-                version = result_data.get('version', '')
-                return f"Your project is **{project_name}**, running on {engine} {version}."
-            elif latest_result['tool'] == 'search':
-                results_count = len(result_data.get('result', []))
+            if latest_result['tool'] == 'search_project':
+                result_count = result_data.get('result_count', 0)
+                return f"I found {result_count} items in your project matching your query."
+            elif latest_result['tool'] == 'code_snippets':
+                total_found = result_data.get('total_found', 0)
+                return f"I found {total_found} code snippets matching your search."
+            elif latest_result['tool'] == 'web_search':
+                results_count = len(result_data.get('results', []))
                 return f"I found {results_count} relevant resources for your query."
+            elif latest_result['tool'] == 'file_operation':
+                operation = result_data.get('operation', 'operation')
+                file_path = result_data.get('file_path', 'file')
+                return f"Successfully completed {operation} on {file_path}."
             else:
                 return f"The {latest_result['tool']} operation completed successfully."
         
@@ -94,9 +99,9 @@ Generate your response now:"""
         
     except Exception as e:
         # Final fallback
-        if latest_result['tool'] == 'get_project_info':
-            project_name = latest_result['result'].get('project_name', 'your project')
-            return f"Your project is: {project_name}"
+        if latest_result['tool'] == 'search_project':
+            result_count = latest_result['result'].get('result_count', 0)
+            return f"Found {result_count} items in your project."
         return "I've completed your request successfully."
 
 
@@ -112,16 +117,14 @@ async def _generate_comprehensive_completion_summary(state: State, model, contex
         completed_steps_summary.append(f"{status}: {step.description}")
         
         # Track what was actually built/created
-        if step.tool_name == "write_file":
-            key_outputs.append("Created script files")
-        elif step.tool_name == "create_asset":
-            key_outputs.append("Built game assets")
-        elif step.tool_name == "compile_and_test":
-            key_outputs.append("Verified code compilation")
-        elif step.tool_name == "scene_management":
-            key_outputs.append("Configured scenes")
-        elif step.tool_name == "edit_project_config":
-            key_outputs.append("Updated project settings")
+        if step.tool_name == "file_operation":
+            key_outputs.append("Performed file operations")
+        elif step.tool_name == "search_project":
+            key_outputs.append("Queried project data")
+        elif step.tool_name == "code_snippets":
+            key_outputs.append("Searched code semantically")
+        elif step.tool_name == "web_search":
+            key_outputs.append("Researched Unity resources")
     
     # Extract concrete results from recent tool messages
     concrete_results = []
@@ -135,29 +138,22 @@ async def _generate_comprehensive_completion_summary(state: State, model, contex
                 tool_name = msg.name or 'unknown'
                 
                 if result.get("success", False):
-                    if tool_name == "write_file":
-                        file_path = result.get('file_path', 'script file')
-                        lines = result.get('lines_written', 0)
-                        files_created.append(f"📄 {file_path} ({lines} lines)")
+                    if tool_name == "file_operation":
+                        operation = result.get('operation', 'operation')
+                        file_path = result.get('file_path', 'file')
+                        files_created.append(f"📄 {operation}: {file_path}")
                         
-                    elif tool_name == "create_asset":
-                        asset_type = result.get('asset_type', 'asset')
-                        name = result.get('name', 'new asset')
-                        assets_built.append(f"🎮 {asset_type}: {name}")
+                    elif tool_name == "search_project":
+                        result_count = result.get('result_count', 0)
+                        concrete_results.append(f"🔍 Found {result_count} project items")
                         
-                    elif tool_name == "compile_and_test":
-                        errors = result.get('errors', 0)
-                        warnings = result.get('warnings', 0)
-                        concrete_results.append(f"🔧 Build: {errors} errors, {warnings} warnings")
+                    elif tool_name == "code_snippets":
+                        total_found = result.get('total_found', 0)
+                        concrete_results.append(f"💻 Found {total_found} code snippets")
                         
-                    elif tool_name == "search":
-                        results_count = len(result.get('result', []))
-                        concrete_results.append(f"🔍 Found {results_count} resources")
-                        
-                    elif tool_name == "get_project_info":
-                        engine = result.get("engine", "Unity")
-                        version = result.get("version", "")
-                        concrete_results.append(f"📊 Analyzed {engine} {version} project")
+                    elif tool_name == "web_search":
+                        results_count = len(result.get('results', []))
+                        concrete_results.append(f"🌐 Found {results_count} web resources")
                         
             except:
                 continue

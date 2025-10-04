@@ -94,14 +94,10 @@ def _create_micro_retry_message(state: State, attempt_num: int) -> str:
     
     # Tool-specific retry messages
     tool_messages = {
-        "search": "Reconnecting to search services",
-        "get_project_info": "Refreshing project connection", 
-        "compile_and_test": "Retrying build process",
-        "write_file": "Attempting file write again",
-        "create_asset": "Retrying asset creation",
-        "get_script_snippets": "Reconnecting to code repository",
-        "scene_management": "Refreshing scene access",
-        "edit_project_config": "Retrying configuration update"
+        "search_project": "Reconnecting to project database",
+        "code_snippets": "Retrying semantic code search", 
+        "file_operation": "Attempting file operation again",
+        "web_search": "Reconnecting to web search services"
     }
     
     base_message = tool_messages.get(tool_name, f"Retrying {tool_name}")

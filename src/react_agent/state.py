@@ -1,4 +1,4 @@
-"""Define the state structures for the enhanced ReAct agent with plan adherence."""
+"""Define the state structures for the enhanced ReAct agent with production tools."""
 
 from __future__ import annotations
 
@@ -10,19 +10,15 @@ from langchain_core.messages import AnyMessage
 from langgraph.graph import add_messages
 from langgraph.managed import IsLastStep
 from typing_extensions import Annotated
-from pydantic import BaseModel, Field, ConfigDict  # Fixed: Use pydantic directly
+from pydantic import BaseModel, Field, ConfigDict
 
 
-# Type-constrained tool names based on available tools
+# Type-constrained tool names for production tools
 ToolName = Literal[
-    "search",
-    # "get_project_info",  # ❌ REMOVED - read from runtime_metadata instead
-    "create_asset",
-    "write_file",
-    "edit_project_config",
-    "get_script_snippets",
-    "compile_and_test",
-    "scene_management"
+    "search_project",    # Natural language SQL queries
+    "code_snippets",     # Vector search through scripts
+    "file_operation",    # Unified file I/O
+    "web_search"         # External web search
 ]
 
 

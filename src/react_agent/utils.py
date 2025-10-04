@@ -139,55 +139,33 @@ def create_dynamic_step_message(step: 'PlanStep', step_num: int, total_steps: in
     
     # Tool-specific action phrases with variety
     tool_actions = {
-        "search": [
-            "dig into the latest Unity best practices",
-            "research current game development approaches", 
-            "look up authoritative guidance on this",
-            "find the most recent tutorials and docs",
+        "search_project": [
+            "search through your Unity project data",
+            "query the indexed project database",
+            "find assets and components in your project",
+            "explore your project's structure and dependencies",
+            "discover what's already in your Unity project"
+        ],
+        "code_snippets": [
+            "find relevant code patterns using semantic search",
+            "discover existing implementations in your scripts",
+            "locate code that does what you need",
+            "search through your C# scripts by functionality",
+            "find the right code examples from your project"
+        ],
+        "file_operation": [
+            "handle the file operations safely",
+            "read, write, or modify project files",
+            "manage your Unity project files",
+            "perform secure file operations with validation",
+            "work with your project's file system"
+        ],
+        "web_search": [
+            "search for Unity documentation and tutorials",
+            "find the latest game development best practices",
+            "look up authoritative guidance on this topic",
+            "research current Unity development approaches",
             "explore what the Unity community recommends"
-        ],
-        # ❌ REMOVED: "get_project_info" - no longer a tool
-        "get_script_snippets": [
-            "grab some proven code patterns for this",
-            "fetch battle-tested script templates",
-            "pull up the right code examples",
-            "get some solid implementation patterns",
-            "find the perfect code snippets for your needs"
-        ],
-        "write_file": [
-            "create that script file for you",
-            "write the implementation to your project",
-            "build the actual code file",
-            "craft the script you need",
-            "put together the working code"
-        ],
-        "compile_and_test": [
-            "run a quick build check",
-            "make sure everything compiles cleanly", 
-            "verify this integrates properly",
-            "test that nothing breaks",
-            "ensure the code works as expected"
-        ],
-        "scene_management": [
-            "set up your scene properly",
-            "configure the scene layout",
-            "organize your scene structure",
-            "prepare the scene environment",
-            "handle the scene setup"
-        ],
-        "edit_project_config": [
-            "adjust your project settings",
-            "fine-tune the configuration",
-            "update the project parameters",
-            "modify the settings safely",
-            "configure this properly"
-        ],
-        "create_asset": [
-            "build that asset for your project",
-            "create the game asset you need",
-            "construct the new project element",
-            "generate the required asset",
-            "make the asset with proper setup"
         ]
     }
     
@@ -272,84 +250,72 @@ def create_varied_post_tool_message(tool_name: str, result: dict, step_num: int)
         return error_messages[hash_val % len(error_messages)]
     
     # Success responses by tool
-    if tool_name == "search":
-        n_results = len(result.get("result", []) or [])
+    if tool_name == "search_project":
+        count = result.get("result_count", 0)
+        query = result.get("query_description", "query")
         responses = [
-            f"Found {n_results} helpful sources - using the best ones.",
-            f"Great! Discovered {n_results} relevant resources.",
-            f"Perfect - got {n_results} quality references to work with.",
-            f"Excellent findings - {n_results} sources that should help."
+            f"Found {count} results for '{query}' in your project.",
+            f"Located {count} matching items in the project database.",
+            f"Project search returned {count} relevant results.",
+            f"Discovered {count} items matching your criteria."
         ]
         return responses[hash_val % len(responses)]
     
-    elif tool_name == "write_file":
-        lines = result.get('lines_written', 0)
-        path = result.get('file_path', 'project')
+    elif tool_name == "code_snippets":
+        count = result.get("total_found", 0)
+        query = result.get("query", "functionality")
         responses = [
-            f"Script created! Wrote {lines} lines to {path}.",
-            f"File ready - {lines} lines of code in {path}.",
-            f"Done! Created {lines} lines in {path}.",
-            f"Script complete - {lines} lines saved to {path}."
+            f"Found {count} code snippets for '{query}' functionality.",
+            f"Located {count} relevant script examples.",
+            f"Discovered {count} code patterns that match your needs.",
+            f"Retrieved {count} useful implementations from your scripts."
         ]
         return responses[hash_val % len(responses)]
     
-    elif tool_name == "compile_and_test":
-        if result.get("errors", 0) == 0:
+    elif tool_name == "file_operation":
+        operation = result.get("operation", "operation")
+        file_path = result.get("file_path", "file")
+        if operation == "read":
+            line_count = result.get("line_count", 0)
             responses = [
-                "Build successful! No errors detected.",
-                "Clean compile - everything looks good.",
-                "Perfect! Code builds without issues.",
-                "All systems go - no compilation problems."
+                f"Read {line_count} lines from {file_path}.",
+                f"Successfully loaded content from {file_path}.",
+                f"File {file_path} read successfully ({line_count} lines).",
+                f"Retrieved content from {file_path}."
+            ]
+        elif operation == "write":
+            line_count = result.get("line_count", 0)
+            responses = [
+                f"Wrote {line_count} lines to {file_path}.",
+                f"Successfully created {file_path} with {line_count} lines.",
+                f"File {file_path} written successfully.",
+                f"Created {file_path} with your content."
+            ]
+        elif operation == "modify":
+            modifications = result.get("modifications_applied", 0)
+            responses = [
+                f"Applied {modifications} modifications to {file_path}.",
+                f"Successfully updated {file_path}.",
+                f"File {file_path} modified successfully.",
+                f"Changes applied to {file_path}."
             ]
         else:
             responses = [
-                "Found some issues that need fixing.",
-                "Compilation revealed a few problems to address.",
-                "Build flagged some errors - I'll help resolve them.",
-                "Some compiler feedback to work through."
+                f"File operation '{operation}' completed on {file_path}.",
+                f"Successfully performed {operation} on {file_path}.",
+                f"{operation.title()} operation completed.",
+                f"File {file_path} processed successfully."
             ]
         return responses[hash_val % len(responses)]
     
-    # ❌ REMOVED: get_project_info tool handling - no longer available
-    
-    elif tool_name == "get_script_snippets":
-        count = result.get("total_snippets", 0)
+    elif tool_name == "web_search":
+        count = result.get("result_count", 0)
+        query = result.get("query", "topic")
         responses = [
-            f"Retrieved {count} useful code patterns.",
-            f"Found {count} solid script templates.",
-            f"Got {count} proven code examples.",
-            f"Collected {count} helpful snippets."
-        ]
-        return responses[hash_val % len(responses)]
-    
-    elif tool_name == "create_asset":
-        asset_type = result.get("asset_type", "asset")
-        name = result.get("name", "")
-        responses = [
-            f"Created {asset_type} '{name}' successfully.",
-            f"New {asset_type} '{name}' is ready.",
-            f"Built the {asset_type} '{name}' you needed.",
-            f"Asset complete - {asset_type} '{name}' added to project."
-        ]
-        return responses[hash_val % len(responses)]
-    
-    elif tool_name == "scene_management":
-        message = result.get("message", "Scene operation completed")
-        responses = [
-            message,
-            "Scene setup complete.",
-            "Scene configuration done.",
-            "Scene work finished."
-        ]
-        return responses[hash_val % len(responses)]
-    
-    elif tool_name == "edit_project_config":
-        section = result.get("config_section", "settings")
-        responses = [
-            f"Updated {section} configuration.",
-            f"Applied changes to {section} settings.",
-            f"Configuration {section} modified.",
-            f"Settings for {section} adjusted."
+            f"Found {count} web resources about '{query}'.",
+            f"Located {count} helpful articles and tutorials.",
+            f"Discovered {count} relevant Unity documentation pages.",
+            f"Retrieved {count} useful resources from the web."
         ]
         return responses[hash_val % len(responses)]
     

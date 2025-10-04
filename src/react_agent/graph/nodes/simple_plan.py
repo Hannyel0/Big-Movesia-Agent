@@ -91,8 +91,8 @@ async def simple_plan(state: State, runtime: Runtime[Context]) -> Dict[str, Any]
     intelligent_simple_request = f"""Analyze this request and create an optimal simple plan: "{user_request}"
 
 REQUEST ANALYSIS:
-- User Intent: {request_analysis['user_intent']}
 - Request Type: {request_analysis['request_type']}
+- User Intent: {request_analysis['user_intent']}
 - Complexity Indicators: {request_analysis['complexity_indicators']}
 - Suggested Approach: {request_analysis['suggested_approach']}
 - Classification Reasoning: {complexity_reasoning}
@@ -101,21 +101,22 @@ INTELLIGENT PLANNING STRATEGY:
 Based on the analysis, choose the most effective approach:
 
 1. **Research First** (for information seeking):
-   - search → provide comprehensive answer (maybe + get_project_info for context)
+   - web_search → provide comprehensive answer (maybe + search_project for context)
 
 2. **Direct Implementation** (for simple creation):
-   - get_script_snippets → write_file (skip excessive research for basic requests)
+   - code_snippets → file_operation (skip excessive research for basic requests)
 
 3. **Diagnose Then Solve** (for troubleshooting):
-   - get_project_info → compile_and_test → (search if needed) → fix
+   - search_project → code_snippets → (web_search if needed) → file_operation
 
 4. **Context Then Implement** (for standard creation):
-   - get_project_info → create_asset/write_file → (compile_and_test if needed)
+   - search_project → file_operation → (search_project validation if needed)
 
 EFFICIENCY PRINCIPLES:
 - Don't over-research simple requests
 - Don't under-research complex ones
 - Consider what the user actually needs vs. what templates suggest
+{{ ... }}
 - 1-3 steps maximum, but make them count
 - Each step should add real value
 
@@ -125,28 +126,29 @@ Create a smart, streamlined plan that efficiently solves this specific request."
     adaptive_system_content = """You are creating efficient, intelligent plans for straightforward Unity/Unreal development tasks.
 
 TOOL PURPOSE CLARIFICATION:
-**get_script_snippets**: Reads code FROM USER'S existing Unity project scripts
-**search**: Researches external Unity documentation and tutorials
-**write_file**: Creates or modifies script files
+**search_project**: Query indexed Unity project database using natural language
+**code_snippets**: Semantic search through C# scripts by functionality
+**file_operation**: Safe file I/O with validation (read/write/modify/delete/move/diff)
+**web_search**: Research external Unity documentation and tutorials
 
-VALID TOOLS: search, get_project_info, create_asset, write_file, edit_project_config, get_script_snippets, compile_and_test, scene_management
+VALID TOOLS: search_project, code_snippets, file_operation, web_search
 
 INTELLIGENT EFFICIENCY:
-- **Information requests**: search
-- **Understanding existing code**: get_script_snippets
-- **Modifying existing features**: get_script_snippets → write_file
-- **Creating new features**: search → write_file  
-- **Project inspection**: get_project_info
-- **Asset creation**: create_asset
-- **Configuration**: edit_project_config
+- **Information requests**: web_search
+- **Understanding existing code**: code_snippets
+- **Modifying existing features**: code_snippets → file_operation
+- **Creating new features**: web_search → file_operation  
+- **Project inspection**: search_project
+- **Asset discovery**: search_project
+- **Configuration**: file_operation
 
 DECISION FLOWCHART:
-1. Need to see user's existing code? → get_script_snippets
-2. Need to learn new Unity concepts? → search
-3. Need project structure info? → get_project_info
-4. Need to implement/modify code? → write_file
+1. Need to find existing code by functionality? → code_snippets
+2. Need to learn new Unity concepts? → web_search
+3. Need project structure/asset info? → search_project
+4. Need to implement/modify files? → file_operation
 
-Create plans that correctly use get_script_snippets to READ user's existing code, not as a template system."""
+Create plans that use production tools for real Unity project integration."""
 
     # Structure messages for adaptive planning
     messages = [
@@ -235,7 +237,7 @@ def _create_intelligent_fallback_plan(user_request: str, analysis: Dict[str, Any
         return [
             PlanStep(
                 description=f"Research comprehensive information about: {user_request}",
-                tool_name="search",
+                tool_name="web_search",
                 success_criteria="Found detailed, relevant information to answer the question"
             )
         ]
@@ -245,13 +247,13 @@ def _create_intelligent_fallback_plan(user_request: str, analysis: Dict[str, Any
         return [
             PlanStep(
                 description="Analyze current project state to identify issues",
-                tool_name="get_project_info", 
+                tool_name="search_project", 
                 success_criteria="Retrieved project information and identified potential problems"
             ),
             PlanStep(
-                description="Test and diagnose specific problems",
-                tool_name="compile_and_test",
-                success_criteria="Identified specific errors or issues to address",
+                description="Find existing code that might be causing problems",
+                tool_name="code_snippets",
+                success_criteria="Located relevant code implementations to analyze",
                 dependencies=[0]
             )
         ]
@@ -262,13 +264,13 @@ def _create_intelligent_fallback_plan(user_request: str, analysis: Dict[str, Any
             # Direct approach for simple creation
             return [
                 PlanStep(
-                    description="Get appropriate code template for the request",
-                    tool_name="get_script_snippets",
-                    success_criteria="Retrieved suitable implementation template"
+                    description="Find existing code patterns for the request",
+                    tool_name="code_snippets",
+                    success_criteria="Retrieved suitable implementation examples"
                 ),
                 PlanStep(
                     description="Create the requested implementation",
-                    tool_name="write_file",
+                    tool_name="file_operation",
                     success_criteria="Successfully created the requested file",
                     dependencies=[0]
                 )
@@ -278,12 +280,12 @@ def _create_intelligent_fallback_plan(user_request: str, analysis: Dict[str, Any
             return [
                 PlanStep(
                     description="Understand project context and requirements",
-                    tool_name="get_project_info",
+                    tool_name="search_project",
                     success_criteria="Retrieved relevant project information"
                 ),
                 PlanStep(
-                    description="Create the requested asset or implementation",
-                    tool_name="create_asset" if "asset" in user_request.lower() else "write_file",
+                    description="Create the requested implementation",
+                    tool_name="file_operation",
                     success_criteria="Successfully created the requested item",
                     dependencies=[0]
                 )
@@ -294,12 +296,12 @@ def _create_intelligent_fallback_plan(user_request: str, analysis: Dict[str, Any
         return [
             PlanStep(
                 description="Review current project configuration",
-                tool_name="get_project_info",
+                tool_name="search_project",
                 success_criteria="Understood current project setup and requirements"
             ),
             PlanStep(
                 description="Apply requested configuration changes",
-                tool_name="edit_project_config",
+                tool_name="file_operation",
                 success_criteria="Successfully updated project configuration",
                 dependencies=[0]
             )
@@ -310,12 +312,12 @@ def _create_intelligent_fallback_plan(user_request: str, analysis: Dict[str, Any
         return [
             PlanStep(
                 description="Research and understand the specific requirements",
-                tool_name="search",
+                tool_name="web_search",
                 success_criteria="Found relevant information and approach"
             ),
             PlanStep(
                 description="Implement solution based on research",
-                tool_name="get_script_snippets" if "code" in user_request.lower() else "get_project_info",
+                tool_name="code_snippets" if "code" in user_request.lower() else "search_project",
                 success_criteria="Provided working solution for the request", 
                 dependencies=[0]
             )
