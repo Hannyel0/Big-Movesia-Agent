@@ -50,25 +50,28 @@ async def _generate_direct_action_response(state: State, model) -> str:
     latest_result = tool_results[0]
     
     # Create a prompt for the LLM to generate a natural response
-    response_prompt = f"""You just executed the '{latest_result['tool']}' tool to answer this question: "{user_question}"
+    response_prompt = f"""You answered: "{user_question}"
 
 Tool Result:
 {json.dumps(latest_result['result'], indent=2)}
 
-Generate a natural, conversational response that:
-1. Directly answers the user's question using the tool result
-2. Extracts and presents the most relevant information
-3. Is concise but complete
-4. Sounds natural and helpful (not robotic)
+Generate a helpful, informative response that:
+1. Answers their question with useful context
+2. Groups or categorizes information when it makes sense (e.g., "You have 5 player scripts and 3 UI scripts")
+3. Points out interesting patterns or insights (e.g., "most are Editor scripts", "all located in the Scripts folder")
+4. Offers to dive deeper if relevant (e.g., "Want me to show you what's in any of these?")
+5. Be conversational but informative - not just a data dump
 
-For example, if they asked "what is my project name?" and the result contains project_name: "MyGameProject", say something like:
-"Your project is called **MyGameProject**. It's running on Unity 2023.3.15f1."
+Think: "What would a helpful teammate say?" not "What's the minimum valid answer?"
+
+For example, if they asked "what scripts do I have?" and found 8 scripts, don't just say "You have 8 scripts." 
+Instead say: "You have **8 C# scripts** in your project! They're mostly in the Scripts folder - I see player controllers, UI managers, and some utility scripts. Want me to dive into any specific ones?"
 
 Generate your response now:"""
     
     try:
         messages = [
-            {"role": "system", "content": "You are providing a direct, helpful answer to a Unity development question based on tool results. Be specific, extract the relevant info, and present it naturally."},
+            {"role": "system", "content": "You are a helpful Unity development assistant. Provide informative, contextual answers that go beyond just stating facts. Add insights, group information logically, and be conversational like a knowledgeable teammate would be."},
             {"role": "user", "content": response_prompt}
         ]
         
