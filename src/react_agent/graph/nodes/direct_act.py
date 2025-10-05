@@ -14,6 +14,40 @@ from react_agent.tools import TOOLS
 from react_agent.utils import get_message_text, get_model
 
 
+def _is_project_data_request(request: str) -> bool:
+    """Detect if user wants data FROM their project vs. guidance ABOUT Unity."""
+    request_lower = request.lower()
+    
+    # Strong indicators of project data requests
+    project_indicators = [
+        "my project", "my assets", "my scripts", "my gameobjects",
+        "in my project", "what assets", "show me", "list all",
+        "find all", "what scripts", "what gameobjects",
+        "in the project", "current project"
+    ]
+    
+    if any(indicator in request_lower for indicator in project_indicators):
+        return True
+    
+    # Question words that indicate data retrieval (not conceptual questions)
+    data_questions = [
+        "what are all", "what are my", "what assets", "what scripts",
+        "what gameobjects", "which assets", "how many assets"
+    ]
+    
+    if any(pattern in request_lower for pattern in data_questions):
+        return True
+    
+    # Conceptual questions that should NOT execute tools
+    conceptual_patterns = [
+        "what is a", "what is the", "how does a", "how do i",
+        "what does", "how to", "explain", "teach me"
+    ]
+    
+    if any(pattern in request_lower for pattern in conceptual_patterns):
+        return False
+    
+    return False
 
 
 async def direct_act(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
@@ -32,6 +66,53 @@ async def direct_act(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
         return {
             "messages": [AIMessage(content="I need a clear request to help you with your Unity development.")]
         }
+    
+    # Static system content for caching
+    static_system_content = """You are a Unity/Unreal Engine development assistant that EXECUTES TOOLS to retrieve data from the user's project.
+
+CRITICAL DISTINCTION:
+- "What assets do I have?" → Use search_project tool to query their database
+- "What is an asset?" → Provide knowledge-based explanation
+
+- "Show me my GameObjects" → Use search_project tool to query hierarchy
+- "How do I create GameObjects?" → Provide guidance
+
+When the user asks for data FROM THEIR PROJECT, you MUST use tools to retrieve it.
+When they ask conceptual questions ABOUT Unity, you provide informational responses.
+
+KEY RULE: If they say "my", "in my project", "show me", "what are all" → USE TOOLS!"""
+    
+    # NEW: Check if this is a project data request
+    if _is_project_data_request(user_request):
+        # Force tool execution for project data requests
+        tool_name = _determine_tool_from_request(user_request, "")
+        
+        if tool_name:
+            tool_prompt = f"""Execute the {tool_name} tool to retrieve data for: "{user_request}"
+
+The user is asking for data FROM their project. Use the tool to query their actual project database.
+Do NOT provide guidance on how to do it themselves - they want YOU to execute the query and show them the results."""
+
+            model_with_tools = model.bind_tools(TOOLS)
+            
+            try:
+                tool_response = await model_with_tools.ainvoke(
+                    [
+                        {"role": "system", "content": static_system_content},
+                        {"role": "user", "content": tool_prompt}
+                    ],
+                    tool_choice={"type": "function", "function": {"name": tool_name}}
+                )
+                
+                return {
+                    "messages": [tool_response],
+                    "total_tool_calls": state.total_tool_calls + (
+                        len(tool_response.tool_calls) if tool_response.tool_calls else 0
+                    )
+                }
+            except Exception as tool_error:
+                # Continue to normal flow if tool execution fails
+                pass
     
     # Analyze request to determine the most appropriate single tool or response
     analysis_prompt = f"""Analyze this Unity/game development request and determine the best direct response approach: "{user_request}"
@@ -53,15 +134,6 @@ Choose the most efficient approach and specify:
 - Brief reasoning
 
 Focus on solving the user's immediate need efficiently."""
-
-    # Static system content for caching
-    static_system_content = """You are a Unity/Unreal Engine development assistant providing direct, efficient responses to simple requests.
-
-For TOOL_CALL responses: Call the appropriate tool with suitable parameters
-For INFORMATIONAL responses: Provide clear, actionable information from your knowledge
-For GUIDANCE responses: Give step-by-step instructions
-
-Be concise, practical, and focused on immediate value to the developer."""
 
     # Structure messages for analysis
     analysis_messages = [
@@ -145,12 +217,32 @@ def _determine_tool_from_request(user_request: str, analysis_text: str) -> str:
     """Determine the most appropriate production tool based on request content."""
     request_lower = user_request.lower()
     
-    # Direct tool mapping based on request patterns
+    # PRIORITY 1: Project data patterns - check these FIRST
+    project_data_patterns = {
+        "search_project": [
+            "what assets", "my assets", "list assets", "show assets",
+            "what gameobjects", "my gameobjects", "list gameobjects",
+            "show gameobjects", "what's in my project", "project info",
+            "all the assets", "all assets", "all gameobjects",
+            "in my project", "in the project", "my project",
+            "show me my", "list my", "what are my", "what do i have",
+            "current project", "project structure", "project details"
+        ],
+        "code_snippets": [
+            "my scripts", "what scripts", "list scripts", "show scripts",
+            "all scripts", "all the scripts", "scripts in my project"
+        ]
+    }
+    
+    # Check project-specific patterns FIRST (highest priority)
+    for tool_name, patterns in project_data_patterns.items():
+        if any(pattern in request_lower for pattern in patterns):
+            return tool_name
+    
+    # PRIORITY 2: General tool patterns
     tool_patterns = {
         "search_project": [
-            "project info", "what's in my project", "project structure", 
-            "project details", "current project", "my project", "find assets",
-            "show me assets", "list components", "project hierarchy"
+            "find assets", "list components", "project hierarchy"
         ],
         "code_snippets": [
             "code example", "script template", "code snippet", "show me code",
@@ -169,7 +261,7 @@ def _determine_tool_from_request(user_request: str, analysis_text: str) -> str:
         ]
     }
     
-    # Check analysis text first for explicit tool mention
+    # Check analysis text for explicit tool mention
     for tool_name in tool_patterns.keys():
         if tool_name in analysis_text:
             return tool_name

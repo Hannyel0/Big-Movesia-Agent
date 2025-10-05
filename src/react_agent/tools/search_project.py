@@ -134,6 +134,50 @@ def _validate_sql_query(sql_query: str) -> Dict[str, Any]:
     return validation
 
 
+def _should_use_fuzzy_matching(query_description: str, generated_sql: str) -> bool:
+    """
+    Determine if the generated SQL should use fuzzy matching but doesn't.
+    """
+    query_lower = query_description.lower()
+    sql_lower = generated_sql.lower()
+    
+    # Indicators that user provided a name that needs fuzzy matching
+    user_provided_name_indicators = [
+        'named', 'called', 'for my', 'in my', 'from my',
+        'scene called', 'asset called', 'script called'
+    ]
+    
+    has_user_name = any(indicator in query_lower for indicator in user_provided_name_indicators)
+    
+    # Check if SQL uses exact matching when it shouldn't
+    uses_exact_match = " = '" in sql_lower and "scene_path = '" in sql_lower
+    uses_fuzzy_match = "like" in sql_lower and "lower(" in sql_lower
+    
+    # Should use fuzzy but doesn't
+    return has_user_name and uses_exact_match and not uses_fuzzy_match
+
+
+def _preprocess_user_query(query_description: str) -> str:
+    """
+    Preprocess user queries to give better hints for fuzzy matching.
+    """
+    query_lower = query_description.lower()
+    
+    # Detect when user is asking for scenes by name
+    if any(indicator in query_lower for indicator in ['in my', 'for my', 'from my', 'scene named', 'scene called']):
+        # Extract potential scene name
+        for keyword in ['scene', 'level', 'map']:
+            if keyword in query_lower:
+                # Add a hint about fuzzy matching
+                return f"{query_description} [Note: Use fuzzy matching with LIKE and LOWER() for scene names]"
+    
+    # Detect when asking for assets by name
+    if any(indicator in query_lower for indicator in ['asset named', 'script named', 'file named', 'called']):
+        return f"{query_description} [Note: Use case-insensitive LIKE matching for asset names]"
+    
+    return query_description
+
+
 async def _generate_sql_query(
     query_description: str,
     tables_hint: Optional[List[str]],
@@ -285,10 +329,33 @@ async def _generate_sql_query(
        ORDER BY count DESC
        LIMIT 50;
     
+    8. "List GameObjects in sample scene" (FUZZY MATCHING)
+       SELECT name, hierarchy_path, scene_path, active_self 
+       FROM hierarchy_gameobjects 
+       WHERE LOWER(scene_path) LIKE LOWER('%sample%scene%') 
+       AND is_deleted = 0 AND project_id = ?
+       ORDER BY sibling_index ASC
+       LIMIT 50;
+    
+    9. "Find assets named player controller" (CASE-INSENSITIVE)
+       SELECT path, kind, mtime FROM assets 
+       WHERE LOWER(path) LIKE LOWER('%playercontroller%') 
+       AND deleted = 0 AND project_id = ?
+       LIMIT 50;
+    
+    10. "Show GameObjects in main level" (PARTIAL SCENE NAME)
+       SELECT name, tag, scene_path FROM hierarchy_gameobjects 
+       WHERE LOWER(scene_path) LIKE LOWER('%main%') 
+       AND is_deleted = 0 AND project_id = ?
+       LIMIT 50;
+    
     QUERY BEST PRACTICES:
     - Always filter is_deleted = 0 for hierarchy tables
     - Always filter deleted = 0 for assets table
-    - Use LIKE with % wildcards for partial matches
+    - **Use LIKE with % wildcards for user-provided names (not exact matches)**
+    - **Use LOWER() for case-insensitive matching of names/paths**
+    - **For scene names: LOWER(scene_path) LIKE LOWER('%scene_name%')**
+    - **For asset names: LOWER(path) LIKE LOWER('%asset_name%')**
     - Include project_id filter when available (use ? placeholder)
     - Add LIMIT to prevent excessive results (default: 50)
     - When joining hierarchy_gameobjects and hierarchy_components, match on:
@@ -305,13 +372,31 @@ User query: "{query_description}"
 {f"Focus on these tables: {', '.join(tables_hint)}" if tables_hint else ""}
 
 Generate a valid SQLite SELECT query to answer this question. Requirements:
+
+CRITICAL - FUZZY MATCHING RULES:
+1. **For user-provided names** (scene names, asset names, GameObject names):
+   - Always use LIKE with % wildcards, not exact matches
+   - Always wrap in LOWER() for case-insensitive matching
+   - Example: LOWER(scene_path) LIKE LOWER('%user_provided_name%')
+   
+2. **When to use fuzzy vs exact matching**:
+   - User input like "sample scene" → LOWER(scene_path) LIKE LOWER('%sample%scene%')
+   - Unity constants like tag='Player' → Can use exact match
+   - Asset types like kind='MonoScript' → Use exact match
+   
+3. **Common name variations to handle**:
+   - "sample scene" might be "SampleScene", "sampleScene", "Sample Scene", "sample_scene"
+   - Use flexible patterns: LOWER(scene_path) LIKE LOWER('%sample%')
+
+QUERY STRUCTURE:
 1. Use proper JOINs when querying multiple tables
 2. Include project_id filter using ? placeholder (e.g., WHERE project_id = ?)
 3. Filter deleted = 0 for assets table
-4. Use helpful column aliases for readability
-5. Add LIMIT clause (default 50, adjust based on query type)
-6. Use ORDER BY for sorted results when appropriate
-7. Return only relevant columns, not SELECT *
+4. Filter is_deleted = 0 for hierarchy tables
+5. Use helpful column aliases for readability
+6. Add LIMIT clause (default 50, adjust based on query type)
+7. Use ORDER BY for sorted results when appropriate
+8. Return only relevant columns, not SELECT *
 
 Respond with ONLY the SQL query, no explanations or markdown."""
 
@@ -399,6 +484,12 @@ async def search_project(
     logger.info(f"📝 Query: '{query_description}'")
     logger.info(f"📊 Format: {return_format}")
     logger.info(f"{'='*70}")
+    
+    # NEW: Preprocess query for better fuzzy matching hints
+    processed_query = _preprocess_user_query(query_description)
+    if processed_query != query_description:
+        logger.info(f"✨ Preprocessed query: '{processed_query}'")
+        query_description = processed_query
     
     try:
         runtime = get_runtime(Context)
@@ -503,6 +594,35 @@ async def search_project(
             
             logger.info(f"✅ Query executed in {query_duration:.3f}s")
             logger.info(f"📊 Retrieved {len(results)} rows")
+            
+            # NEW: If no results and query used exact matching, retry with fuzzy matching
+            if len(results) == 0 and "= '" in sql_query and "scene" in query_description.lower():
+                logger.warning("⚠️ No results with exact match. Retrying with fuzzy matching...")
+                
+                # Generate a retry query with explicit fuzzy matching instruction
+                retry_description = f"{query_description} [IMPORTANT: Use LOWER(scene_path) LIKE LOWER('%scene_name%') for flexible matching, not exact matches]"
+                
+                retry_result = await _generate_sql_query(retry_description, tables, context)
+                retry_sql = retry_result["query"]
+                
+                # Validate retry query
+                retry_validation = _validate_sql_query(retry_sql)
+                if retry_validation['is_valid']:
+                    # Inject project_id
+                    if project_id and "?" in retry_sql:
+                        retry_sql = retry_sql.replace("?", f"'{project_id}'")
+                    
+                    logger.info(f"🔄 Retry SQL: {retry_sql}")
+                    
+                    # Execute retry
+                    results, query_duration = await asyncio.to_thread(
+                        _execute_query_sync,
+                        sqlite_path,
+                        retry_sql
+                    )
+                    
+                    logger.info(f"✅ Retry found {len(results)} rows")
+                    sql_query = retry_sql  # Use retry query for response
             
             # Log sample of results for debugging
             if results:

@@ -90,7 +90,6 @@ async def classify(
                 # ✅ NEW: Store project context in runtime_metadata
                 "project_id": project_id,
                 "project_root": project_root,
-                "project_name": project_name,
                 "unity_version": unity_version,
                 "sqlite_path": sqlite_path,
             }
@@ -105,11 +104,16 @@ async def classify(
 - **file_operation**: Safe file I/O with validation (read/write/modify/delete/move/diff)
 - **web_search**: Research Unity documentation, tutorials, best practices
 
-**DIRECT**: Simple queries answerable with a single tool operation
-- Information requests about project structure or existing code
-- Single database queries or file operations
-- Research questions requiring external documentation
-Examples: "What's in my project?", "Find my player movement code", "How do character controllers work?"
+**DIRECT**: Simple queries requesting data from the user's project
+- Queries for existing assets, GameObjects, components, scripts IN YOUR PROJECT
+- Single database queries or file reads FROM YOUR PROJECT
+- Examples: "What assets do I have?", "Show me my GameObjects", "List my scripts", "What's in my project?"
+- KEY: If asking for data that EXISTS in the project → DIRECT + TOOL_CALL
+
+**NOT DIRECT** (should provide guidance):
+- Conceptual questions: "What IS a prefab?", "How DO character controllers work?"
+- Tutorial requests: "Teach me about physics", "Explain the Input System"
+- These get informational responses, not tool execution
 
 **SIMPLE_PLAN**: Straightforward tasks requiring 2-3 coordinated tool operations
 - Basic implementations using existing patterns
@@ -126,6 +130,7 @@ Examples: "Create a basic movement script", "Add a health bar to my UI", "Fix my
 Examples: "Build a complete inventory system", "Create an AI enemy with pathfinding", "Implement multiplayer networking"
 
 Classification Guidelines:
+- CRITICAL: Distinguish between "show me MY data" (DIRECT) vs "explain a concept" (informational)
 - Consider how many production tools would be needed
 - Evaluate if the task requires project analysis before implementation
 - Assess whether existing code needs to be found and understood first
@@ -136,8 +141,6 @@ Provide clear reasoning for your classification to help the system choose the op
 
     # Dynamic request content with project context awareness
     classification_request = f"""Classify this Unity/game development request: "{user_request}"
-
-Project Context:
 - Unity Version: {unity_version or "Unknown"}
 - Project: {project_name or "Unknown"}
 
