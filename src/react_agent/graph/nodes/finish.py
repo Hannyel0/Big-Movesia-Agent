@@ -21,9 +21,9 @@ narration_engine = NarrationEngine()
 async def _generate_direct_action_response(state: State, model) -> str:
     """Generate a response for direct actions that don't have plans."""
     
-    # Extract the original user question
+    # Extract the most recent user question
     user_question = None
-    for msg in state.messages:
+    for msg in reversed(state.messages):
         if hasattr(msg, 'type') and msg.type == 'human':
             user_question = get_message_text(msg)
             break

@@ -118,7 +118,6 @@ def _get_cached_conversation_summary(messages_hash: str, goal: str) -> Optional[
 def _cache_conversation_summary(messages_hash: str, goal: str, summary: str) -> None:
     """Cache conversation summary."""
     cache_key = f"{messages_hash}:{goal}"
-    _conversation_cache[cache_key] = summary
     if len(_conversation_cache) > 100:
         keys_to_remove = list(_conversation_cache.keys())[:20]
         for key in keys_to_remove:
@@ -127,13 +126,6 @@ def _cache_conversation_summary(messages_hash: str, goal: str, summary: str) -> 
 def _build_conversation_context(state: State, current_step: PlanStep) -> List[Dict[str, str]]:
     """Build optimized conversation context with caching and limited message history."""
     context_messages = []
-
-    # Only include essential goal context
-    original_request = None
-    for msg in state.messages:
-        if isinstance(msg, HumanMessage):
-            original_request = get_message_text(msg)
-            break
 
     # Limit to only 2-3 most recent relevant messages
     recent_messages = state.messages[-3:] if len(state.messages) > 3 else state.messages
@@ -158,12 +150,12 @@ def _build_conversation_context(state: State, current_step: PlanStep) -> List[Di
                     "content": f"Previous conversation summary: {summary}",
                 })
 
-    # Add original request for goal context (shortened)
-    if original_request:
-        truncated_request = (
-            original_request[:200] + "..." if len(original_request) > 200 else original_request
+    # Add plan goal for context (shortened)
+    if state.plan and state.plan.goal:
+        truncated_goal = (
+            state.plan.goal[:200] + "..." if len(state.plan.goal) > 200 else state.plan.goal
         )
-        context_messages.append({"role": "user", "content": truncated_request})
+        context_messages.append({"role": "user", "content": truncated_goal})
 
     # Add only the most recent 2-3 relevant messages
     relevant_count = 0

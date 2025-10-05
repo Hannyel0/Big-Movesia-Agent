@@ -535,29 +535,29 @@ def _format_results_natural_language(results: List[Dict], query: str) -> str:
         # Format key fields from the row
         key_fields = []
         
-        # Try multiple name variations
+        # Smart detection: Find ANY column with 'name' in it
         name_value = None
-        for name_key in ['name', 'object_name', 'asset_name', 'file_name']:
-            if name_key in row and row[name_key]:
-                name_value = row[name_key]
+        for key, value in row.items():
+            if 'name' in key.lower() and value:
+                name_value = value
                 break
         if name_value:
             key_fields.append(f"{name_value}")
         
-        # Try multiple path variations
+        # Smart detection: Find ANY column with 'path' in it
         path_value = None
-        for path_key in ['path', 'scene_path', 'file_path', 'asset_path', 'rel_path']:
-            if path_key in row and row[path_key]:
-                path_value = row[path_key]
+        for key, value in row.items():
+            if 'path' in key.lower() and value:
+                path_value = value
                 break
         if path_value:
             key_fields.append(f"({path_value})")
         
-        # Try multiple type/kind variations
+        # Smart detection: Find ANY column with 'type' or 'kind' in it
         type_value = None
-        for type_key in ['kind', 'type', 'asset_type', 'component_type']:
-            if type_key in row and row[type_key]:
-                type_value = row[type_key]
+        for key, value in row.items():
+            if ('type' in key.lower() or 'kind' in key.lower()) and value:
+                type_value = value
                 break
         if type_value:
             key_fields.append(f"[{type_value}]")
