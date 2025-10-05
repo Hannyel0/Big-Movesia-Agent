@@ -113,7 +113,8 @@ def _validate_sql_query(sql_query: str) -> Dict[str, Any]:
         logger.warning("⚠️ Query has no LIMIT - consider adding one for performance")
     
     # Check for valid table names
-    valid_tables = ['assets', 'asset_deps', 'scenes', 'game_objects', 'components', 'events']
+    valid_tables = ['assets', 'asset_deps', 'scenes', 'hierarchy_scenes', 
+                'hierarchy_gameobjects', 'hierarchy_components', 'events']
     found_tables = []
     for table in valid_tables:
         if table in sql_lower:
@@ -176,25 +177,49 @@ async def _generate_sql_query(
       - updated_ts INTEGER
       - project_id TEXT
     
-    🎮 game_objects - GameObject hierarchy from parsed scenes
+    🎬 hierarchy_scenes - Scene metadata with snapshot tracking
     Columns:
       - id INTEGER PRIMARY KEY
-      - guid TEXT (scene GUID)
+      - project_id TEXT
       - scene_path TEXT
+      - scene_guid TEXT
+      - last_updated INTEGER
+      - snapshot_hash TEXT
+    
+    🎮 hierarchy_gameobjects - GameObject hierarchy from parsed scenes
+    Columns:
+      - id INTEGER PRIMARY KEY
+      - project_id TEXT
+      - scene_path TEXT
+      - instance_id INTEGER (Unity instance ID)
       - name TEXT (GameObject name)
-      - is_active INTEGER (0 or 1)
+      - hierarchy_path TEXT (full path in hierarchy)
+      - parent_path TEXT (parent's hierarchy path, NULL for root)
       - tag TEXT (Unity tag like "Player", "Enemy")
       - layer INTEGER (Unity layer number)
-      - parent_id INTEGER (parent GameObject ID, NULL for root)
-      - project_id TEXT
+      - active_self INTEGER (0 or 1)
+      - active_in_hierarchy INTEGER (0 or 1)
+      - is_static INTEGER (0 or 1)
+      - pos_x, pos_y, pos_z REAL (position)
+      - rot_x, rot_y, rot_z, rot_w REAL (rotation quaternion)
+      - scale_x, scale_y, scale_z REAL (scale)
+      - sibling_index INTEGER
+      - last_updated INTEGER
+      - is_deleted INTEGER (0=active, 1=deleted)
     
-    🧩 components - Components attached to GameObjects
+    🧩 hierarchy_components - Components attached to GameObjects
     Columns:
       - id INTEGER PRIMARY KEY
-      - game_object_id INTEGER (references game_objects.id)
-      - type TEXT (component type like "Transform", "Rigidbody", "PlayerController")
-      - properties TEXT (JSON string of component properties)
       - project_id TEXT
+      - scene_path TEXT
+      - gameobject_instance_id INTEGER (references hierarchy_gameobjects.instance_id)
+      - type_name TEXT (short name like "Transform", "Rigidbody")
+      - full_type_name TEXT (fully qualified type name)
+      - assembly_name TEXT (assembly containing the component)
+      - enabled INTEGER (0 or 1)
+      - properties_json TEXT (JSON string of component properties)
+      - last_updated INTEGER
+      - is_deleted INTEGER (0=active, 1=deleted)
     
     📝 events - Unity Editor events log
     Columns:
@@ -209,23 +234,22 @@ async def _generate_sql_query(
     
     1. "Find all player scripts"
        SELECT path, kind, size FROM assets 
-       WHERE kind = 'Script' AND path LIKE '%Player%' 
+       WHERE kind = 'MonoScript' AND path LIKE '%Player%' 
        AND deleted = 0 AND project_id = ?
        LIMIT 50;
     
     2. "Show me GameObjects tagged as Player"
-       SELECT name, tag, is_active FROM game_objects 
-       WHERE tag = 'Player' AND project_id = ?
+       SELECT name, tag, active_self, scene_path FROM hierarchy_gameobjects 
+       WHERE tag = 'Player' AND is_deleted = 0 AND project_id = ?
        LIMIT 50;
     
-    3. "What scripts use CharacterController component?"
-       SELECT DISTINCT a.path 
+    3. "What assets depend on CharacterController?"
+       SELECT DISTINCT a.path, a.kind 
        FROM assets a
        JOIN asset_deps ad ON a.guid = ad.guid
        JOIN assets dep ON ad.dep = dep.guid
        WHERE dep.path LIKE '%CharacterController%' 
-       AND a.kind = 'Script' AND a.deleted = 0
-       AND a.project_id = ?
+       AND a.deleted = 0 AND a.project_id = ?
        LIMIT 50;
     
     4. "Find all prefabs in the Player folder"
@@ -236,18 +260,39 @@ async def _generate_sql_query(
        LIMIT 50;
     
     5. "Show me all components on GameObjects named 'Player'"
-       SELECT go.name, c.type, c.properties 
-       FROM game_objects go
-       JOIN components c ON go.id = c.game_object_id
-       WHERE go.name = 'Player' AND go.project_id = ?
+       SELECT hgo.name, hgo.scene_path, hc.type_name, hc.enabled 
+       FROM hierarchy_gameobjects hgo
+       JOIN hierarchy_components hc ON hgo.instance_id = hc.gameobject_instance_id 
+           AND hgo.project_id = hc.project_id AND hgo.scene_path = hc.scene_path
+       WHERE hgo.name = 'Player' AND hgo.is_deleted = 0 AND hc.is_deleted = 0
+       AND hgo.project_id = ?
+       LIMIT 50;
+    
+    6. "Find GameObjects with Rigidbody components"
+       SELECT DISTINCT hgo.name, hgo.hierarchy_path, hgo.scene_path
+       FROM hierarchy_gameobjects hgo
+       JOIN hierarchy_components hc ON hgo.instance_id = hc.gameobject_instance_id
+           AND hgo.project_id = hc.project_id AND hgo.scene_path = hc.scene_path
+       WHERE hc.type_name = 'Rigidbody' AND hgo.is_deleted = 0 AND hc.is_deleted = 0
+       AND hgo.project_id = ?
+       LIMIT 50;
+    
+    7. "List all component types used in the project"
+       SELECT type_name, COUNT(*) as count
+       FROM hierarchy_components
+       WHERE is_deleted = 0 AND project_id = ?
+       GROUP BY type_name
+       ORDER BY count DESC
        LIMIT 50;
     
     QUERY BEST PRACTICES:
-    - Always filter deleted = 0 for assets unless specifically looking for deleted items
+    - Always filter is_deleted = 0 for hierarchy tables
+    - Always filter deleted = 0 for assets table
     - Use LIKE with % wildcards for partial matches
     - Include project_id filter when available (use ? placeholder)
     - Add LIMIT to prevent excessive results (default: 50)
-    - Use JOINs to combine related data
+    - When joining hierarchy_gameobjects and hierarchy_components, match on:
+      instance_id = gameobject_instance_id AND project_id AND scene_path
     - Use ORDER BY for sorted results (DESC for newest first)
     - Use DISTINCT to avoid duplicates when joining
     """
@@ -342,7 +387,7 @@ async def search_project(
     
     Args:
         query_description: Natural language description of what to find
-        tables: Optional hint about which tables to query (assets, scenes, game_objects, components, events)
+        tables: Optional hint about which tables to query (assets, scenes, hierarchy_gameobjects, hierarchy_components, events)
         return_format: How to format results - "structured" returns raw data, "natural_language" returns readable text
         
     Returns:
