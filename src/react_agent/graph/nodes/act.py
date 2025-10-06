@@ -123,51 +123,172 @@ def _cache_conversation_summary(messages_hash: str, goal: str, summary: str) -> 
         for key in keys_to_remove:
             del _conversation_cache[key]
 
-def _build_conversation_context(state: State, current_step: PlanStep) -> List[Dict[str, str]]:
-    """Build optimized conversation context with caching and limited message history."""
+def _detect_continuation_request(user_message: str, recent_messages: List) -> Optional[Dict[str, Any]]:
+    """Detect if user is responding to a previous offer/question.
+    
+    Returns context about what they're continuing if detected.
+    """
+    message_lower = user_message.lower().strip()
+    
+    # Short affirmative responses
+    affirmatives = [
+        "yes", "yeah", "yep", "sure", "ok", "okay", "please",
+        "yes please", "yeah please", "show me", "go ahead",
+        "do it", "let's see it", "i want to see", "i'd like to see"
+    ]
+    
+    # Check if this is a continuation
+    is_continuation = (
+        any(message_lower.startswith(aff) for aff in affirmatives) or
+        any(aff in message_lower for aff in ["yes show", "yeah show", "please show"])
+    )
+    
+    if not is_continuation:
+        return None
+    
+    # Look for what was offered in previous AI message
+    for msg in reversed(recent_messages[-5:]):
+        if isinstance(msg, AIMessage):
+            content = get_message_text(msg)
+            content_lower = content.lower()
+            
+            # Check for offers/questions
+            if any(phrase in content_lower for phrase in [
+                "want me to", "would you like", "should i show",
+                "want to see", "i can show", "let me know if"
+            ]):
+                # Found the offer - now find the associated tool result
+                return {
+                    "type": "continuation",
+                    "previous_offer": content,
+                    "context_needed": True
+                }
+    
+    return None
+
+
+def _extract_recent_tool_results(messages: List, limit: int = 2) -> List[Dict[str, Any]]:
+    """Extract recent tool results with full data, not just status."""
+    tool_results = []
+    
+    for msg in reversed(messages[-10:]):  # Look back further
+        if len(tool_results) >= limit:
+            break
+            
+        if isinstance(msg, ToolMessage):
+            try:
+                result = json.loads(get_message_text(msg))
+                tool_name = msg.name or 'unknown'
+                
+                # Store full result, not just success status
+                tool_results.append({
+                    "tool_name": tool_name,
+                    "result": result,
+                    "success": result.get("success", True)
+                })
+            except:
+                continue
+    
+    return list(reversed(tool_results))
+
+
+def _build_conversation_context(state: State, current_step: PlanStep, user_message: str = None) -> List[Dict[str, str]]:
+    """Build enhanced conversation context with continuation detection."""
     context_messages = []
+    
+    # Check if this is a continuation request
+    continuation = None
+    if user_message:
+        continuation = _detect_continuation_request(user_message, state.messages)
+    
+    # If continuation, include MORE context
+    if continuation:
+        # Include last 5 messages instead of 3
+        recent_messages = state.messages[-5:] if len(state.messages) > 5 else state.messages
+        
+        # Get full tool results from recent exchanges
+        recent_tool_results = _extract_recent_tool_results(state.messages, limit=3)
+        
+        # Add tool results to context with FULL DATA
+        if recent_tool_results:
+            for tool_result in recent_tool_results:
+                tool_name = tool_result["tool_name"]
+                result = tool_result["result"]
+                
+                # Create rich context summary based on tool type
+                if tool_name == "code_snippets":
+                    snippets = result.get("snippets", [])
+                    if snippets:
+                        # Include actual snippet data
+                        context_messages.append({
+                            "role": "system",
+                            "content": f"Recent tool result: code_snippets found {len(snippets)} results. "
+                                      f"Top result: {snippets[0].get('file_path', 'unknown')} "
+                                      f"with {len(snippets[0].get('code', ''))} chars of code available."
+                        })
+                
+                elif tool_name == "search_project":
+                    results = result.get("results", [])
+                    if results:
+                        context_messages.append({
+                            "role": "system",
+                            "content": f"Recent tool result: search_project found {len(results)} items. "
+                                      f"Results include: {', '.join([r.get('name', 'unknown') for r in results[:3]])}"
+                        })
+                
+                elif tool_name == "file_operation":
+                    context_messages.append({
+                        "role": "system",
+                        "content": f"Recent tool result: file_operation {result.get('operation', 'completed')} "
+                                  f"on {result.get('file_path', 'file')}"
+                    })
+    
+    else:
+        # Normal context (existing logic, slightly enhanced)
+        recent_messages = state.messages[-3:] if len(state.messages) > 3 else state.messages
+        
+        # Check for cached summary for older conversation
+        if len(state.messages) > 5:
+            older_messages = state.messages[1:-3]
+            messages_hash = _generate_message_hash(older_messages)
+            cached_summary = _get_cached_conversation_summary(messages_hash, state.plan.goal)
 
-    # Limit to only 2-3 most recent relevant messages
-    recent_messages = state.messages[-3:] if len(state.messages) > 3 else state.messages
-
-    # Check for cached summary for older conversation
-    if len(state.messages) > 5:
-        older_messages = state.messages[1:-3]
-        messages_hash = _generate_message_hash(older_messages)
-        cached_summary = _get_cached_conversation_summary(messages_hash, state.plan.goal)
-
-        if cached_summary:
-            context_messages.append({
-                "role": "system",
-                "content": f"Previous conversation summary: {cached_summary}",
-            })
-        else:
-            summary = _generate_conversation_summary(older_messages)
-            _cache_conversation_summary(messages_hash, state.plan.goal, summary)
-            if summary:
+            if cached_summary:
                 context_messages.append({
                     "role": "system",
-                    "content": f"Previous conversation summary: {summary}",
+                    "content": f"Previous conversation summary: {cached_summary}",
                 })
-
-    # Add plan goal for context (shortened)
+            else:
+                summary = _generate_conversation_summary(older_messages)
+                _cache_conversation_summary(messages_hash, state.plan.goal, summary)
+                if summary:
+                    context_messages.append({
+                        "role": "system",
+                        "content": f"Previous conversation summary: {summary}",
+                    })
+    
+    # Add plan goal for context (existing)
     if state.plan and state.plan.goal:
         truncated_goal = (
             state.plan.goal[:200] + "..." if len(state.plan.goal) > 200 else state.plan.goal
         )
         context_messages.append({"role": "user", "content": truncated_goal})
-
-    # Add only the most recent 2-3 relevant messages
+    
+    # Add recent conversation with LESS aggressive truncation for continuations
     relevant_count = 0
+    max_relevant = 3 if not continuation else 5  # More context for continuations
+    
     for msg in reversed(recent_messages):
-        if relevant_count >= 2:
+        if relevant_count >= max_relevant:
             break
 
         if isinstance(msg, AIMessage):
             content = get_message_text(msg)
             if content and not msg.tool_calls and len(content.strip()) > 20:
+                # For continuations, keep more of the AI's response
+                max_length = 300 if continuation else 150
                 truncated_content = (
-                    content[:150] + "..." if len(content) > 150 else content
+                    content[:max_length] + "..." if len(content) > max_length else content
                 )
                 context_messages.append({"role": "assistant", "content": truncated_content})
                 relevant_count += 1
@@ -178,15 +299,57 @@ def _build_conversation_context(state: State, current_step: PlanStep) -> List[Di
                     "content": f"[Used tools: {', '.join(tool_names)}]",
                 })
                 relevant_count += 1
-        elif isinstance(msg, ToolMessage) and relevant_count < 2:
+                
+        elif isinstance(msg, HumanMessage):
+            content = get_message_text(msg)
+            # Keep full user messages for continuations
+            max_length = 200 if continuation else 100
+            truncated = content[:max_length] + "..." if len(content) > max_length else content
+            context_messages.append({"role": "user", "content": truncated})
+            relevant_count += 1
+            
+        elif isinstance(msg, ToolMessage) and relevant_count < max_relevant:
             tool_name = msg.name or "tool"
-            try:
-                result = json.loads(get_message_text(msg))
-                success = result.get("success", True)
-                status = "succeeded" if success else "failed"
-                context_messages.append({"role": "user", "content": f"[{tool_name} {status}]"})
-            except:
-                context_messages.append({"role": "user", "content": f"[{tool_name} completed]"})
+            
+            # For continuations, include tool result summaries
+            if continuation:
+                try:
+                    result = json.loads(get_message_text(msg))
+                    success = result.get("success", True)
+                    
+                    if tool_name == "code_snippets" and success:
+                        total = result.get("total_found", 0)
+                        context_messages.append({
+                            "role": "user", 
+                            "content": f"[code_snippets: found {total} scripts]"
+                        })
+                    elif tool_name == "search_project" and success:
+                        count = result.get("result_count", 0)
+                        context_messages.append({
+                            "role": "user",
+                            "content": f"[search_project: found {count} items]"
+                        })
+                    else:
+                        status = "succeeded" if success else "failed"
+                        context_messages.append({
+                            "role": "user",
+                            "content": f"[{tool_name} {status}]"
+                        })
+                except:
+                    context_messages.append({
+                        "role": "user",
+                        "content": f"[{tool_name} completed]"
+                    })
+            else:
+                # Existing minimal tool result handling
+                try:
+                    result = json.loads(get_message_text(msg))
+                    success = result.get("success", True)
+                    status = "succeeded" if success else "failed"
+                    context_messages.append({"role": "user", "content": f"[{tool_name} {status}]"})
+                except:
+                    context_messages.append({"role": "user", "content": f"[{tool_name} completed]"})
+            
             relevant_count += 1
 
     return context_messages
@@ -277,8 +440,15 @@ async def act_with_narration_guard(state: State, runtime: Runtime[Context]) -> D
     }
 
     # Phase 1: Generate contextual narration WITH conversation history
+    # Extract user message for continuation detection
+    user_message = None
+    for msg in reversed(state.messages[-3:]):
+        if isinstance(msg, HumanMessage):
+            user_message = get_message_text(msg)
+            break
+    
     try:
-        conversation_context = _build_conversation_context(state, current_step)
+        conversation_context = _build_conversation_context(state, current_step, user_message)
         narration_prompt = _create_context_aware_narration_prompt(
             current_step, step_context, state.retry_count, state.current_assessment
         )

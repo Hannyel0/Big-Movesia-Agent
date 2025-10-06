@@ -1,17 +1,156 @@
-"""Direct action node for simple requests that don't require planning."""
+"""Enhanced direct action node with continuation request detection."""
 
 from __future__ import annotations
 
 import json
-from typing import Any, Dict
+from typing import Any, Dict, Optional, List
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.runtime import Runtime
 
 from react_agent.context import Context
 from react_agent.state import State
 from react_agent.tools import TOOLS
 from react_agent.utils import get_message_text, get_model
+
+
+def _detect_continuation(user_request: str, recent_messages: List) -> Optional[Dict[str, Any]]:
+    """Detect if user is continuing from a previous exchange."""
+    request_lower = user_request.lower().strip()
+    
+    # Continuation indicators
+    continuations = [
+        "yes", "yeah", "yep", "sure", "ok", "okay", "please",
+        "show me", "let me see", "i want to see", "go ahead",
+        "yes please", "yeah please", "yes show", "sure show"
+    ]
+    
+    # Check if this looks like a continuation
+    is_continuation = (
+        len(user_request.split()) <= 10 and  # Short requests
+        any(request_lower.startswith(c) for c in continuations)
+    )
+    
+    if not is_continuation:
+        return None
+    
+    # Find what was offered and what tool was used
+    last_ai_message = None
+    last_tool_result = None
+    
+    for msg in reversed(recent_messages[-8:]):
+        if isinstance(msg, AIMessage) and not last_ai_message:
+            last_ai_message = get_message_text(msg)
+        
+        if isinstance(msg, ToolMessage) and not last_tool_result:
+            try:
+                last_tool_result = {
+                    "tool_name": msg.name,
+                    "result": json.loads(get_message_text(msg))
+                }
+            except:
+                pass
+    
+    if last_ai_message and last_tool_result:
+        return {
+            "previous_message": last_ai_message,
+            "tool_result": last_tool_result
+        }
+    
+    return None
+
+
+def _create_continuation_response(
+    continuation_context: Dict[str, Any],
+    user_request: str
+) -> Optional[str]:
+    """Generate response for continuation requests using stored tool data."""
+    
+    tool_name = continuation_context["tool_result"]["tool_name"]
+    result = continuation_context["tool_result"]["result"]
+    
+    # Handle code_snippets continuation - show full code
+    if tool_name == "code_snippets":
+        snippets = result.get("snippets", [])
+        if not snippets:
+            return "I don't have any code snippets from the previous search."
+        
+        # Check what user wants
+        request_lower = user_request.lower()
+        
+        if any(phrase in request_lower for phrase in ["full", "complete", "entire", "all"]):
+            # Show full code from top result
+            top_snippet = snippets[0]
+            code = top_snippet.get("code", "")
+            file_path = top_snippet.get("file_path", "unknown")
+            
+            if len(code) > 50:
+                response = f"Here's the **complete source code** from `{file_path}`:\n\n```csharp\n{code}\n```"
+                
+                # Add metadata
+                if top_snippet.get("class_name"):
+                    response += f"\n\n**Class**: `{top_snippet['class_name']}`"
+                if top_snippet.get("namespace"):
+                    response += f"\n**Namespace**: `{top_snippet['namespace']}`"
+                if top_snippet.get("line_count"):
+                    response += f"\n**Lines**: {top_snippet['line_count']}"
+                
+                return response
+            else:
+                return f"The code snippet from `{file_path}` is quite short:\n\n```csharp\n{code}\n```"
+        
+        elif "more" in request_lower or "other" in request_lower:
+            # Show other snippets
+            if len(snippets) > 1:
+                response = "Here are the other code snippets I found:\n\n"
+                for i, snippet in enumerate(snippets[1:4], start=2):
+                    file_path = snippet.get("file_path", "unknown")
+                    score = snippet.get("relevance_score", 0)
+                    response += f"{i}. **{file_path}** (relevance: {score:.2f})\n"
+                    response += f"   {snippet.get('line_count', 0)} lines"
+                    if snippet.get("class_name"):
+                        response += f" - `{snippet['class_name']}`"
+                    response += "\n\n"
+                
+                response += "Want me to show the full code for any of these?"
+                return response
+            else:
+                return "That was the only code snippet I found."
+    
+    # Handle search_project continuation - show more details
+    elif tool_name == "search_project":
+        results = result.get("results", [])
+        if not results:
+            return "I don't have any project results from the previous search."
+        
+        request_lower = user_request.lower()
+        
+        if any(phrase in request_lower for phrase in ["more", "detail", "full", "all"]):
+            # Show detailed results
+            response = "Here are the full details from the project search:\n\n"
+            for i, item in enumerate(results[:5], start=1):
+                response += f"**{i}. {item.get('name', 'Unknown')}**\n"
+                response += f"   Type: {item.get('type', 'Unknown')}\n"
+                if item.get("path"):
+                    response += f"   Path: `{item['path']}`\n"
+                if item.get("components"):
+                    response += f"   Components: {', '.join(item['components'][:5])}\n"
+                response += "\n"
+            
+            return response
+    
+    # Handle file_operation continuation
+    elif tool_name == "file_operation":
+        operation = result.get("operation", "")
+        
+        if operation == "read":
+            content = result.get("content", "")
+            file_path = result.get("file_path", "unknown")
+            
+            if content:
+                return f"Here's the **full content** from `{file_path}`:\n\n```csharp\n{content}\n```"
+    
+    return None
 
 
 def _is_project_data_request(request: str) -> bool:
@@ -51,7 +190,7 @@ def _is_project_data_request(request: str) -> bool:
 
 
 async def direct_act(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Execute simple requests directly without planning overhead using production tools."""
+    """Enhanced direct action with continuation detection."""
     context = runtime.context
     model = get_model(context.model)
     
@@ -67,6 +206,21 @@ async def direct_act(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
             "messages": [AIMessage(content="I need a clear request to help you with your Unity development.")]
         }
     
+    # CHECK FOR CONTINUATION FIRST
+    continuation = _detect_continuation(user_request, state.messages)
+    
+    if continuation:
+        # User is continuing from previous exchange
+        continuation_response = _create_continuation_response(continuation, user_request)
+        
+        if continuation_response:
+            return {
+                "messages": [AIMessage(content=continuation_response)]
+            }
+        
+        # If we can't handle continuation, add context and proceed normally
+        # The tool result is still available in continuation["tool_result"]
+    
     # Static system content for caching
     static_system_content = """You are a Unity/Unreal Engine development assistant that EXECUTES TOOLS to retrieve data from the user's project.
 
@@ -80,9 +234,13 @@ CRITICAL DISTINCTION:
 When the user asks for data FROM THEIR PROJECT, you MUST use tools to retrieve it.
 When they ask conceptual questions ABOUT Unity, you provide informational responses.
 
-KEY RULE: If they say "my", "in my project", "show me", "what are all" → USE TOOLS!"""
+KEY RULE: If they say "my", "in my project", "show me", "what are all" → USE TOOLS!
+
+CONTINUATION AWARENESS:
+If you previously showed someone a summary and they ask to "see more", "show full code", or "yes show me",
+they're asking for more detail about what you just discussed. Check recent tool results and provide the full data."""
     
-    # NEW: Check if this is a project data request
+    # Check if this is a project data request
     if _is_project_data_request(user_request):
         # Force tool execution for project data requests
         tool_name = _determine_tool_from_request(user_request, "")
@@ -110,12 +268,12 @@ Do NOT provide guidance on how to do it themselves - they want YOU to execute th
                         len(tool_response.tool_calls) if tool_response.tool_calls else 0
                     )
                 }
-            except Exception as tool_error:
+            except Exception:
                 # Continue to normal flow if tool execution fails
                 pass
     
-    # Analyze request to determine the most appropriate single tool or response
-    analysis_prompt = f"""Analyze this Unity/game development request and determine the best direct response approach: "{user_request}"
+    # Analyze request to determine approach
+    analysis_prompt = f"""Analyze this Unity/game development request: "{user_request}"
 
 Available tools:
 - search_project: For querying project data, assets, hierarchy, components
@@ -125,15 +283,10 @@ Available tools:
 
 Response types:
 1. TOOL_CALL: Use a specific tool if the request clearly maps to one tool operation
-2. INFORMATIONAL: Provide direct knowledge-based answer for "how to", "what is", "explain" questions
-3. GUIDANCE: Offer step-by-step instructions for procedural questions
+2. INFORMATIONAL: Provide direct knowledge-based answer
+3. GUIDANCE: Offer step-by-step instructions
 
-Choose the most efficient approach and specify:
-- Response type
-- Tool name (if TOOL_CALL)
-- Brief reasoning
-
-Focus on solving the user's immediate need efficiently."""
+Choose the most efficient approach."""
 
     # Structure messages for analysis
     analysis_messages = [
@@ -247,7 +400,8 @@ def _determine_tool_from_request(user_request: str, analysis_text: str) -> str:
         "code_snippets": [
             "code example", "script template", "code snippet", "show me code",
             "example code", "sample script", "find code", "existing code",
-            "how is this implemented", "code that does"
+            "how is this implemented", "code that does", "full code",
+            "complete code", "source code"
         ],
         "file_operation": [
             "create script", "write script", "create file", "generate code", 
