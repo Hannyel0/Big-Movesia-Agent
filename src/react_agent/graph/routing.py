@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 from typing import Literal
-from langchain_core.messages import AIMessage
+import json
+from langchain_core.messages import AIMessage, ToolMessage
 from react_agent.state import State
 
 
 def route_after_assess(state: State) -> Literal["advance_step", "increment_retry", "micro_retry", "error_recovery", "finish"]:
     """Enhanced routing with micro-retry support and absolute completion priority."""
-    
     # Safety checks
     if not state.current_assessment:
         return "finish"
@@ -109,6 +109,33 @@ def route_after_error_recovery(state: State) -> Literal["act", "finish"]:
 def route_after_micro_retry(state: State) -> Literal["act"]:
     """Route after micro-retry - always back to act to retry the tool."""
     return "act"
+
+
+def route_after_tools(state: State) -> Literal["check_file_approval", "assess"]:
+    """Route after tool execution - check if file approval is needed."""
+    
+    # Find the last tool message
+    last_tool_message = None
+    for msg in reversed(state.messages):
+        if isinstance(msg, ToolMessage):
+            last_tool_message = msg
+            break
+    
+    if not last_tool_message:
+        return "assess"
+    
+    # Parse tool result to check for approval needs
+    try:
+        result = json.loads(last_tool_message.content)
+        
+        # If the tool returned needs_approval=True, route to approval handler
+        if result.get("needs_approval"):
+            return "check_file_approval"
+    except:
+        pass
+    
+    # Normal flow - go to assessment
+    return "assess"
 
 
 def route_classification_aware(state: State) -> Literal["direct_act", "simple_plan", "plan", "act"]:

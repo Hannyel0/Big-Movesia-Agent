@@ -6,6 +6,7 @@ from .assess import assess
 from .error_recovery import execute_error_recovery
 from .finish import finish
 from .progress import advance_step
+from .file_approval import check_file_approval
 
 __all__ = [
     "plan",
@@ -15,4 +16,5 @@ __all__ = [
     "execute_error_recovery",
     "finish",
     "advance_step",
+    "check_file_approval",
 ]
