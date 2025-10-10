@@ -112,8 +112,16 @@ def route_after_micro_retry(state: State) -> Literal["act"]:
 
 
 def route_after_tools(state: State) -> Literal["check_file_approval", "assess"]:
-    """Route after tool execution - check if file approval is needed."""
+    """
+    Route after tool execution to check if approval is needed.
     
+    This function checks the most recent tool message to see if it contains
+    a file operation that requires human approval.
+    
+    Returns:
+        "check_file_approval" if the tool result needs approval
+        "assess" for normal tool execution flow
+    """
     # Find the last tool message
     last_tool_message = None
     for msg in reversed(state.messages):
@@ -122,6 +130,7 @@ def route_after_tools(state: State) -> Literal["check_file_approval", "assess"]:
             break
     
     if not last_tool_message:
+        # No tool message found, proceed to assessment
         return "assess"
     
     # Parse tool result to check for approval needs
@@ -130,8 +139,14 @@ def route_after_tools(state: State) -> Literal["check_file_approval", "assess"]:
         
         # If the tool returned needs_approval=True, route to approval handler
         if result.get("needs_approval"):
+            print(f"🔍 [Router] Tool result needs approval, routing to check_file_approval")
+            print(f"   Tool: {last_tool_message.name}")
+            print(f"   Operation: {result.get('approval_data', {}).get('operation')}")
+            print(f"   File: {result.get('approval_data', {}).get('file_path')}")
             return "check_file_approval"
-    except:
+    except (json.JSONDecodeError, AttributeError) as e:
+        # Not JSON or no content, proceed to assessment
+        print(f"⚠️  [Router] Could not parse tool result as JSON: {e}")
         pass
     
     # Normal flow - go to assessment
