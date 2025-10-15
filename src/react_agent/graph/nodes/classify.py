@@ -1,4 +1,4 @@
-"""Complexity classification node for the ReAct agent with runtime config support."""
+"""Complexity classification node with continuation awareness."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.runtime import Runtime
 from pydantic import BaseModel, Field
+import json
 
 from react_agent.context import Context
 from react_agent.state import State
@@ -40,12 +41,69 @@ class ComplexityAssessment(BaseModel):
     )
 
 
+def _detect_continuation_context(state: State) -> Optional[Dict[str, Any]]:
+    """
+    Detect if the current request is a continuation from previous interactions.
+    Returns context about the previous interaction if detected.
+    """
+    if not state.memory or not hasattr(state.memory, 'working_memory'):
+        return None
+    
+    recent_tools = state.memory.working_memory.recent_tool_results
+    if not recent_tools:
+        return None
+    
+    # Get the most recent tool result
+    latest_tool = recent_tools[-1]
+    
+    # Get the last AI message (what the user saw)
+    last_ai_message = None
+    for msg in reversed(state.messages[-5:]):
+        if isinstance(msg, AIMessage) and not msg.tool_calls:
+            last_ai_message = get_message_text(msg)
+            break
+    
+    # Get current user message
+    current_user_msg = None
+    for msg in reversed(state.messages):
+        if isinstance(msg, HumanMessage):
+            current_user_msg = get_message_text(msg).lower()
+            break
+    
+    if not current_user_msg:
+        return None
+    
+    # Check if this looks like a continuation
+    continuation_patterns = [
+        "which", "what about", "how about", "the biggest", "the largest", 
+        "the smallest", "the first", "the second", "the last", "show me",
+        "tell me more", "more details", "more info", "yes", "yeah"
+    ]
+    
+    is_continuation = (
+        len(current_user_msg.split()) <= 10 and  # Short request
+        any(pattern in current_user_msg for pattern in continuation_patterns)
+    )
+    
+    if not is_continuation:
+        return None
+    
+    return {
+        "previous_message": last_ai_message or "Previous results",
+        "tool_result": {
+            "tool_name": latest_tool["tool_name"],
+            "result": latest_tool["result"],
+            "summary": latest_tool["summary"]
+        }
+    }
+
+
 async def classify(
     state: State, 
     config: RunnableConfig,
     runtime: Runtime[Context]
 ) -> Dict[str, Any]:
-    """Classify request complexity using LLM with memory context."""
+    """Classify request complexity with continuation awareness."""
     
     print(f"\n{'='*60}")
     print(f"🎯 [CLASSIFY] ===== STARTING CLASSIFICATION =====")
@@ -110,70 +168,119 @@ async def classify(
     # Get memory reference
     memory_to_use = memory_updates.get("memory") or state.memory
     
-    # ✅ NEW: Log memory state BEFORE injection
-    if memory_to_use:
-        print(f"\n🧠 [Classify] Memory State Before Classification:")
-        if hasattr(memory_to_use, 'working_memory'):
-            wm = memory_to_use.working_memory
-            tool_count = len(wm.recent_tool_results)
-            print(f"   Recent tool results: {tool_count}")
-            
-            if tool_count > 0:
-                for i, tool in enumerate(wm.recent_tool_results[-3:], 1):
-                    print(f"   {i}. {tool['tool_name']}: {tool['summary'][:60]}")
-            
-            print(f"   Focus entities: {wm.focus_entities[:3] if wm.focus_entities else 'None'}")
-            print(f"   Focus topics: {wm.focus_topics[:3] if wm.focus_topics else 'None'}")
-        else:
-            print(f"   Working memory not available")
-    else:
-        print(f"\n⚠️  [Classify] No memory available")
+    # ✅ CRITICAL: Force reload of working memory BEFORE continuation detection
+    # This ensures we can detect continuations even if memory was just initialized
+    if memory_to_use and hasattr(memory_to_use, 'working_memory'):
+        wm = memory_to_use.working_memory
+        if len(wm.recent_tool_results) == 0 and memory_to_use.db_path and memory_to_use.db_path.exists():
+            print(f"🧠 [Classify] Preloading working memory for continuation detection...")
+            try:
+                # Manually reload using the same logic from get_memory_context()
+                import asyncio
+                import sqlite3
+                import json as json_module
+                
+                def _reload_tools():
+                    conn = sqlite3.connect(str(memory_to_use.db_path), timeout=5.0)
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT tool_name, query, result, summary, timestamp
+                        FROM memory_working
+                        WHERE session_id = ?
+                        ORDER BY created_at DESC
+                        LIMIT ?
+                    """, (memory_to_use.session_id, wm.max_tool_results))
+                    
+                    tools = []
+                    for row in cursor.fetchall():
+                        try:
+                            tool_result = {
+                                "tool_name": row[0],
+                                "query": row[1],
+                                "result": json_module.loads(row[2]),
+                                "summary": row[3],
+                                "timestamp": row[4]
+                            }
+                            tools.append(tool_result)
+                        except Exception as e:
+                            print(f"⚠️ [Classify] Failed to reload tool result: {e}")
+                    
+                    conn.close()
+                    return tools
+                
+                loaded_tools = await asyncio.to_thread(_reload_tools)
+                for tool in loaded_tools:
+                    wm.recent_tool_results.append(tool)
+                
+                if len(loaded_tools) > 0:
+                    print(f"✅ [Classify] Preloaded {len(loaded_tools)} tool results for continuation detection")
+                    
+            except Exception as e:
+                print(f"⚠️ [Classify] Could not preload tools: {e}")
     
-    # ✅ CRITICAL: For ALL classifications, enhance the prompt with memory context
-    # This way the LLM can see recent interactions even for new requests
-    base_classification_prompt = """You are a Unity/Unreal Engine development complexity assessor with access to production tools. Classify user requests into three categories:
+    # ✅ NEW: Detect continuation context AFTER ensuring memory is loaded
+    continuation_context = None
+    if memory_to_use:
+        continuation_context = _detect_continuation_context(state)
+        if continuation_context:
+            print(f"\n🔄 [Classify] CONTINUATION DETECTED!")
+            print(f"   Previous tool: {continuation_context['tool_result']['tool_name']}")
+            print(f"   Summary: {continuation_context['tool_result']['summary'][:80]}")
+    
+    # Base classification prompt
+    base_classification_prompt = """You are a Unity/Unreal Engine development complexity assessor with access to production tools.
 
 **Available Production Tools:**
-- **search_project**: Query indexed project database (assets, hierarchy, components, dependencies)
-- **code_snippets**: Semantic search through C# scripts by functionality
-- **file_operation**: Safe file I/O with validation (read/write/modify/delete/move/diff)
-- **web_search**: Research Unity documentation, tutorials, best practices
+- **search_project**: Query indexed project database
+- **code_snippets**: Semantic search through C# scripts
+- **file_operation**: Safe file I/O with validation
+- **web_search**: Research Unity documentation and tutorials
 
-**DIRECT**: Single-step responses (can answer immediately)
-- Project data queries: "What assets do I have?", "Show me my GameObjects", "List my scripts"
-  → These execute a single tool (search_project, code_snippets, etc.)
-  
-- Informational queries: "What is a prefab?", "How do character controllers work?", "Explain physics"
-  → These provide knowledge-based answers without executing tools
-  
-- KEY: If it can be answered in ONE step (tool call OR explanation) → DIRECT
+**CRITICAL FOR CONTINUATION REQUESTS:**
+When the user's request references previous results or context (like "which is the biggest one?", "show me more", "the first one"), this is a DIRECT action that should:
+1. Use the existing context from previous tool results
+2. Analyze or present that data differently
+3. NOT require new tool executions or planning
 
-**SIMPLE_PLAN**: Straightforward tasks requiring 2-3 coordinated tool operations
+**DIRECT**: Single-step responses
+- Project data queries: "What assets do I have?", "List my scripts"
+- ✅ CONTINUATION QUERIES: "Which is the biggest?", "Show me more details", "The first one"
+- Informational queries: "What is a prefab?", "How do controllers work?"
+- Follow-up analysis of existing results
+
+**SIMPLE_PLAN**: 2-3 coordinated operations
 - Basic implementations using existing patterns
 - Simple modifications to existing code
-- Creating new files based on found examples
-- Small debugging using project queries and code search
-Examples: "Create a basic movement script", "Add a health bar to my UI", "Fix my player controller"
 
-**COMPLEX_PLAN**: Multi-faceted development requiring comprehensive tool coordination (4+ steps)
-- Complete system implementations requiring research, code analysis, and multiple file operations
-- Advanced features needing extensive project integration
-- Complex troubleshooting across multiple components and files
-- Architecture-level changes requiring thorough project understanding
-Examples: "Build a complete inventory system", "Create an AI enemy with pathfinding", "Implement multiplayer networking"
+**COMPLEX_PLAN**: 4+ comprehensive steps
+- Complete system implementations
+- Advanced features with extensive integration
 
-Classification Guidelines:
-- Count the number of distinct steps/tools needed
-- DIRECT = 1 step (whether it's a tool call or an explanation)
-- SIMPLE_PLAN = 2-3 coordinated steps
-- COMPLEX_PLAN = 4+ coordinated steps
-- Consider if the task requires project analysis before implementation
-- Assess whether existing code needs to be found and understood first
-- Factor in complexity of file operations and integrations
+**KEY**: Continuation requests referencing recent results = DIRECT (no new tools needed)"""
 
-Provide clear reasoning for your classification to help the system choose the optimal execution path."""
+    # ✅ NEW: Add explicit continuation context if detected
+    if continuation_context:
+        continuation_section = f"""
 
-    # ✅ NEW: Log memory context injection
+# ⚠️ CONTINUATION CONTEXT DETECTED ⚠️
+
+The user just received these results from {continuation_context['tool_result']['tool_name']}:
+**Result Summary:** {continuation_context['tool_result']['summary']}
+
+**Previous interaction included:**
+{json.dumps(continuation_context['tool_result']['result'], indent=2)[:500]}...
+
+The current request "{user_request}" is a FOLLOW-UP asking for more analysis, filtering, or details about these existing results.
+
+**CLASSIFICATION GUIDANCE FOR THIS CONTINUATION:**
+- This should be classified as DIRECT (no new tools needed)
+- The data already exists in memory
+- Just needs to analyze/present existing results differently
+- Direct_act can handle this with the existing context"""
+        
+        base_classification_prompt += continuation_section
+    
+    # Inject memory context
     print(f"\n🔄 [Classify] Injecting memory context into classification prompt...")
     enhanced_classification_prompt = await inject_memory_into_prompt(
         base_prompt=base_classification_prompt,
@@ -182,7 +289,7 @@ Provide clear reasoning for your classification to help the system choose the op
         include_episodes=False
     )
     
-    # ✅ NEW: Log what was injected
+    # Log what was injected
     base_length = len(base_classification_prompt)
     enhanced_length = len(enhanced_classification_prompt)
     added_context = enhanced_length - base_length
@@ -191,16 +298,25 @@ Provide clear reasoning for your classification to help the system choose the op
     print(f"   Enhanced prompt: {enhanced_length} chars")
     print(f"   Memory context added: {added_context} chars")
     
-    if added_context > 0:
-        print(f"\n📝 [Classify] Memory Context Preview (first 300 chars):")
-        # Extract just the memory context part
-        memory_section = enhanced_classification_prompt[base_length:base_length+300]
-        print(f"   {memory_section}...")
+    # Create classification request with continuation awareness
+    if continuation_context:
+        classification_request = f"""🔍 CONTINUATION REQUEST DETECTED 🔍
+
+Current request: "{user_request}"
+Previous tool: {continuation_context['tool_result']['tool_name']}
+Previous result: {continuation_context['tool_result']['summary']}
+
+This is clearly a FOLLOW-UP question about the previous results.
+
+**Classify as DIRECT** because:
+1. The data already exists in memory
+2. No new tool execution is needed
+3. Just needs to analyze/filter/present existing data
+4. Direct_act can handle this using the continuation context
+
+Provide your classification confirming this is a continuation request."""
     else:
-        print(f"   ⚠️  No memory context was added")
-    
-    # Create classification request
-    classification_request = f"""Classify this Unity/game development request: "{user_request}"
+        classification_request = f"""Classify this Unity/game development request: "{user_request}"
 - Unity Version: {unity_version or "Unknown"}
 - Project: {project_name or "Unknown"}
 
@@ -215,6 +331,7 @@ Provide your complexity classification with reasoning."""
     print(f"   Model: {context.model}")
     print(f"   System prompt: {enhanced_length} chars")
     print(f"   User request: {len(classification_request)} chars")
+    print(f"   Continuation detected: {continuation_context is not None}")
     
     # Structure messages
     messages = [
@@ -235,12 +352,19 @@ Provide your complexity classification with reasoning."""
         print(f"   Reasoning: {assessment.reasoning[:100]}...")
         print(f"   Suggested approach: {assessment.suggested_approach[:100]}...")
         
-        # Create narration
-        narration_map = {
-            "direct": f"I can help you with that right away. {assessment.reasoning}",
-            "simple_plan": f"I'll handle this with a focused approach. {assessment.reasoning}",
-            "complex_plan": f"This is a comprehensive request that I'll break down systematically. {assessment.reasoning}"
-        }
+        # Create narration with continuation awareness
+        if continuation_context:
+            narration_map = {
+                "direct": f"I'll analyze those results for you. {assessment.reasoning}",
+                "simple_plan": f"Let me process that with a focused approach. {assessment.reasoning}",
+                "complex_plan": f"I'll handle this systematically. {assessment.reasoning}"
+            }
+        else:
+            narration_map = {
+                "direct": f"I can help you with that right away. {assessment.reasoning}",
+                "simple_plan": f"I'll handle this with a focused approach. {assessment.reasoning}",
+                "complex_plan": f"This is a comprehensive request that I'll break down systematically. {assessment.reasoning}"
+            }
         
         user_narration = narration_map.get(
             assessment.complexity_level,
@@ -254,6 +378,7 @@ Provide your complexity classification with reasoning."""
             "complexity_reasoning": assessment.reasoning,
             "complexity_confidence": assessment.confidence,
             "suggested_approach": assessment.suggested_approach,
+            "is_continuation": continuation_context is not None,
             "project_id": project_id,
             "project_root": project_root,
             "project_name": project_name,
@@ -264,6 +389,7 @@ Provide your complexity classification with reasoning."""
         
         print(f"\n📊 [Classify] Routing Decision:")
         print(f"   Will route to: {assessment.complexity_level}")
+        print(f"   Is continuation: {continuation_context is not None}")
         
         # Update memory focus
         if memory_to_use and user_request:
@@ -295,18 +421,21 @@ Provide your complexity classification with reasoning."""
         print(f"   Error message: {str(e)}")
         print(f"   Using fallback classification...")
         
-        # Fallback logic
-        request_words = len(user_request.split())
-        
-        if request_words <= 8:
+        # Enhanced fallback with continuation awareness
+        if continuation_context:
             fallback_level = "direct"
-            fallback_reason = "Short query - direct response"
-        elif request_words <= 15:
-            fallback_level = "simple_plan"
-            fallback_reason = "Moderate request - simple planning"
+            fallback_reason = "Continuation request detected - using existing context"
         else:
-            fallback_level = "complex_plan"
-            fallback_reason = "Complex request - full planning"
+            request_words = len(user_request.split())
+            if request_words <= 8:
+                fallback_level = "direct"
+                fallback_reason = "Short query - direct response"
+            elif request_words <= 15:
+                fallback_level = "simple_plan"
+                fallback_reason = "Moderate request - simple planning"
+            else:
+                fallback_level = "complex_plan"
+                fallback_reason = "Complex request - full planning"
         
         print(f"   Fallback level: {fallback_level}")
         print(f"   Fallback reason: {fallback_reason}")
@@ -329,6 +458,7 @@ Provide your complexity classification with reasoning."""
                 "complexity_level": fallback_level,
                 "complexity_reasoning": fallback_reason,
                 "complexity_confidence": 0.5,
+                "is_continuation": continuation_context is not None,
                 "classification_error": str(e),
                 "project_id": project_id,
                 "project_root": project_root,
