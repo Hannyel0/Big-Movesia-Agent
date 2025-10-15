@@ -17,6 +17,7 @@ from react_agent.state import (
 )
 from react_agent.narration import NarrationEngine, StreamingNarrator
 from react_agent.utils import get_message_text, get_model
+from react_agent.memory import get_memory_insights
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -307,20 +308,63 @@ def _is_tool_result_successful(tool_result: dict, tool_name: str) -> bool:
 
 async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     """Enhanced assessment with detailed error context extraction and micro-retry detection."""
-    logger.info(f"=== ASSESS DEBUG START ===")
-    logger.info(f"Step index: {state.step_index}")
-    logger.info(f"Plan steps: {len(state.plan.steps) if state.plan else 'No plan'}")
+    logger.info(f"🔍 [ASSESS] ===== STARTING ASSESSMENT =====")
+    
+    # ✅ FIX: Handle direct actions (no plan)
+    if not state.plan:
+        logger.info(f"🔍 [ASSESS] Direct action mode - no plan to assess")
+        logger.info(f"🔍 [ASSESS] Creating implicit success assessment")
+        
+        # Extract the tool result
+        tool_result = None
+        tool_name = "unknown"
+        
+        for msg in reversed(state.messages[-10:]):
+            if isinstance(msg, ToolMessage):
+                try:
+                    content = get_message_text(msg)
+                    tool_result = json.loads(content) if content else {}
+                    tool_name = msg.name or "unknown"
+                    logger.info(f"🔍 [ASSESS] Found tool result from: {tool_name}")
+                    break
+                except json.JSONDecodeError:
+                    tool_result = {"message": content}
+                    break
+        
+        # ❌ REMOVED: Duplicate tool call recording (already done in routing.py)
+        # Tool results are captured by route_after_tools() before reaching assess
+        
+        # ✅ Verify memory state for logging
+        if state.memory and hasattr(state.memory, 'working_memory'):
+            recent_tools = state.memory.working_memory.recent_tool_results
+            logger.info(f"🧠 [ASSESS] Working memory now has {len(recent_tools)} tool results")
+        
+        # Create success assessment for direct actions
+        assessment = AssessmentOutcome(
+            outcome="success",
+            reason=f"Direct action completed successfully with {tool_name}",
+            confidence=0.9
+        )
+        
+        logger.info(f"🔍 [ASSESS] ===== ASSESSMENT COMPLETE (DIRECT) =====")
+        return {
+            "current_assessment": assessment,
+            "total_assessments": state.total_assessments + 1
+        }
+    
+    # Original assessment logic for planned executions
+    logger.info(f"🔍 [ASSESS] Plan mode - assessing step {state.step_index + 1}/{len(state.plan.steps)}")
     
     context = runtime.context
     model = get_model(context.assessment_model or context.model)
     
-    if not state.plan or state.step_index >= len(state.plan.steps):
-        logger.warning("Invalid plan or step index - returning empty")
+    if state.step_index >= len(state.plan.steps):
+        logger.warning("🔍 [ASSESS] Invalid step index - returning empty")
         return {}
     
     current_step = state.plan.steps[state.step_index]
-    logger.info(f"Assessing step: {current_step.description}")
-    logger.info(f"Tool: {current_step.tool_name}")
+    logger.info(f"🔍 [ASSESS] Current step: {current_step.description}")
+    logger.info(f"🔍 [ASSESS] Tool: {current_step.tool_name}")
     
     # Extract the tool result from the last ToolMessage
     tool_result = None
@@ -331,15 +375,21 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
             try:
                 content = get_message_text(msg)
                 tool_result = json.loads(content) if content else {}
-                logger.info(f"Found tool result success flag: {tool_result.get('success')}")
                 break
             except json.JSONDecodeError:
                 tool_result = {"message": content}
-                logger.info(f"Non-JSON tool result: {content[:100]}")
                 break
     
-    if not tool_result:
-        logger.warning("No tool result found - creating default assessment")
+    # ✅ ADD: Log tool result analysis
+    if tool_result:
+        logger.info(f"🔍 [ASSESS] Tool result analysis:")
+        logger.info(f"🔍 [ASSESS]   Success: {tool_result.get('success', 'N/A')}")
+        logger.info(f"🔍 [ASSESS]   Tool: {tool_name}")
+        if not tool_result.get("success", True):
+            error_msg = tool_result.get('error', 'No error message')
+            logger.warning(f"🔍 [ASSESS]   Error: {error_msg[:100]}")
+    else:
+        logger.warning("🔍 [ASSESS] No tool result found - creating default assessment")
         assessment = AssessmentOutcome(
             outcome="retry",
             reason="No tool result found",
@@ -350,14 +400,22 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
             "total_assessments": state.total_assessments + 1
         }
     
+    # ❌ REMOVED: Duplicate tool call recording (already done in routing.py)
+    # Tool results are captured by route_after_tools() before reaching assess
+    
+    # ✅ Verify memory state for logging
+    if state.memory and hasattr(state.memory, 'working_memory'):
+        recent_tools = state.memory.working_memory.recent_tool_results
+        logger.info(f"🧠 [ASSESS] Working memory has {len(recent_tools)} tool results")
+    
     # ENHANCED: Extract detailed error context before any decisions
     detailed_error_context = _extract_detailed_tool_errors(tool_result, tool_name)
     
     # TIER 0: Check for micro-retry opportunity FIRST
     if _should_trigger_micro_retry(tool_result, tool_name, state.retry_count):
-        logger.info("Triggering micro-retry for transient error")
-        
         error_message = tool_result.get("error", "Unknown transient error")
+        logger.info(f"🔍 [ASSESS] Triggering micro-retry for transient error: {error_message[:80]}")
+        
         assessment = AssessmentOutcome(
             outcome="retry",  # Keep as retry, but flag for micro-retry
             reason=f"Transient error in {tool_name}: {error_message}",
@@ -378,7 +436,7 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     # Normal assessment flow continues...
     # Check if tool result indicates success
     tool_looks_successful = _is_tool_result_successful(tool_result, tool_name)
-    logger.info(f"Tool appears successful: {tool_looks_successful}")
+    logger.info(f"🔍 [ASSESS] Tool success check: {tool_looks_successful}")
     
     # Create assessment based on tool result
     if tool_looks_successful:
@@ -387,7 +445,7 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
             reason=f"Tool {tool_name} completed successfully with expected output",
             confidence=0.9
         )
-        logger.info("Created SUCCESS assessment")
+        logger.info("🔍 [ASSESS] Created SUCCESS assessment")
     else:
         # Check for explicit error in tool result
         tool_error = tool_result.get("error", "")
@@ -396,19 +454,20 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
             if detailed_error_context["error_count"] > 0:
                 error_summary = detailed_error_context["error_summary"]
                 reason = f"Tool {tool_name} failed with {detailed_error_context['error_count']} errors: {error_summary}"
+                logger.warning(f"🔍 [ASSESS] Tool failed with {detailed_error_context['error_count']} errors")
             else:
                 reason = f"Tool {tool_name} failed: {tool_error}"
+                logger.warning(f"🔍 [ASSESS] Tool failed: {tool_error[:80]}")
             
             assessment = AssessmentOutcome(
                 outcome="retry",
                 reason=reason,
                 confidence=0.8
             )
-            logger.info(f"Created RETRY assessment due to {detailed_error_context['error_count']} errors")
             
             # Check if this should trigger error recovery (non-transient errors)
             if _should_trigger_error_recovery(tool_result, tool_error, detailed_error_context):
-                logger.info(f"Triggering error recovery for {detailed_error_context['error_count']} non-transient errors")
+                logger.info(f"🔍 [ASSESS] Triggering error recovery for {detailed_error_context['error_count']} non-transient errors")
                 
                 # ENHANCED: Include detailed error context in error_context
                 error_context = {
@@ -432,7 +491,7 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
                 reason=f"Tool {tool_name} completed without explicit errors",
                 confidence=0.7
             )
-            logger.info("Created SUCCESS assessment (no explicit error)")
+            logger.info("🔍 [ASSESS] Created SUCCESS assessment (no explicit error)")
     
     # Prepare messages with narration
     messages_to_add = []
@@ -445,12 +504,79 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
         if is_final_step:
             completion_summary = await _generate_completion_summary(state, model, context)
             messages_to_add.append(AIMessage(content=completion_summary))
-            logger.info("Added completion summary - this is the final step")
+            logger.info("🔍 [ASSESS] Added completion summary - final step")
         elif next_index < len(state.plan.steps):
             next_step = state.plan.steps[next_index]
             transition = f"✅ Step completed successfully! Moving on to: {next_step.description}"
             messages_to_add.append(AIMessage(content=transition))
-            logger.info("Added transition message")
+            logger.info("🔍 [ASSESS] Added transition message to next step")
+    
+    # ✅ MEMORY: Add assessment to memory
+    if state.memory:
+        state.memory.add_assessment({
+            "step_index": state.step_index,
+            "outcome": assessment.outcome,
+            "reason": assessment.reason
+        })
+        
+        # Learn from success
+        if assessment.outcome == "success":
+            from react_agent.memory.semantic import SemanticFact
+            import hashlib
+            
+            fact = SemanticFact(
+                fact_id=hashlib.md5(f"{current_step.tool_name}_{current_step.description}".encode()).hexdigest(),
+                category="pattern",
+                subject=current_step.tool_name or "unknown",
+                predicate="successful_for",
+                object=current_step.description[:100],
+                confidence=0.7,
+                source="execution_success"
+            )
+            state.memory.semantic.learn_fact(fact)
+            logger.info(f"🧠 [ASSESS] Learned: {current_step.tool_name} works for '{current_step.description[:40]}'")
+        
+        # Add errors to memory
+        if assessment.outcome == "retry" and detailed_error_context["error_count"] > 0:
+            state.memory.add_error({
+                "step_index": state.step_index,
+                "errors": detailed_error_context["extracted_errors"]
+            })
+            logger.info(f"🧠 [ASSESS] Recorded {detailed_error_context['error_count']} errors in memory")
+    
+    # ✅ MEMORY: Check insights before retrying
+    if assessment.outcome == "retry" and state.memory:
+        insights = get_memory_insights(state)
+        
+        # Check if we've seen this pattern fail before
+        if insights["relevant_patterns"]:
+            for pattern in insights["relevant_patterns"]:
+                if pattern["success_rate"] < 0.3:  # This approach usually fails
+                    logger.info(f"🧠 [ASSESS] Memory shows low success rate ({pattern['success_rate']:.0%}) for pattern: {pattern['context'][:60]}")
+                    
+                    # Trigger replanning instead of retry
+                    return {
+                        "current_assessment": assessment,
+                        "needs_error_recovery": True,  # Force better approach
+                        "error_context": {
+                            "tool_result": tool_result,
+                            "tool_name": tool_name,
+                            "step_description": current_step.description,
+                            "assessment": assessment,
+                            "retry_count": state.retry_count,
+                            "detailed_errors": detailed_error_context,
+                            "memory_insight": f"Pattern '{pattern['context']}' has {pattern['success_rate']:.0%} success rate"
+                        },
+                        "total_assessments": state.total_assessments + 1
+                    }
+    
+    # ✅ ADD: Log assessment decision
+    logger.info(f"🔍 [ASSESS] Assessment outcome: {assessment.outcome}")
+    logger.info(f"🔍 [ASSESS] Reason: {assessment.reason[:100]}")
+    logger.info(f"🔍 [ASSESS] Confidence: {assessment.confidence}")
+    
+    if assessment.outcome == "retry":
+        logger.info(f"🔍 [ASSESS] Retry count: {state.retry_count + 1}/{state.max_retries_per_step}")
     
     result = {
         "current_assessment": assessment,
@@ -460,8 +586,7 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     if messages_to_add:
         result["messages"] = messages_to_add
     
-    logger.info(f"Final assessment outcome: {assessment.outcome}")
-    logger.info(f"=== ASSESS DEBUG END ===")
+    logger.info(f"🔍 [ASSESS] ===== ASSESSMENT COMPLETE =====")
     
     return result
 

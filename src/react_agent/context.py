@@ -186,6 +186,43 @@ class Context:
             "description": "Whether to request chain-of-thought reasoning in planning and assessment."
         },
     )
+    
+    # Memory system configuration
+    enable_memory: bool = field(
+        default=True,
+        metadata={
+            "description": "Enable the 3-tier memory system (working, episodic, semantic)."
+        },
+    )
+    
+    memory_db_path: Optional[str] = field(
+        default=None,
+        metadata={
+            "description": "Path to SQLite database for persistent memory storage. "
+            "If None, uses in-memory storage only."
+        },
+    )
+    
+    memory_inject_context: bool = field(
+        default=True,
+        metadata={
+            "description": "Whether to inject memory context (patterns, episodes) into LLM prompts."
+        },
+    )
+    
+    memory_max_recent_episodes: int = field(
+        default=20,
+        metadata={
+            "description": "Maximum number of recent episodes to keep in episodic memory."
+        },
+    )
+    
+    memory_pattern_confidence_threshold: float = field(
+        default=0.6,
+        metadata={
+            "description": "Minimum confidence threshold for using learned patterns."
+        },
+    )
 
     def __post_init__(self) -> None:
         """Post-initialization setup and validation."""
@@ -223,3 +260,7 @@ class Context:
         
         if self.planning_strategy not in ["minimal", "comprehensive", "adaptive"]:
             raise ValueError("planning_strategy must be one of: minimal, comprehensive, adaptive")
+        
+        # Validate memory configuration
+        if self.memory_pattern_confidence_threshold < 0 or self.memory_pattern_confidence_threshold > 1:
+            raise ValueError("memory_pattern_confidence_threshold must be between 0 and 1")

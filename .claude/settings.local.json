@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(py -c \"from react_agent.state import State; print(''Success: State imported'')\")",
+      "Bash(py:*)",
+      "Bash(ruff check:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

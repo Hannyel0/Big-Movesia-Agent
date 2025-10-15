@@ -11,6 +11,9 @@ from langgraph.graph import add_messages
 from langgraph.managed import IsLastStep
 from typing_extensions import Annotated
 from pydantic import BaseModel, Field, ConfigDict
+from pydantic.json_schema import SkipJsonSchema
+
+from react_agent.memory import MemoryManager
 
 
 # Type-constrained tool names for production tools
@@ -146,6 +149,13 @@ class State(InputState):
     
     error_context: Optional[Dict[str, Any]] = field(default=None)
     """Context information about the error that needs recovery."""
+    
+    # --- Memory System (3-Tier Architecture) ---
+    memory: Annotated[Optional[MemoryManager], SkipJsonSchema()] = field(default=None)
+    """3-tier memory system: working, episodic, and semantic memory."""
+    
+    memory_enabled: bool = field(default=True)
+    """Flag to enable/disable memory system."""
 
 
 # Structured output schemas for LLM responses

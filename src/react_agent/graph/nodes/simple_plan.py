@@ -15,6 +15,11 @@ from react_agent.state import (
     StructuredExecutionPlan,
 )
 from react_agent.utils import get_message_text, get_model
+from react_agent.memory import (
+    inject_memory_into_prompt,
+    extract_entities_from_request,
+    extract_topics_from_request,
+)
 
 
 def _analyze_request_nature(user_request: str) -> Dict[str, Any]:
@@ -78,6 +83,14 @@ async def simple_plan(state: State, runtime: Runtime[Context]) -> Dict[str, Any]
     if not user_request:
         return {"messages": [AIMessage(content="I need a clear request to create a plan.")]}
     
+    # ✅ MEMORY: Update focus for this request
+    if state.memory:
+        entities = extract_entities_from_request(user_request)
+        topics = extract_topics_from_request(user_request)
+        if entities or topics:
+            await state.memory.update_focus(entities, topics)
+            print(f"🧠 [SimplePlan] Updated focus - Entities: {entities[:3]}, Topics: {topics[:3]}")
+    
     # Analyze the request intelligently
     request_analysis = _analyze_request_nature(user_request)
     
@@ -123,7 +136,7 @@ EFFICIENCY PRINCIPLES:
 Create a smart, streamlined plan that efficiently solves this specific request."""
 
     # CORRECTED ADAPTIVE SYSTEM CONTENT for simple planning  
-    adaptive_system_content = """You are creating efficient, intelligent plans for straightforward Unity/Unreal development tasks.
+    base_adaptive_system_content = """You are creating efficient, intelligent plans for straightforward Unity/Unreal development tasks.
 
 TOOL PURPOSE CLARIFICATION:
 **search_project**: Query indexed Unity project database using natural language
@@ -149,6 +162,14 @@ DECISION FLOWCHART:
 4. Need to implement/modify files? → file_operation
 
 Create plans that use production tools for real Unity project integration."""
+
+    # ✅ MEMORY: Inject memory context into planning prompt
+    adaptive_system_content = await inject_memory_into_prompt(
+        base_prompt=base_adaptive_system_content,
+        state=state,
+        include_patterns=True,
+        include_episodes=True
+    )
 
     # Structure messages for adaptive planning
     messages = [
@@ -185,6 +206,14 @@ Create plans that use production tools for real Unity project integration."""
                 "original_step_count": len(structured_response.steps)
             }
         )
+        
+        # ✅ MEMORY: Store plan in memory
+        if state.memory:
+            state.memory.add_plan({
+                "goal": plan.goal,
+                "steps": [{"description": s.description, "tool": s.tool_name} for s in steps]
+            })
+            print(f"🧠 [SimplePlan] Plan stored in memory: {len(steps)} steps")
         
         # Create adaptive narration
         step_count = len(steps)

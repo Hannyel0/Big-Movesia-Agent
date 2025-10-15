@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Dict
 
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.runtime import Runtime
 
 from react_agent.context import Context
 from react_agent.state import State
 from react_agent.narration import NarrationEngine, StreamingNarrator
 from react_agent.utils import get_message_text, get_model
+from react_agent.memory import format_memory_context
 
+logger = logging.getLogger(__name__)
 
 # Initialize narration components
 narration_engine = NarrationEngine()
@@ -176,6 +179,27 @@ async def _generate_comprehensive_completion_summary(state: State, model, contex
         "retry_attempts": sum(step.attempts for step in state.plan.steps)
     }
     
+    # ✅ MEMORY: Get memory context if available
+    memory_section = ""
+    if state.memory and state.plan:
+        try:
+            memory_context = state.memory.get_relevant_context(state.plan.goal)
+            memory_section = format_memory_context(memory_context)
+        except Exception as e:
+            print(f"⚠️ [Finish] Could not get memory context: {e}")
+    elif state.memory:
+        # For direct actions (no plan), use the most recent user message as query
+        try:
+            user_message = next(
+                (get_message_text(m) for m in reversed(state.messages) 
+                 if isinstance(m, HumanMessage)), 
+                "direct action"
+            )
+            memory_context = state.memory.get_relevant_context(user_message)
+            memory_section = format_memory_context(memory_context)
+        except Exception as e:
+            print(f"⚠️ [Finish] Could not get memory context for direct action: {e}")
+    
     # Create comprehensive prompt for AI summary with dynamic, contextual formatting
     completion_prompt = f"""You have just completed a Unity/game development session. Generate a contextual, well-formatted completion summary that dynamically adapts to what was actually accomplished.
 
@@ -191,6 +215,8 @@ async def _generate_comprehensive_completion_summary(state: State, model, contex
 
 **Concrete Deliverables:**
 {chr(10).join(files_created + assets_built + concrete_results) if (files_created + assets_built + concrete_results) else "Development work completed successfully"}
+
+{f"**What We Learned:**\n{memory_section}\n" if memory_section else ""}
 
 Generate a completion summary that:
 
@@ -266,6 +292,76 @@ async def finish(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     context = runtime.context
     model = get_model(context.model)
     
+    logger.info("🏁 [FINISH] ===== STARTING FINISH =====")
+    
+    # ✅ CRITICAL: Determine if this was a direct action or planned execution
+    is_direct_action = state.plan is None or len(state.plan.steps) == 0
+    
+    # ✅ MEMORY: End task episode - CRITICAL
+    if state.memory:
+        # Determine success
+        if is_direct_action:
+            # Direct action - check if we have a successful tool result
+            success = True  # Assume success if we reached finish
+            outcome_summary = "Direct action completed successfully"
+            
+            # Check last tool message for actual success
+            for msg in reversed(state.messages[-5:]):
+                if isinstance(msg, ToolMessage):
+                    try:
+                        result = json.loads(get_message_text(msg))
+                        success = result.get("success", True)
+                        if success:
+                            tool_name = msg.name or "action"
+                            outcome_summary = f"Direct action with {tool_name} completed successfully"
+                        else:
+                            outcome_summary = f"Direct action completed with errors"
+                        break
+                    except:
+                        pass
+            
+            logger.info(f"🏁 [FINISH] Direct action: {'✅ success' if success else '❌ failure'}")
+        else:
+            # Planned execution
+            success = (state.step_index >= len(state.plan.steps) - 1)
+            completed_count = len(state.completed_steps)
+            total_count = len(state.plan.steps)
+            outcome_summary = f"Completed {completed_count}/{total_count} steps"
+            logger.info(f"🏁 [FINISH] Planned execution: {'✅ success' if success else '❌ failure'}")
+        
+        # ✅ FIXED: Only clear working memory for PLANNED executions, not direct actions
+        clear_working = not is_direct_action
+        
+        # End episode
+        await state.memory.end_task(
+            success=success,
+            outcome_summary=outcome_summary,
+            clear_working_memory=clear_working  # ✅ PRESERVE for direct actions
+        )
+        
+        logger.info(f"🧠 [FINISH] Episode ended: {'✅ success' if success else '❌ incomplete'}")
+        logger.info(f"🧠 [FINISH]   Outcome: {outcome_summary}")
+        logger.info(f"🧠 [FINISH]   Working memory {'PRESERVED' if not clear_working else 'CLEARED'}")
+        
+        # Log working memory state
+        if hasattr(state.memory, 'working_memory'):
+            recent_tools = state.memory.working_memory.recent_tool_results
+            logger.info(f"🧠 [FINISH] Working memory has {len(recent_tools)} tool results stored")
+            print(f"\n🧠 [FINISH] Working memory state:")
+            print(f"   Direct action: {is_direct_action}")
+            print(f"   Memory preserved: {not clear_working}")
+            print(f"   Tool results stored: {len(recent_tools)}")
+            for i, tool in enumerate(recent_tools, 1):
+                logger.info(f"🧠 [FINISH]   {i}. {tool['summary']}")
+                print(f"   {i}. {tool['summary']}")
+        
+        # ✅ Consolidate memories periodically
+        episode_count = len(state.memory.episodic_memory.recent_episodes)
+        if episode_count > 0 and episode_count % 10 == 0:
+            logger.info(f"🧠 [FINISH] Consolidating memories after {episode_count} episodes...")
+            state.memory.consolidate_memories()
+            logger.info(f"🧠 [FINISH] Memory consolidation complete")
+    
     # Check if this is a direct action (no plan) or a planned execution
     if state.plan is None or len(state.plan.steps) == 0:
         # DIRECT ACTION PATH - no plan exists
@@ -291,7 +387,7 @@ async def finish(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     if context.runtime_metadata.get("supports_streaming"):
         streaming_narrator = StreamingNarrator()
         final_update = streaming_narrator.create_inline_update(
-            "✨ Implementation complete! Check your Unity project for the new features.",
+            " Implementation complete! Check your Unity project for the new features.",
             style="success"
         )
         if hasattr(runtime, 'push_ui_message'):

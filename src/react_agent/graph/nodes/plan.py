@@ -28,6 +28,7 @@ from react_agent.state import (
 from react_agent.tools import TOOLS, TOOL_METADATA
 from react_agent.narration import NarrationEngine
 from react_agent.utils import get_message_text, get_model
+from react_agent.memory import inject_memory_into_prompt
 
 
 # Build tools description once at module level for caching
@@ -187,7 +188,7 @@ Consider this context when creating your plan. For example:
 """
 
     # CORRECTED SYSTEM CONTENT for intelligent planning
-    intelligent_system_content = f"""You are an expert Unity/game development planning assistant with access to these tools:
+    base_system_content = f"""You are an expert Unity/game development planning assistant with access to these tools:
 
 {COMPREHENSIVE_TOOLS_DESCRIPTION}
 
@@ -230,6 +231,14 @@ PLANNING EXAMPLES:
 CREATE PLANS BASED ON WHETHER YOU NEED TO READ EXISTING CODE OR RESEARCH NEW SOLUTIONS.
 
 Remember: Every step must specify a concrete tool to use. No generic steps allowed."""
+    
+    # ✅ MEMORY: Inject memory context if available
+    intelligent_system_content = await inject_memory_into_prompt(
+        base_prompt=base_system_content,
+        state=state,
+        include_patterns=True,
+        include_episodes=True
+    )
 
     # Structure messages for intelligent planning
     messages = [
@@ -267,6 +276,14 @@ Remember: Every step must specify a concrete tool to use. No generic steps allow
                 "planned_at": datetime.now(UTC).isoformat(),
             }
         )
+        
+        # ✅ MEMORY: Store plan in memory (manager handles both episodic and working memory)
+        if state.memory:
+            state.memory.add_plan({
+                "goal": plan.goal,
+                "steps": [{"description": s.description, "tool": s.tool_name} for s in steps]
+            })
+            print(f"🧠 [Plan] Plan stored in memory: {len(steps)} steps")
         
         # CREATE CONTEXTUAL PLANNING NARRRATION
         planning_narration = _create_intelligent_planning_narration(plan, user_message, conversation_context)

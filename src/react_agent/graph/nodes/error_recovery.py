@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from react_agent.context import Context
 from react_agent.state import State, PlanStep, ExecutionPlan, StepStatus
 from react_agent.tools import TOOLS
+from react_agent.memory import get_memory_insights
 
 logger = logging.getLogger(__name__)
 
@@ -525,18 +526,21 @@ async def execute_error_recovery(
     runtime: Runtime[Context]
 ) -> Dict[str, Any]:
     """Main error recovery execution with enhanced context awareness."""
-    logger.info("=== EXECUTING CONTEXT-AWARE ERROR RECOVERY ===")
+    logger.info("⚠️ [ERROR_RECOVERY] ===== STARTING ERROR RECOVERY =====")
+    logger.info(f"⚠️ [ERROR_RECOVERY] Step {state.step_index + 1}/{len(state.plan.steps) if state.plan else 0}")
+    logger.info(f"⚠️ [ERROR_RECOVERY] Retry count: {state.retry_count}")
     
     if not state.error_context:
-        logger.error("No error context found")
+        logger.error("⚠️ [ERROR_RECOVERY] No error context found")
         return {"messages": [AIMessage(content="No error context found for recovery.")]}
     
     if not state.plan or state.step_index >= len(state.plan.steps):
-        logger.error("Invalid plan state")
+        logger.error("⚠️ [ERROR_RECOVERY] Invalid plan state")
         return {"messages": [AIMessage(content="Cannot recover: invalid plan state.")]}
     
     current_step = state.plan.steps[state.step_index]
-    logger.info(f"Recovering from failure in step: {current_step.description}")
+    logger.info(f"⚠️ [ERROR_RECOVERY] Failed step: {current_step.description}")
+    logger.info(f"⚠️ [ERROR_RECOVERY] Tool: {current_step.tool_name}")
     
     # Enhanced diagnosis with detailed error context
     assessment = state.error_context.get("assessment")
@@ -550,22 +554,59 @@ async def execute_error_recovery(
     }
     
     diagnosis = await diagnose_error(error_info, current_step, state, runtime)
-    logger.info(f"Enhanced diagnosis: {diagnosis.category} - {diagnosis.error_count} errors - {diagnosis.root_cause}")
+    logger.info(f"⚠️ [ERROR_RECOVERY] Diagnosis:")
+    logger.info(f"⚠️ [ERROR_RECOVERY]   Category: {diagnosis.category.value}")
+    logger.info(f"⚠️ [ERROR_RECOVERY]   Severity: {diagnosis.severity.value}")
+    logger.info(f"⚠️ [ERROR_RECOVERY]   Error count: {diagnosis.error_count}")
+    logger.info(f"⚠️ [ERROR_RECOVERY]   Root cause: {diagnosis.root_cause[:100]}")
+    logger.info(f"⚠️ [ERROR_RECOVERY]   Can auto-fix: {diagnosis.can_auto_fix}")
+    
+    # ✅ MEMORY: Check for similar past errors
+    if state.memory:
+        insights = get_memory_insights(state)
+        error_patterns = [p for p in insights.get("relevant_patterns", []) 
+                          if "error" in p.get("context", "").lower() or "fail" in p.get("context", "").lower()]
+        
+        if error_patterns:
+            logger.info(f"🧠 [ERROR_RECOVERY] Found {len(error_patterns)} similar error patterns in memory")
+            for pattern in error_patterns[:3]:  # Log top 3
+                logger.info(f"🧠 [ERROR_RECOVERY]   - {pattern.get('context', 'unknown')[:60]}: {pattern.get('success_rate', 0):.0%} success rate")
+        else:
+            logger.info(f"🧠 [ERROR_RECOVERY] No similar error patterns found in memory")
     
     # Create context-aware recovery plan
     recovery_steps = await create_error_recovery_plan(diagnosis, current_step, state, runtime)
     
     if not recovery_steps:
-        logger.warning("No recovery steps created - using context-aware fallback")
+        logger.warning("⚠️ [ERROR_RECOVERY] No recovery steps created - using fallback")
         recovery_steps = _create_context_aware_fallback_recovery(current_step, diagnosis)
+    
+    logger.info(f"⚠️ [ERROR_RECOVERY] Created {len(recovery_steps)} recovery steps:")
+    for i, step in enumerate(recovery_steps, 1):
+        logger.info(f"⚠️ [ERROR_RECOVERY]   {i}. {step.description[:80]}")
+        logger.info(f"⚠️ [ERROR_RECOVERY]      Tool: {step.tool_name}")
     
     # Replace failed step with recovery steps
     updated_plan = _replace_failed_step_with_recovery(state.plan, state.step_index, recovery_steps)
     
+    # ✅ MEMORY: Record error and recovery attempt
+    if state.memory:
+        state.memory.add_error({
+            "error_category": diagnosis.category.value,
+            "error_count": diagnosis.error_count,
+            "root_cause": diagnosis.root_cause,
+            "recovery_plan": [s.description for s in recovery_steps],
+            "step_index": state.step_index,
+            "tool_name": state.error_context.get("tool_name"),
+            "retry_count": state.retry_count
+        })
+        logger.info(f"🧠 [ERROR_RECOVERY] Recorded error and recovery plan in memory")
+    
     # Create detailed recovery message
     recovery_message = _create_detailed_recovery_message(diagnosis, recovery_steps, state.retry_count)
     
-    logger.info(f"Context-aware recovery plan: {len(recovery_steps)} steps for {diagnosis.error_count} errors")
+    logger.info(f"⚠️ [ERROR_RECOVERY] Recovery strategy: {diagnosis.error_count} errors, {len(recovery_steps)} steps")
+    logger.info(f"⚠️ [ERROR_RECOVERY] ===== ERROR RECOVERY COMPLETE =====")
     
     return {
         "plan": updated_plan,

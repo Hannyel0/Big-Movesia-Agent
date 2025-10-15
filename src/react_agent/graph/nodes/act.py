@@ -1,6 +1,7 @@
 """Enhanced act.py with Tier 0 micro-retry integration."""
 
 import json
+import logging
 import asyncio
 from typing import Any, Dict, List, Optional
 from functools import lru_cache
@@ -14,10 +15,12 @@ from react_agent.state import ExecutionPlan, PlanStep, State, StepStatus
 from react_agent.tools import TOOLS
 from react_agent.narration import NarrationEngine
 from react_agent.utils import get_message_text, get_model
+from react_agent.memory import inject_memory_into_prompt
 
 
 # Initialize narration components
 narration_engine = NarrationEngine()
+logger = logging.getLogger(__name__)
 
 # TIER 0: Micro-retry configuration
 MICRO_RETRY_CONFIG = {
@@ -520,8 +523,16 @@ You MUST call the specified tool to complete this development step."""
     dynamic_context_message = f"""Current execution context:
 {json.dumps(execution_context, indent=2)}"""
 
+    # ✅ OPTIMIZATION: Enhance system content with memory context
+    enhanced_system_content = await inject_memory_into_prompt(
+        base_prompt=static_system_content,
+        state=state,
+        include_patterns=True,
+        include_episodes=False  # Keep it light for tool execution
+    )
+
     tool_messages = [
-        {"role": "system", "content": static_system_content},
+        {"role": "system", "content": enhanced_system_content},  # ✅ Now includes learned patterns
         {"role": "system", "content": dynamic_context_message},
         *conversation_messages,
         {"role": "user", "content": tool_call_prompt},
@@ -537,6 +548,18 @@ You MUST call the specified tool to complete this development step."""
                 "function": {"name": current_step.tool_name},
             },
         )
+        
+        # ✅ ADD LOGGING
+        if tool_response.tool_calls:
+            logger.info(f"🔧 [ACT] Tool execution requested:")
+            for tc in tool_response.tool_calls:
+                tool_name = tc.get('name', 'unknown')
+                tool_args = tc.get('args', {})
+                args_str = json.dumps(tool_args, indent=2)[:200]
+                logger.info(f"🔧 [ACT]   - {tool_name}")
+                logger.info(f"🔧 [ACT]     Args: {args_str}")
+        else:
+            logger.warning(f"🔧 [ACT] No tool calls generated (expected {current_step.tool_name})")
 
         # TIER 0: Check for micro-retry opportunity
         # We need to wait for the tool to actually execute to check its result
