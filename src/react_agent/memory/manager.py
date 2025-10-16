@@ -82,6 +82,8 @@ class MemoryManager:
             logger.info(f"   Episodes: {len(self.episodic_memory.recent_episodes)}")
             logger.info(f"   Working memory tools: {len(self.working_memory.recent_tool_results)}")
             logger.info(f"   Patterns: {len(self.semantic_memory.patterns)}")
+            logger.info(f"   Entities: {len(self.semantic_memory.entity_knowledge)}")
+            logger.info(f"   Topics: {len(self.semantic_memory.topic_knowledge)}")
         
         # Clean up dangling in-progress episodes
         if self.episodic_memory.current_episode:
@@ -270,6 +272,8 @@ class MemoryManager:
         
         This is needed for LangGraph routing functions which cannot be async.
         ✅ FIXED: Now uses synchronous persistence instead of trying to schedule async tasks.
+        ✅ FIXED: Now extracts entity and topic knowledge like async version.
+        ✅ FIXED: Handles different result formats (natural_language vs structured).
         """
         logger.info(f"🧠 [MemoryManager] add_tool_call_sync invoked")
         logger.info(f"🧠 [MemoryManager]   Tool: {tool_name}")
@@ -289,9 +293,176 @@ class MemoryManager:
             latest = self.working_memory.recent_tool_results[-1]
             logger.info(f"🧠 [MemoryManager]   Latest: {latest['summary']}")
         
+        # ✅ DEBUG: Log the result structure
+        logger.info(f"🧠 [MemoryManager] 📊 Analyzing result structure:")
+        logger.info(f"🧠 [MemoryManager]   Result type: {type(result)}")
+        logger.info(f"🧠 [MemoryManager]   Result is dict: {isinstance(result, dict)}")
+        if isinstance(result, dict):
+            logger.info(f"🧠 [MemoryManager]   Result keys: {list(result.keys())}")
+            logger.info(f"🧠 [MemoryManager]   Has 'results' key: {'results' in result}")
+            if 'results' in result:
+                results_data = result.get("results")
+                logger.info(f"🧠 [MemoryManager]   Results type: {type(results_data)}")
+                logger.info(f"🧠 [MemoryManager]   Results is list: {isinstance(results_data, list)}")
+                if isinstance(results_data, list) and len(results_data) > 0:
+                    logger.info(f"🧠 [MemoryManager]   First result type: {type(results_data[0])}")
+                    logger.info(f"🧠 [MemoryManager]   First result preview: {str(results_data[0])[:100]}")
+        
+        # ✅ EXTRACT ENTITIES: Extract and store entity knowledge from tool results
+        entity_count = 0
+        
+        if tool_name == "search_project" and isinstance(result, dict) and result.get("success"):
+            logger.info(f"🧠 [MemoryManager] 🔍 Extracting entities from search_project")
+            
+            # Check if results are in structured format (list of dicts)
+            results_data = result.get("results", [])
+            
+            if isinstance(results_data, list):
+                logger.info(f"🧠 [MemoryManager]   Found {len(results_data)} results to process")
+                
+                for i, item in enumerate(results_data[:5], 1):  # Store knowledge about top 5 results
+                    logger.info(f"🧠 [MemoryManager]   Processing result {i}/{min(5, len(results_data))}")
+                    logger.info(f"🧠 [MemoryManager]     Item type: {type(item)}")
+                    
+                    # Handle both dict and string formats
+                    if isinstance(item, dict):
+                        entity = item.get("path") or item.get("name")
+                        logger.info(f"🧠 [MemoryManager]     Entity from dict: {entity}")
+                        
+                        if entity:
+                            knowledge = {
+                                "type": item.get("kind", "asset"),
+                                "size": item.get("size"),
+                                "last_accessed": datetime.now(UTC).isoformat(),
+                                "access_count": 1
+                            }
+                            logger.info(f"🧠 [MemoryManager]     Storing entity: {entity}")
+                            logger.info(f"🧠 [MemoryManager]     Knowledge: {knowledge}")
+                            
+                            self.update_entity_knowledge(entity, knowledge)
+                            entity_count += 1
+                            logger.info(f"🧠 [MemoryManager]     ✅ Entity stored successfully")
+                        else:
+                            logger.warning(f"🧠 [MemoryManager]     ⚠️ Could not extract entity from item")
+                    
+                    elif isinstance(item, str):
+                        # If it's a string, try to extract meaningful info
+                        logger.info(f"🧠 [MemoryManager]     Item is string: {item[:80]}")
+                        # For now, skip string results - they're natural language formatted
+                        logger.info(f"🧠 [MemoryManager]     ⚠️ Skipping string result (natural language format)")
+                    
+                    else:
+                        logger.warning(f"🧠 [MemoryManager]     ⚠️ Unknown item type: {type(item)}")
+            else:
+                logger.warning(f"🧠 [MemoryManager]   ⚠️ Results is not a list: {type(results_data)}")
+                logger.info(f"🧠 [MemoryManager]   Results preview: {str(results_data)[:200]}")
+        
+        elif tool_name == "code_snippets" and isinstance(result, dict) and result.get("success"):
+            logger.info(f"🧠 [MemoryManager] 🔍 Extracting entities from code_snippets")
+            snippets = result.get("snippets", [])
+            
+            if isinstance(snippets, list):
+                logger.info(f"🧠 [MemoryManager]   Found {len(snippets)} snippets to process")
+                
+                for i, snippet in enumerate(snippets[:5], 1):
+                    logger.info(f"🧠 [MemoryManager]   Processing snippet {i}/{min(5, len(snippets))}")
+                    
+                    if isinstance(snippet, dict):
+                        entity = snippet.get("file_path")
+                        logger.info(f"🧠 [MemoryManager]     Entity: {entity}")
+                        
+                        if entity:
+                            knowledge = {
+                                "type": "script",
+                                "language": "csharp",
+                                "last_accessed": datetime.now(UTC).isoformat(),
+                                "functionality": snippet.get("description", "")[:100]
+                            }
+                            logger.info(f"🧠 [MemoryManager]     Storing entity: {entity}")
+                            
+                            self.update_entity_knowledge(entity, knowledge)
+                            entity_count += 1
+                            logger.info(f"🧠 [MemoryManager]     ✅ Entity stored successfully")
+                    else:
+                        logger.warning(f"🧠 [MemoryManager]     ⚠️ Snippet is not dict: {type(snippet)}")
+            else:
+                logger.warning(f"🧠 [MemoryManager]   ⚠️ Snippets is not a list: {type(snippets)}")
+        
+        elif tool_name == "file_operation" and isinstance(result, dict) and result.get("success"):
+            logger.info(f"🧠 [MemoryManager] 🔍 Extracting entities from file_operation")
+            file_path = result.get("file_path")
+            logger.info(f"🧠 [MemoryManager]   File path: {file_path}")
+            
+            if file_path:
+                knowledge = {
+                    "type": "file",
+                    "operation": result.get("operation", "unknown"),
+                    "last_modified": datetime.now(UTC).isoformat(),
+                    "modification_count": 1
+                }
+                logger.info(f"🧠 [MemoryManager]   Storing entity: {file_path}")
+                logger.info(f"🧠 [MemoryManager]   Knowledge: {knowledge}")
+                
+                self.update_entity_knowledge(file_path, knowledge)
+                entity_count += 1
+                logger.info(f"🧠 [MemoryManager]   ✅ Entity stored successfully")
+            else:
+                logger.warning(f"🧠 [MemoryManager]   ⚠️ No file_path in result")
+        
+        if entity_count > 0:
+            logger.info(f"🧠 [MemoryManager]   ✅ Stored knowledge for {entity_count} entities")
+            logger.info(f"🧠 [MemoryManager]   📊 Total entities in memory: {len(self.semantic_memory.entity_knowledge)}")
+            # Log first 3 entities
+            entities_list = list(self.semantic_memory.entity_knowledge.keys())[:3]
+            for entity in entities_list:
+                logger.info(f"🧠 [MemoryManager]     - {entity}")
+        else:
+            logger.warning(f"🧠 [MemoryManager]   ⚠️ No entities extracted from this tool call")
+        
+        # ✅ EXTRACT TOPICS: Extract and store topic knowledge from queries
+        logger.info(f"🧠 [MemoryManager] 🔍 Extracting topics from query")
+        query_text = args.get("query", "") or args.get("query_description", "") or args.get("natural_query", "")
+        logger.info(f"🧠 [MemoryManager]   Query text: {query_text[:100]}")
+        
+        if query_text:
+            topic_keywords = ["movement", "ui", "physics", "animation", "audio", "input", "player", "enemy", "camera", "inventory", "script", "scripts"]
+            logger.info(f"🧠 [MemoryManager]   Checking against {len(topic_keywords)} topic keywords")
+            
+            topics_found = []
+            for topic in topic_keywords:
+                if topic in query_text.lower():
+                    logger.info(f"🧠 [MemoryManager]   ✅ Found topic: {topic}")
+                    
+                    topic_knowledge = {
+                        "queries": [query_text[:100]],
+                        "tool_used": tool_name,
+                        "last_queried": datetime.now(UTC).isoformat(),
+                        "success": result.get("success", True) if isinstance(result, dict) else True,
+                        "query_count": 1
+                    }
+                    logger.info(f"🧠 [MemoryManager]   Storing topic: {topic}")
+                    logger.info(f"🧠 [MemoryManager]   Knowledge: {topic_knowledge}")
+                    
+                    self.update_topic_knowledge(topic, topic_knowledge)
+                    topics_found.append(topic)
+                    logger.info(f"🧠 [MemoryManager]   ✅ Topic stored successfully")
+            
+            if topics_found:
+                logger.info(f"🧠 [MemoryManager]   ✅ Stored knowledge for topics: {', '.join(topics_found)}")
+                logger.info(f"🧠 [MemoryManager]   📊 Total topics in memory: {len(self.semantic_memory.topic_knowledge)}")
+                # Log all topics
+                topics_list = list(self.semantic_memory.topic_knowledge.keys())
+                for topic in topics_list:
+                    logger.info(f"🧠 [MemoryManager]     - {topic}")
+            else:
+                logger.info(f"🧠 [MemoryManager]   ℹ️ No matching topics found in query")
+        else:
+            logger.warning(f"🧠 [MemoryManager]   ⚠️ No query text to extract topics from")
+        
         # ✅ FIX: Use synchronous persistence in sync context
         if self.auto_persist and self.db_path:
             try:
+                logger.info(f"🧠 [MemoryManager] 💾 Starting synchronous persistence")
                 # Don't try to schedule async - just persist synchronously
                 self._persist_working_memory_sync()
                 logger.info(f"🧠 [MemoryManager]   ✅ Persisted synchronously")
@@ -645,6 +816,64 @@ class MemoryManager:
             except Exception as e:
                 logger.warning(f"🧠 [MemoryManager]   ⚠️ Could not reload tools from database: {e}")
         
+        # ✅ FIX: Reload entity knowledge from database if empty
+        if len(self.semantic_memory.entity_knowledge) == 0 and self.db_path and self.db_path.exists():
+            try:
+                def _reload_entities():
+                    conn = sqlite3.connect(str(self.db_path), timeout=5.0)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT entity, knowledge FROM memory_entities")
+                    
+                    entities = {}
+                    for row in cursor.fetchall():
+                        try:
+                            entity, knowledge_json = row
+                            knowledge = json.loads(knowledge_json)
+                            entities[entity] = knowledge
+                        except Exception as e:
+                            logger.warning(f"🧠 [MemoryManager] Failed to reload entity: {e}")
+                    
+                    conn.close()
+                    return entities
+                
+                loaded_entities = await asyncio.to_thread(_reload_entities)
+                self.semantic_memory.entity_knowledge.update(loaded_entities)
+                
+                if len(loaded_entities) > 0:
+                    logger.info(f"🧠 [MemoryManager]   ✅ Reloaded {len(loaded_entities)} entities from database")
+                    
+            except Exception as e:
+                logger.warning(f"🧠 [MemoryManager]   ⚠️ Could not reload entities from database: {e}")
+        
+        # ✅ FIX: Reload topic knowledge from database if empty  
+        if len(self.semantic_memory.topic_knowledge) == 0 and self.db_path and self.db_path.exists():
+            try:
+                def _reload_topics():
+                    conn = sqlite3.connect(str(self.db_path), timeout=5.0)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT topic, knowledge FROM memory_topics")
+                    
+                    topics = {}
+                    for row in cursor.fetchall():
+                        try:
+                            topic, knowledge_json = row
+                            knowledge = json.loads(knowledge_json)
+                            topics[topic] = knowledge
+                        except Exception as e:
+                            logger.warning(f"🧠 [MemoryManager] Failed to reload topic: {e}")
+                    
+                    conn.close()
+                    return topics
+                
+                loaded_topics = await asyncio.to_thread(_reload_topics)
+                self.semantic_memory.topic_knowledge.update(loaded_topics)
+                
+                if len(loaded_topics) > 0:
+                    logger.info(f"🧠 [MemoryManager]   ✅ Reloaded {len(loaded_topics)} topics from database")
+                    
+            except Exception as e:
+                logger.warning(f"🧠 [MemoryManager]   ⚠️ Could not reload topics from database: {e}")
+        
         context_parts = []
         
         # ✅ NEW: Recent tool results FIRST (most important for follow-up questions)
@@ -678,6 +907,169 @@ class MemoryManager:
                     pattern_text += f"   - Action: {pattern.action}\n"
                     pattern_text += f"   - Applied {pattern.times_applied} times with {pattern.success_rate:.1%} success\n"
                 context_parts.append(pattern_text)
+        
+        # ✅ ENTITY KNOWLEDGE RETRIEVAL (with debug logging)
+        logger.info(f"🔍 [MemoryManager] === ENTITY KNOWLEDGE RETRIEVAL ===")
+        logger.info(f"🔍 [MemoryManager]   Total entities in semantic memory: {len(self.semantic_memory.entity_knowledge)}")
+        
+        if len(self.semantic_memory.entity_knowledge) > 0:
+            logger.info(f"🔍 [MemoryManager]   Sample entities in memory:")
+            for i, entity in enumerate(list(self.semantic_memory.entity_knowledge.keys())[:3], 1):
+                logger.info(f"🔍 [MemoryManager]     {i}. {entity}")
+        
+        # Strategy 1: Check focus_entities
+        logger.info(f"🔍 [MemoryManager]   Strategy 1 - Focus entities:")
+        logger.info(f"🔍 [MemoryManager]     focus_entities count: {len(self.working_memory.focus_entities)}")
+        if self.working_memory.focus_entities:
+            logger.info(f"🔍 [MemoryManager]     focus_entities: {self.working_memory.focus_entities[:5]}")
+        
+        # Strategy 2: Extract entities from recent tool results
+        logger.info(f"🔍 [MemoryManager]   Strategy 2 - Recent tool results:")
+        logger.info(f"🔍 [MemoryManager]     Recent tool results count: {len(self.working_memory.recent_tool_results)}")
+        
+        recent_entities = set()
+        if len(self.working_memory.recent_tool_results) > 0:
+            for idx, tool_result in enumerate(self.working_memory.recent_tool_results[-2:], 1):
+                logger.info(f"🔍 [MemoryManager]     Processing tool result {idx}:")
+                logger.info(f"🔍 [MemoryManager]       Tool: {tool_result.get('tool_name')}")
+                
+                result_data = tool_result.get("result", {})
+                logger.info(f"🔍 [MemoryManager]       Result data type: {type(result_data)}")
+                logger.info(f"🔍 [MemoryManager]       Result has 'results' key: {'results' in result_data if isinstance(result_data, dict) else False}")
+                
+                if isinstance(result_data, dict) and "results" in result_data:
+                    results_list = result_data.get("results", [])
+                    logger.info(f"🔍 [MemoryManager]       Results list length: {len(results_list) if isinstance(results_list, list) else 'not a list'}")
+                    
+                    if isinstance(results_list, list):
+                        for item_idx, item in enumerate(results_list[:10], 1):
+                            if isinstance(item, dict):
+                                entity = item.get("path") or item.get("name")
+                                if entity:
+                                    recent_entities.add(entity)
+                                    logger.info(f"🔍 [MemoryManager]       Extracted entity {item_idx}: {entity}")
+                                else:
+                                    logger.info(f"🔍 [MemoryManager]       Item {item_idx} has no path/name: {list(item.keys())}")
+                            else:
+                                logger.info(f"🔍 [MemoryManager]       Item {item_idx} is not dict: {type(item)}")
+        
+        logger.info(f"🔍 [MemoryManager]   Extracted {len(recent_entities)} entities from recent tool results")
+        if recent_entities:
+            logger.info(f"🔍 [MemoryManager]   Sample extracted entities:")
+            for i, entity in enumerate(list(recent_entities)[:3], 1):
+                logger.info(f"🔍 [MemoryManager]     {i}. {entity}")
+        
+        # Combine strategies: focus_entities + recent_entities
+        all_entities = set(self.working_memory.focus_entities) | recent_entities
+        logger.info(f"🔍 [MemoryManager]   Combined entities to check: {len(all_entities)}")
+        
+        # Retrieve knowledge for these entities
+        entity_context_parts = []
+        logger.info(f"🔍 [MemoryManager]   Checking entity knowledge:")
+        
+        for entity in list(all_entities)[:10]:
+            logger.info(f"🔍 [MemoryManager]     Checking entity: {entity}")
+            logger.info(f"🔍 [MemoryManager]       In semantic memory? {entity in self.semantic_memory.entity_knowledge}")
+            
+            if entity in self.semantic_memory.entity_knowledge:
+                knowledge = self.semantic_memory.entity_knowledge[entity]
+                logger.info(f"🔍 [MemoryManager]       Knowledge found: {knowledge}")
+                
+                entity_name = entity.split("/")[-1] if "/" in entity else entity
+                details = []
+                
+                if "size" in knowledge:
+                    details.append(f"size: {knowledge['size']} bytes")
+                    logger.info(f"🔍 [MemoryManager]       Added size: {knowledge['size']} bytes")
+                
+                if "type" in knowledge:
+                    details.append(f"type: {knowledge['type']}")
+                    logger.info(f"🔍 [MemoryManager]       Added type: {knowledge['type']}")
+                
+                if "access_count" in knowledge and knowledge["access_count"] > 0:
+                    details.append(f"accessed {knowledge['access_count']} times")
+                    logger.info(f"🔍 [MemoryManager]       Added access_count: {knowledge['access_count']}")
+                
+                if details:
+                    formatted = f"- **{entity_name}**: {', '.join(details)}"
+                    entity_context_parts.append(formatted)
+                    logger.info(f"🔍 [MemoryManager]       ✅ Added to context: {formatted}")
+                else:
+                    logger.info(f"🔍 [MemoryManager]       ⚠️ No details found for entity")
+            else:
+                logger.info(f"🔍 [MemoryManager]       ❌ Not found in semantic memory")
+        
+        if entity_context_parts:
+            entity_section = f"## Known Entities\n" + "\n".join(entity_context_parts)
+            context_parts.append(entity_section)
+            logger.info(f"✅ [MemoryManager]   Added entity knowledge section with {len(entity_context_parts)} entities")
+            logger.info(f"✅ [MemoryManager]   Entity section preview: {entity_section[:200]}")
+        else:
+            logger.info(f"⚠️ [MemoryManager]   No entity knowledge added to context")
+        
+        logger.info(f"🔍 [MemoryManager] === END ENTITY KNOWLEDGE RETRIEVAL ===")
+        
+        # ✅ TOPIC KNOWLEDGE RETRIEVAL (with debug logging)
+        logger.info(f"🔍 [MemoryManager] === TOPIC KNOWLEDGE RETRIEVAL ===")
+        logger.info(f"🔍 [MemoryManager]   Total topics in semantic memory: {len(self.semantic_memory.topic_knowledge)}")
+        
+        if len(self.semantic_memory.topic_knowledge) > 0:
+            logger.info(f"🔍 [MemoryManager]   Topics in memory:")
+            for i, (topic, knowledge) in enumerate(list(self.semantic_memory.topic_knowledge.items())[:5], 1):
+                logger.info(f"🔍 [MemoryManager]     {i}. {topic}: {knowledge}")
+        
+        # Check if we have any basis for retrieving topics
+        has_intent = bool(self.working_memory.user_intent)
+        has_tool_results = len(self.working_memory.recent_tool_results) > 0
+        has_focus_topics = len(self.working_memory.focus_topics) > 0
+        
+        logger.info(f"🔍 [MemoryManager]   Retrieval conditions:")
+        logger.info(f"🔍 [MemoryManager]     Has user_intent: {has_intent} ('{self.working_memory.user_intent[:50] if has_intent else ''}')")
+        logger.info(f"🔍 [MemoryManager]     Has tool_results: {has_tool_results}")
+        logger.info(f"🔍 [MemoryManager]     Has focus_topics: {has_focus_topics} ({self.working_memory.focus_topics if has_focus_topics else []})")
+        
+        topic_context_parts = []
+        
+        if has_intent or has_tool_results or has_focus_topics:
+            logger.info(f"🔍 [MemoryManager]   Retrieving topic knowledge:")
+            
+            for topic, knowledge in list(self.semantic_memory.topic_knowledge.items())[:5]:
+                logger.info(f"🔍 [MemoryManager]     Processing topic: {topic}")
+                logger.info(f"🔍 [MemoryManager]       Knowledge: {knowledge}")
+                
+                details = []
+                
+                if "query_count" in knowledge and knowledge["query_count"] > 0:
+                    details.append(f"queried {knowledge['query_count']} times")
+                    logger.info(f"🔍 [MemoryManager]       Added query_count: {knowledge['query_count']}")
+                
+                if "tool_used" in knowledge:
+                    details.append(f"via {knowledge['tool_used']}")
+                    logger.info(f"🔍 [MemoryManager]       Added tool_used: {knowledge['tool_used']}")
+                
+                if "success" in knowledge:
+                    success_str = "successful" if knowledge["success"] else "failed"
+                    details.append(success_str)
+                    logger.info(f"🔍 [MemoryManager]       Added success: {success_str}")
+                
+                if details:
+                    formatted = f"- **{topic}**: {', '.join(details)}"
+                    topic_context_parts.append(formatted)
+                    logger.info(f"🔍 [MemoryManager]       ✅ Added to context: {formatted}")
+                else:
+                    logger.info(f"🔍 [MemoryManager]       ⚠️ No details found for topic")
+            
+            if topic_context_parts:
+                topic_section = f"## Relevant Topics\n" + "\n".join(topic_context_parts)
+                context_parts.append(topic_section)
+                logger.info(f"✅ [MemoryManager]   Added topic knowledge section with {len(topic_context_parts)} topics")
+                logger.info(f"✅ [MemoryManager]   Topic section preview: {topic_section[:200]}")
+            else:
+                logger.info(f"⚠️ [MemoryManager]   No topic knowledge added to context")
+        else:
+            logger.info(f"⚠️ [MemoryManager]   No basis for topic retrieval (no intent, tool results, or focus)")
+        
+        logger.info(f"🔍 [MemoryManager] === END TOPIC KNOWLEDGE RETRIEVAL ===")
         
         # Similar past episodes
         if include_episodes and self.working_memory.focus_entities:
@@ -903,6 +1295,7 @@ class MemoryManager:
                     continue
 
             # Persist entity knowledge
+            logger.info(f"🧠 [MemoryManager] Persisting {len(self.semantic_memory.entity_knowledge)} entities")
             for entity, knowledge in self.semantic_memory.entity_knowledge.items():
                 try:
                     cursor.execute("""
@@ -917,6 +1310,7 @@ class MemoryManager:
                     continue
 
             # Persist topic knowledge
+            logger.info(f"🧠 [MemoryManager] Persisting {len(self.semantic_memory.topic_knowledge)} topics")
             for topic, knowledge in self.semantic_memory.topic_knowledge.items():
                 try:
                     cursor.execute("""
@@ -1050,24 +1444,44 @@ class MemoryManager:
                     logger.warning(f"🧠 [MemoryManager] Failed to load pattern: {e}")
             
             # Load entity knowledge
-            cursor.execute("SELECT entity, knowledge FROM memory_entities")
-            for row in cursor.fetchall():
-                try:
-                    entity, knowledge_json = row
-                    knowledge = json.loads(knowledge_json)
-                    self.semantic_memory.entity_knowledge[entity] = knowledge
-                except Exception as e:
-                    logger.warning(f"🧠 [MemoryManager] Failed to load entity knowledge: {e}")
+            try:
+                entity_rows = cursor.execute("SELECT entity, knowledge FROM memory_entities").fetchall()
+                logger.info(f"🧠 [MemoryManager] Found {len(entity_rows)} entities in database")
+                
+                for row in entity_rows:
+                    try:
+                        entity, knowledge_json = row
+                        knowledge = json.loads(knowledge_json)
+                        self.semantic_memory.entity_knowledge[entity] = knowledge
+                        logger.debug(f"🧠 [MemoryManager] Loaded entity: {entity}")
+                    except Exception as e:
+                        logger.warning(f"🧠 [MemoryManager] Failed to load entity knowledge: {e}")
+                
+                logger.info(f"🧠 [MemoryManager] Successfully loaded {len(self.semantic_memory.entity_knowledge)} entities")
+            except sqlite3.OperationalError as e:
+                logger.warning(f"🧠 [MemoryManager] memory_entities table not found: {e}")
+            except Exception as e:
+                logger.error(f"🧠 [MemoryManager] Failed to load entity knowledge: {e}")
             
             # Load topic knowledge
-            cursor.execute("SELECT topic, knowledge FROM memory_topics")
-            for row in cursor.fetchall():
-                try:
-                    topic, knowledge_json = row
-                    knowledge = json.loads(knowledge_json)
-                    self.semantic_memory.topic_knowledge[topic] = knowledge
-                except Exception as e:
-                    logger.warning(f"🧠 [MemoryManager] Failed to load topic knowledge: {e}")
+            try:
+                topic_rows = cursor.execute("SELECT topic, knowledge FROM memory_topics").fetchall()
+                logger.info(f"🧠 [MemoryManager] Found {len(topic_rows)} topics in database")
+                
+                for row in topic_rows:
+                    try:
+                        topic, knowledge_json = row
+                        knowledge = json.loads(knowledge_json)
+                        self.semantic_memory.topic_knowledge[topic] = knowledge
+                        logger.debug(f"🧠 [MemoryManager] Loaded topic: {topic}")
+                    except Exception as e:
+                        logger.warning(f"🧠 [MemoryManager] Failed to load topic knowledge: {e}")
+                
+                logger.info(f"🧠 [MemoryManager] Successfully loaded {len(self.semantic_memory.topic_knowledge)} topics")
+            except sqlite3.OperationalError as e:
+                logger.warning(f"🧠 [MemoryManager] memory_topics table not found: {e}")
+            except Exception as e:
+                logger.error(f"🧠 [MemoryManager] Failed to load topic knowledge: {e}")
         
         finally:
             conn.close()

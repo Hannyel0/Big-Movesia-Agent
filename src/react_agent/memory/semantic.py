@@ -408,6 +408,44 @@ class SemanticMemory:
             except Exception:
                 pass
         
+        # ✅ NEW: Load entity knowledge from memory_entities table
+        try:
+            cursor = conn.execute("SELECT entity, knowledge FROM memory_entities")
+            entity_count = 0
+            for row in cursor:
+                try:
+                    entity, knowledge_json = row
+                    knowledge = json.loads(knowledge_json)
+                    self.entity_knowledge[entity] = knowledge
+                    entity_count += 1
+                except Exception as e:
+                    pass  # Skip malformed entries
+            
+            if entity_count > 0:
+                print(f"🧠 [SemanticMemory] Loaded {entity_count} entities from database")
+        except sqlite3.OperationalError:
+            # Table doesn't exist yet - that's fine
+            pass
+        
+        # ✅ NEW: Load topic knowledge from memory_topics table
+        try:
+            cursor = conn.execute("SELECT topic, knowledge FROM memory_topics")
+            topic_count = 0
+            for row in cursor:
+                try:
+                    topic, knowledge_json = row
+                    knowledge = json.loads(knowledge_json)
+                    self.topic_knowledge[topic] = knowledge
+                    topic_count += 1
+                except Exception as e:
+                    pass  # Skip malformed entries
+            
+            if topic_count > 0:
+                print(f"🧠 [SemanticMemory] Loaded {topic_count} topics from database")
+        except sqlite3.OperationalError:
+            # Table doesn't exist yet - that's fine
+            pass
+        
         conn.close()
     
     async def learn_fact(self, fact: SemanticFact):
