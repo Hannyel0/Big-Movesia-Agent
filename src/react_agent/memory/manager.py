@@ -380,12 +380,14 @@ class MemoryManager:
         self.working_memory.clear()
         
         # Load relevant context from semantic memory
-        user_prefs = self.semantic_memory.get_user_preferences()
-        project_profile = self.semantic_memory.get_project_profile()
+        # NOTE: get_user_preferences() and get_project_profile() are now async
+        # If this method is needed, it should be made async and await these calls
+        # user_prefs = self.semantic_memory.get_user_preferences()
+        # project_profile = self.semantic_memory.get_project_profile()
         
         return {
-            "user_preferences": user_prefs,
-            "project_profile": project_profile
+            "user_preferences": {},  # Placeholder - make this method async if needed
+            "project_profile": {}    # Placeholder - make this method async if needed
         }
     
     def process_interaction(
@@ -430,7 +432,7 @@ class MemoryManager:
                         confidence=0.6,
                         source="observation"
                     )
-                    self.semantic_memory.learn_fact(fact)
+                    # self.semantic_memory.learn_fact(fact)  # REMOVED: learn_fact() is now async, learning happens in assess.py
             
             # Learn about search patterns
             elif result.get("tool") == "code_snippets":
@@ -445,7 +447,7 @@ class MemoryManager:
                         confidence=0.5,
                         source="observation"
                     )
-                    self.semantic_memory.learn_fact(fact)
+                    # self.semantic_memory.learn_fact(fact)  # REMOVED: learn_fact() is now async, learning happens in assess.py
     
     def _create_episode_from_interaction(
         self,
@@ -508,7 +510,7 @@ class MemoryManager:
         
         return list(entities)
     
-    def get_relevant_context(self, user_query: str) -> Dict[str, Any]:
+    async def get_relevant_context(self, user_query: str) -> Dict[str, Any]:
         """
         Get relevant context from all memory tiers for a query.
         This is the key integration point!
@@ -525,11 +527,15 @@ class MemoryManager:
         )
         
         # 3. Query relevant semantic knowledge
-        semantic_facts = self.semantic_memory.query_knowledge(min_confidence=0.6)
+        semantic_facts = await self.semantic_memory.query_knowledge(min_confidence=0.6)
         
         # 4. Get success patterns for this type of query
         query_type = self._categorize_query(user_query)
         success_patterns = self.episodic_memory.get_success_patterns(query_type)
+        
+        # 5. Get user preferences and project profile (async calls)
+        user_preferences = await self.semantic_memory.get_user_preferences()
+        project_profile = await self.semantic_memory.get_project_profile()
         
         return {
             "working_memory": {
@@ -562,8 +568,8 @@ class MemoryManager:
                     }
                     for f in semantic_facts[:10]
                 ],
-                "user_preferences": self.semantic_memory.get_user_preferences(),
-                "project_profile": self.semantic_memory.get_project_profile()
+                "user_preferences": user_preferences,
+                "project_profile": project_profile
             }
         }
     

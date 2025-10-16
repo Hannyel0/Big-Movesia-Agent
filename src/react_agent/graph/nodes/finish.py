@@ -183,7 +183,7 @@ async def _generate_comprehensive_completion_summary(state: State, model, contex
     memory_section = ""
     if state.memory and state.plan:
         try:
-            memory_context = state.memory.get_relevant_context(state.plan.goal)
+            memory_context = await state.memory.get_relevant_context(state.plan.goal)
             memory_section = format_memory_context(memory_context)
         except Exception as e:
             print(f"⚠️ [Finish] Could not get memory context: {e}")
@@ -195,7 +195,7 @@ async def _generate_comprehensive_completion_summary(state: State, model, contex
                  if isinstance(m, HumanMessage)), 
                 "direct action"
             )
-            memory_context = state.memory.get_relevant_context(user_message)
+            memory_context = await state.memory.get_relevant_context(user_message)
             memory_section = format_memory_context(memory_context)
         except Exception as e:
             print(f"⚠️ [Finish] Could not get memory context for direct action: {e}")

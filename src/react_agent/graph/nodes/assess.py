@@ -533,7 +533,7 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
                 confidence=0.7,
                 source="execution_success"
             )
-            state.memory.semantic.learn_fact(fact)
+            await state.memory.semantic.learn_fact(fact)
             logger.info(f"🧠 [ASSESS] Learned: {current_step.tool_name} works for '{current_step.description[:40]}'")
         
         # Add errors to memory
