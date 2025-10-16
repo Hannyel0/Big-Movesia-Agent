@@ -404,9 +404,6 @@ Provide your complexity classification with reasoning."""
             entities = extract_entities_from_request(user_request)
             topics = extract_topics_from_request(user_request)
             
-            print(f"   Extracted entities: {entities[:5] if entities else 'None'}")
-            print(f"   Extracted topics: {topics[:5] if topics else 'None'}")
-            
             await memory_to_use.update_focus(entities, topics)
             memory_to_use.add_message("user", user_request)
             

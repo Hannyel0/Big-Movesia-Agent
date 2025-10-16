@@ -642,17 +642,20 @@ async def search_project(
             }
         
         # Format results based on return_format
+        # ✅ PRIORITY 3 FIX: Return BOTH formats so structured data isn't lost
         if return_format == "natural_language" and results:
             logger.debug("📝 Formatting results as natural language")
-            formatted = _format_results_natural_language(results, query_description)
+            formatted_natural = _format_results_natural_language(results, query_description)
+            logger.debug(f"📝 Keeping structured data: {len(results)} items with full details")
         else:
-            formatted = results
+            formatted_natural = results  # If structured requested, use raw data for display too
         
         total_duration = (datetime.now(UTC) - start_time).total_seconds()
         
         result = {
             "success": True,
-            "results": formatted,
+            "results": formatted_natural,  # Natural language string OR structured list
+            "results_structured": results,  # ✅ ADD: Always include raw structured data
             "result_count": len(results),
             "sql_query": sql_query,
             "query_description": query_description,
@@ -661,6 +664,15 @@ async def search_project(
             "total_time_seconds": total_duration,
             "cache_hit": cached_sql is not None
         }
+        
+        # ✅ ADD: Log that we're preserving structured data
+        logger.debug(f"📦 Preserved structured data: {len(results)} items")
+        if results and len(results) > 0:
+            # Log a sample to verify size data is included
+            sample = results[0]
+            logger.debug(f"📦 Sample structured item: {list(sample.keys())[:5]}")
+            if 'size' in sample:
+                logger.debug(f"📦 ✅ Size data confirmed in structured results")
         
         logger.info(f"✅ SEARCH_PROJECT COMPLETED SUCCESSFULLY")
         logger.info(f"   Results: {len(results)} rows")

@@ -10,6 +10,9 @@ from __future__ import annotations
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, UTC
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -62,6 +65,7 @@ class WorkingMemory:
         tool_entry = {
             "tool_name": tool_name,
             "result": result,
+            "result_raw": result,  # ✅ ADD: Keep full original result
             "query": query,
             "timestamp": datetime.now(UTC).isoformat(),
             "summary": self._create_tool_result_summary(tool_name, result, query)
@@ -100,6 +104,14 @@ class WorkingMemory:
             # ✅ FIXED: Properly extract result count
             result_count = result.get("result_count", 0)
             results = result.get("results", [])
+            
+            # ✅ Check for structured results with size data
+            structured = result.get("results_structured", [])
+            if structured and isinstance(structured, list):
+                # Log that we have size data available
+                has_size_data = any('size' in item for item in structured if isinstance(item, dict))
+                if has_size_data:
+                    logger.info(f"📊 [WorkingMemory] Size data available for {len(structured)} items")
             
             if result_count > 0 or results:
                 count = result_count if result_count > 0 else len(results)

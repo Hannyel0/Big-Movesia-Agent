@@ -314,48 +314,32 @@ class MemoryManager:
         if tool_name == "search_project" and isinstance(result, dict) and result.get("success"):
             logger.info(f"🧠 [MemoryManager] 🔍 Extracting entities from search_project")
             
-            # Check if results are in structured format (list of dicts)
-            results_data = result.get("results", [])
+            # ✅ PRIORITY: Use results_structured which has size data
+            results_structured = result.get("results_structured", [])
             
-            if isinstance(results_data, list):
-                logger.info(f"🧠 [MemoryManager]   Found {len(results_data)} results to process")
+            if isinstance(results_structured, list) and len(results_structured) > 0:
+                logger.info(f"🔍 [MemoryManager]   Using results_structured with SIZE data: {len(results_structured)} items")
                 
-                for i, item in enumerate(results_data[:5], 1):  # Store knowledge about top 5 results
-                    logger.info(f"🧠 [MemoryManager]   Processing result {i}/{min(5, len(results_data))}")
-                    logger.info(f"🧠 [MemoryManager]     Item type: {type(item)}")
-                    
-                    # Handle both dict and string formats
+                for i, item in enumerate(results_structured[:10], 1):
                     if isinstance(item, dict):
                         entity = item.get("path") or item.get("name")
-                        logger.info(f"🧠 [MemoryManager]     Entity from dict: {entity}")
-                        
                         if entity:
+                            logger.info(f"🔍 [MemoryManager]     Processing entity {i}: {entity}")
+                            
                             knowledge = {
                                 "type": item.get("kind", "asset"),
-                                "size": item.get("size"),
+                                "size": item.get("size"),  # ✅ NOW HAS SIZE!
+                                "mtime": item.get("mtime"),
                                 "last_accessed": datetime.now(UTC).isoformat(),
                                 "access_count": 1
                             }
-                            logger.info(f"🧠 [MemoryManager]     Storing entity: {entity}")
-                            logger.info(f"🧠 [MemoryManager]     Knowledge: {knowledge}")
                             
+                            logger.info(f"🔍 [MemoryManager]       Knowledge: {knowledge}")
                             self.update_entity_knowledge(entity, knowledge)
                             entity_count += 1
-                            logger.info(f"🧠 [MemoryManager]     ✅ Entity stored successfully")
-                        else:
-                            logger.warning(f"🧠 [MemoryManager]     ⚠️ Could not extract entity from item")
-                    
-                    elif isinstance(item, str):
-                        # If it's a string, try to extract meaningful info
-                        logger.info(f"🧠 [MemoryManager]     Item is string: {item[:80]}")
-                        # For now, skip string results - they're natural language formatted
-                        logger.info(f"🧠 [MemoryManager]     ⚠️ Skipping string result (natural language format)")
-                    
-                    else:
-                        logger.warning(f"🧠 [MemoryManager]     ⚠️ Unknown item type: {type(item)}")
+                            logger.info(f"🔍 [MemoryManager]       ✅ Entity stored with size: {item.get('size')} bytes")
             else:
-                logger.warning(f"🧠 [MemoryManager]   ⚠️ Results is not a list: {type(results_data)}")
-                logger.info(f"🧠 [MemoryManager]   Results preview: {str(results_data)[:200]}")
+                logger.warning(f"🧠 [MemoryManager]   ⚠️ No results_structured available")
         
         elif tool_name == "code_snippets" and isinstance(result, dict) and result.get("success"):
             logger.info(f"🧠 [MemoryManager] 🔍 Extracting entities from code_snippets")
@@ -935,14 +919,15 @@ class MemoryManager:
                 
                 result_data = tool_result.get("result", {})
                 logger.info(f"🔍 [MemoryManager]       Result data type: {type(result_data)}")
-                logger.info(f"🔍 [MemoryManager]       Result has 'results' key: {'results' in result_data if isinstance(result_data, dict) else False}")
                 
-                if isinstance(result_data, dict) and "results" in result_data:
-                    results_list = result_data.get("results", [])
-                    logger.info(f"🔍 [MemoryManager]       Results list length: {len(results_list) if isinstance(results_list, list) else 'not a list'}")
+                # ✅ CRITICAL: Check results_structured first!
+                if isinstance(result_data, dict):
+                    structured = result_data.get("results_structured", [])
                     
-                    if isinstance(results_list, list):
-                        for item_idx, item in enumerate(results_list[:10], 1):
+                    if isinstance(structured, list) and len(structured) > 0:
+                        logger.info(f"🔍 [MemoryManager]       Using results_structured: {len(structured)} items")
+                        
+                        for item_idx, item in enumerate(structured[:10], 1):
                             if isinstance(item, dict):
                                 entity = item.get("path") or item.get("name")
                                 if entity:
@@ -952,6 +937,8 @@ class MemoryManager:
                                     logger.info(f"🔍 [MemoryManager]       Item {item_idx} has no path/name: {list(item.keys())}")
                             else:
                                 logger.info(f"🔍 [MemoryManager]       Item {item_idx} is not dict: {type(item)}")
+                    else:
+                        logger.info(f"🔍 [MemoryManager]       No results_structured available")
         
         logger.info(f"🔍 [MemoryManager]   Extracted {len(recent_entities)} entities from recent tool results")
         if recent_entities:

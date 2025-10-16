@@ -66,11 +66,16 @@ def _detect_continuation(
                     last_ai_message = get_message_text(msg)
                     break
             
+            # ✅ Extract structured data if available
+            result_data = latest_tool["result"]
+            structured = result_data.get("results_structured", []) if isinstance(result_data, dict) else []
+            
             return {
                 "previous_message": last_ai_message or "Previous results",
                 "tool_result": {
                     "tool_name": latest_tool["tool_name"],
-                    "result": latest_tool["result"]
+                    "result": latest_tool["result"],
+                    "structured_data": structured  # ✅ ADD: For easier access
                 }
             }
     
@@ -92,9 +97,16 @@ def _detect_continuation(
                 pass
     
     if last_ai_message and last_tool_result:
+        # ✅ Extract structured data if available
+        result_data = last_tool_result.get("result", {})
+        structured = result_data.get("results_structured", []) if isinstance(result_data, dict) else []
+        
         return {
             "previous_message": last_ai_message,
-            "tool_result": last_tool_result
+            "tool_result": {
+                **last_tool_result,
+                "structured_data": structured  # ✅ ADD: For easier access
+            }
         }
     
     return None
