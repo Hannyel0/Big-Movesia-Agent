@@ -314,19 +314,6 @@ async def get_memory_manager(config: Optional[Dict[str, Any]] = None):
     return _global_memory
 
 
-def reset_memory_manager():
-    """
-    Reset global memory manager (testing only).
-    
-    ⚠️ WARNING: This clears the global singleton.
-    - Use only in tests or when explicitly restarting
-    - Not thread-safe
-    - Loses all in-memory data
-    """
-    global _global_memory
-    _global_memory = None
-
-
 # ============================================================================
 # CONTEXT EXTRACTION UTILITIES
 # ============================================================================
@@ -510,54 +497,6 @@ def format_memory_context(memory_context: Dict[str, Any]) -> str:
         parts.append(f"\n**User Preference**: {prefs['planning_style']} planning")
     
     return "\n".join(parts) if parts else ""
-
-
-async def inject_memory_context(
-    state: State,
-    base_prompt: str,
-    config: Dict[str, Any]
-) -> str:
-    """
-    Inject memory context into LLM prompt.
-    
-    ✅ FIXED: Now async to support async get_memory_context()
-    
-    Args:
-        state: Current agent state
-        base_prompt: Base system prompt
-        config: RunnableConfig containing context
-        
-    Returns:
-        Enhanced prompt with memory context
-    """
-    if not state.memory:
-        return base_prompt
-    
-    # Check if memory context injection is enabled
-    context = config.get("configurable", {})
-    if not context.get("memory_inject_context", True):
-        return base_prompt
-    
-    # Get memory context
-    memory_context = await state.memory.get_memory_context(
-        include_patterns=True,
-        include_episodes=True
-    )
-    
-    if not memory_context:
-        return base_prompt
-    
-    # Inject memory context
-    enhanced_prompt = f"""{base_prompt}
-
-# Memory Context
-
-{memory_context}
-
-Use this memory context to inform your decisions and avoid repeating past mistakes.
-"""
-    
-    return enhanced_prompt
 
 
 async def inject_memory_into_prompt(

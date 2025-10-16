@@ -18,13 +18,11 @@ from react_agent.memory.semantic import SemanticMemory, Pattern, SemanticFact
 from react_agent.memory.manager import MemoryManager
 from react_agent.memory.working import (
     get_memory_manager,
-    reset_memory_manager,
     extract_entities_from_state,
     extract_topics_from_state,
     extract_entities_from_request,
     extract_topics_from_request,
     format_memory_context,
-    inject_memory_context,
     inject_memory_into_prompt,
     get_memory_insights,
     initialize_memory_system,
@@ -43,13 +41,11 @@ __all__ = [
     "MemoryManager",
     # Integration utilities (from working.py)
     "get_memory_manager",
-    "reset_memory_manager",
     "extract_entities_from_state",
     "extract_topics_from_state",
     "extract_entities_from_request",
     "extract_topics_from_request",
     "format_memory_context",
-    "inject_memory_context",
     "inject_memory_into_prompt",
     "get_memory_insights",
     "initialize_memory_system",
