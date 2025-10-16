@@ -33,6 +33,9 @@ class ComplexityAssessment(BaseModel):
     suggested_approach: str = Field(
         description="Recommended execution approach for this request"
     )
+    user_narration: str = Field(
+        description="User-facing description of what you'll do to help them (no internal details)"
+    )
     confidence: float = Field(
         default=0.8, 
         ge=0.0, 
@@ -106,18 +109,18 @@ async def classify(
     """Classify request complexity with continuation awareness."""
     
     print(f"\n{'='*60}")
-    print(f"🎯 [CLASSIFY] ===== STARTING CLASSIFICATION =====")
+    print(f" [CLASSIFY] ===== STARTING CLASSIFICATION =====")
     print(f"{'='*60}")
     
     # Memory initialization
     memory_updates = {}
     if not state.memory:
-        print(f"🧠 [Classify] No memory found - initializing...")
+        print(f" [Classify] No memory found - initializing...")
         memory_updates = await initialize_memory_system(state, config)
         if memory_updates.get("memory"):
-            print(f"✅ [Classify] Memory system initialized successfully")
+            print(f" [Classify] Memory system initialized successfully")
     else:
-        print(f"✅ [Classify] Memory system already initialized")
+        print(f" [Classify] Memory system already initialized")
     
     # Extract project context
     configurable = config.get("configurable", {})
@@ -128,13 +131,13 @@ async def classify(
     sqlite_path = configurable.get("sqlite_path", "")
     submitted_at = configurable.get("submitted_at", "")
     
-    print(f"\n📦 [Classify] Project Context:")
+    print(f"\n [Classify] Project Context:")
     print(f"   Project: {project_name} (ID: {project_id})")
     print(f"   Unity: {unity_version}")
     print(f"   Root: {project_root}")
     
     if not project_id or not project_root:
-        print(f"⚠️  [Classify] WARNING: Missing critical project context!")
+        print(f" [Classify] WARNING: Missing critical project context!")
     
     context = runtime.context
     model = get_model(context.model)
@@ -147,7 +150,7 @@ async def classify(
             break
     
     if not user_request:
-        print(f"❌ [Classify] No user request found - using fallback")
+        print(f" [Classify] No user request found - using fallback")
         return {
             "runtime_metadata": {
                 **state.runtime_metadata,
@@ -161,19 +164,19 @@ async def classify(
             **memory_updates
         }
     
-    print(f"\n💬 [Classify] User Request:")
+    print(f"\n [Classify] User Request:")
     print(f"   \"{user_request}\"")
     print(f"   Length: {len(user_request)} chars, {len(user_request.split())} words")
     
     # Get memory reference
     memory_to_use = memory_updates.get("memory") or state.memory
     
-    # ✅ CRITICAL: Force reload of working memory BEFORE continuation detection
+    # CRITICAL: Force reload of working memory BEFORE continuation detection
     # This ensures we can detect continuations even if memory was just initialized
     if memory_to_use and hasattr(memory_to_use, 'working_memory'):
         wm = memory_to_use.working_memory
         if len(wm.recent_tool_results) == 0 and memory_to_use.db_path and memory_to_use.db_path.exists():
-            print(f"🧠 [Classify] Preloading working memory for continuation detection...")
+            print(f" [Classify] Preloading working memory for continuation detection...")
             try:
                 # Manually reload using the same logic from get_memory_context()
                 import asyncio
@@ -203,7 +206,7 @@ async def classify(
                             }
                             tools.append(tool_result)
                         except Exception as e:
-                            print(f"⚠️ [Classify] Failed to reload tool result: {e}")
+                            print(f" [Classify] Failed to reload tool result: {e}")
                     
                     conn.close()
                     return tools
@@ -213,17 +216,17 @@ async def classify(
                     wm.recent_tool_results.append(tool)
                 
                 if len(loaded_tools) > 0:
-                    print(f"✅ [Classify] Preloaded {len(loaded_tools)} tool results for continuation detection")
+                    print(f" [Classify] Preloaded {len(loaded_tools)} tool results for continuation detection")
                     
             except Exception as e:
-                print(f"⚠️ [Classify] Could not preload tools: {e}")
+                print(f" [Classify] Could not preload tools: {e}")
     
-    # ✅ NEW: Detect continuation context AFTER ensuring memory is loaded
+    # Detect continuation context AFTER ensuring memory is loaded
     continuation_context = None
     if memory_to_use:
         continuation_context = _detect_continuation_context(state)
         if continuation_context:
-            print(f"\n🔄 [Classify] CONTINUATION DETECTED!")
+            print(f"\n [Classify] CONTINUATION DETECTED!")
             print(f"   Previous tool: {continuation_context['tool_result']['tool_name']}")
             print(f"   Summary: {continuation_context['tool_result']['summary'][:80]}")
     
@@ -244,7 +247,7 @@ When the user's request references previous results or context (like "which is t
 
 **DIRECT**: Single-step responses
 - Project data queries: "What assets do I have?", "List my scripts"
-- ✅ CONTINUATION QUERIES: "Which is the biggest?", "Show me more details", "The first one"
+- CONTINUATION QUERIES: "Which is the biggest?", "Show me more details", "The first one"
 - Informational queries: "What is a prefab?", "How do controllers work?"
 - Follow-up analysis of existing results
 
@@ -256,13 +259,33 @@ When the user's request references previous results or context (like "which is t
 - Complete system implementations
 - Advanced features with extensive integration
 
-**KEY**: Continuation requests referencing recent results = DIRECT (no new tools needed)"""
+**KEY**: Continuation requests referencing recent results = DIRECT (no new tools needed)
 
-    # ✅ NEW: Add explicit continuation context if detected
+**USER NARRATION GUIDELINES:**
+When providing the user_narration field, describe what you'll do to help them in 2-3 sentences:
+- Focus on the OUTCOME and DETAILS of what you'll implement/fix/find
+- Be specific about the features, steps, or solutions you'll provide
+- Explain WHAT you'll do, not HOW the agent works internally
+- Avoid phrases like: "using previously retrieved data", "no new tool calls needed", "filtering existing results"
+- Instead describe: what you'll analyze, what features you'll add, what issues you'll fix
+
+Examples of GOOD narrations (detailed, action-focused):
+- "I'll help you identify which script handles connections by examining your networking code. I'll analyze the script structure to show you exactly where connection logic is implemented and how it's organized."
+- "I'll create a comprehensive player movement script that includes WASD keyboard controls, smooth acceleration and deceleration, jumping with ground detection, and camera rotation. The script will be well-commented and ready to attach to your player GameObject."
+- "I'll help you debug the connection issue in your networking code. I'll examine the current implementation, identify potential causes like timeout settings or serialization problems, and provide specific fixes to get your multiplayer working smoothly."
+- "I'll analyze your project assets to find the largest one. I'll compare file sizes across all asset types including textures, models, audio files, and scenes to show you which one is taking up the most space and provide size details."
+
+Examples of BAD narrations (too short or exposing internals):
+- "I'll analyze those results for you. The request is a direct follow-up using previously retrieved data."
+- "I can help with that right away."
+- "I'll filter the existing results to show you the biggest one."
+"""
+
+    # Add explicit continuation context if detected
     if continuation_context:
         continuation_section = f"""
 
-# ⚠️ CONTINUATION CONTEXT DETECTED ⚠️
+ CONTINUATION CONTEXT DETECTED 
 
 The user just received these results from {continuation_context['tool_result']['tool_name']}:
 **Result Summary:** {continuation_context['tool_result']['summary']}
@@ -281,7 +304,7 @@ The current request "{user_request}" is a FOLLOW-UP asking for more analysis, fi
         base_classification_prompt += continuation_section
     
     # Inject memory context
-    print(f"\n🔄 [Classify] Injecting memory context into classification prompt...")
+    print(f"\n [Classify] Injecting memory context into classification prompt...")
     enhanced_classification_prompt = await inject_memory_into_prompt(
         base_prompt=base_classification_prompt,
         state=state,
@@ -300,7 +323,7 @@ The current request "{user_request}" is a FOLLOW-UP asking for more analysis, fi
     
     # Create classification request with continuation awareness
     if continuation_context:
-        classification_request = f"""🔍 CONTINUATION REQUEST DETECTED 🔍
+        classification_request = f""" CONTINUATION REQUEST DETECTED 
 
 Current request: "{user_request}"
 Previous tool: {continuation_context['tool_result']['tool_name']}
@@ -327,7 +350,7 @@ Analyze the request and determine:
 
 Provide your complexity classification with reasoning."""
     
-    print(f"\n📤 [Classify] Sending to LLM:")
+    print(f"\n [Classify] Sending to LLM:")
     print(f"   Model: {context.model}")
     print(f"   System prompt: {enhanced_length} chars")
     print(f"   User request: {len(classification_request)} chars")
@@ -340,36 +363,20 @@ Provide your complexity classification with reasoning."""
     ]
     
     try:
-        print(f"\n⏳ [Classify] Waiting for LLM classification...")
+        print(f"\n [Classify] Waiting for LLM classification...")
         
         # Get classification
         structured_model = model.with_structured_output(ComplexityAssessment)
         assessment = await structured_model.ainvoke(messages)
         
-        print(f"\n✅ [Classify] LLM Classification Received:")
+        print(f"\n [Classify] LLM Classification Received:")
         print(f"   Level: {assessment.complexity_level}")
         print(f"   Confidence: {assessment.confidence:.2f}")
         print(f"   Reasoning: {assessment.reasoning[:100]}...")
         print(f"   Suggested approach: {assessment.suggested_approach[:100]}...")
         
-        # Create narration with continuation awareness
-        if continuation_context:
-            narration_map = {
-                "direct": f"I'll analyze those results for you. {assessment.reasoning}",
-                "simple_plan": f"Let me process that with a focused approach. {assessment.reasoning}",
-                "complex_plan": f"I'll handle this systematically. {assessment.reasoning}"
-            }
-        else:
-            narration_map = {
-                "direct": f"I can help you with that right away. {assessment.reasoning}",
-                "simple_plan": f"I'll handle this with a focused approach. {assessment.reasoning}",
-                "complex_plan": f"This is a comprehensive request that I'll break down systematically. {assessment.reasoning}"
-            }
-        
-        user_narration = narration_map.get(
-            assessment.complexity_level,
-            "Let me analyze this request and create an appropriate plan."
-        )
+        # Use the LLM-generated user narration
+        user_narration = assessment.user_narration
         
         # Store metadata
         updated_metadata = {
@@ -466,6 +473,6 @@ Provide your complexity classification with reasoning."""
                 "unity_version": unity_version,
                 "sqlite_path": sqlite_path,
             },
-            "messages": [AIMessage(content=f"I'll help with a {fallback_level.replace('_', ' ')} approach.")],
+            "messages": [AIMessage(content=f"I'll help you with: {user_request}")],
             **memory_updates
         }
