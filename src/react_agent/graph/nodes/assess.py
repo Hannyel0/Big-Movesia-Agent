@@ -14,6 +14,9 @@ from react_agent.state import (
     AssessmentOutcome,
     State,
     StructuredAssessment,
+    StepStatus,
+    ExecutionPlan,
+    PlanStep,
 )
 from react_agent.narration import NarrationEngine, StreamingNarrator
 from react_agent.utils import get_message_text, get_model
@@ -347,8 +350,15 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
         )
         
         logger.info(f"🔍 [ASSESS] ===== ASSESSMENT COMPLETE (DIRECT) =====")
+        
+        # ✅ FIX: Track completed step for direct actions too
+        updated_completed_steps = list(state.completed_steps) if state.completed_steps else []
+        if state.step_index not in updated_completed_steps:
+            updated_completed_steps.append(state.step_index)
+        
         return {
             "current_assessment": assessment,
+            "completed_steps": updated_completed_steps,
             "total_assessments": state.total_assessments + 1
         }
     
@@ -493,6 +503,28 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
             )
             logger.info("🔍 [ASSESS] Created SUCCESS assessment (no explicit error)")
     
+    # ✅ FIX: Mark step as SUCCEEDED in plan when assessment is successful
+    updated_plan = None
+    if assessment.outcome == "success" and state.plan and state.step_index < len(state.plan.steps):
+        updated_steps = list(state.plan.steps)
+        current = updated_steps[state.step_index]
+        updated_steps[state.step_index] = PlanStep(
+            description=current.description,
+            tool_name=current.tool_name,
+            success_criteria=current.success_criteria,
+            dependencies=current.dependencies,
+            status=StepStatus.SUCCEEDED,  # ✅ Mark as SUCCEEDED
+            attempts=current.attempts,
+            error_messages=current.error_messages
+        )
+        
+        updated_plan = ExecutionPlan(
+            goal=state.plan.goal,
+            steps=updated_steps,
+            metadata=state.plan.metadata
+        )
+        logger.info(f"🔍 [ASSESS] Marked step {state.step_index} as SUCCEEDED")
+    
     # Prepare messages with narration
     messages_to_add = []
     
@@ -582,6 +614,19 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
         "current_assessment": assessment,
         "total_assessments": state.total_assessments + 1
     }
+    
+    # ✅ FIX: Update both plan status and completed_steps tracking
+    if assessment.outcome == "success":
+        # Track in completed_steps list
+        updated_completed_steps = list(state.completed_steps) if state.completed_steps else []
+        if state.step_index not in updated_completed_steps:
+            updated_completed_steps.append(state.step_index)
+            result["completed_steps"] = updated_completed_steps
+            logger.info(f"🔍 [ASSESS] Added step {state.step_index} to completed_steps list")
+        
+        # Update plan with SUCCEEDED status
+        if updated_plan:
+            result["plan"] = updated_plan
     
     if messages_to_add:
         result["messages"] = messages_to_add

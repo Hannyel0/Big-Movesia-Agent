@@ -590,6 +590,14 @@ You MUST call the specified tool to complete this development step."""
             goal=state.plan.goal, steps=updated_steps, metadata=state.plan.metadata
         )
 
+        # ✅ FIX: Persist memory state before potential interrupt (file approval)
+        if state.memory and state.memory.auto_persist:
+            try:
+                await state.memory._persist_to_database()
+                logger.info("🧠 [ACT] Pre-persisted memory before tool execution")
+            except Exception as e:
+                logger.warning(f"🧠 [ACT] Pre-persistence failed: {e}")
+
         return {
             "plan": updated_plan,
             "messages": [combined_response],

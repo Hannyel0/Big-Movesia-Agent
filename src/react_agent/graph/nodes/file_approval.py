@@ -1,6 +1,9 @@
 """File approval handler node - handles human-in-the-loop for file operations."""
 
 from __future__ import annotations
+import sqlite3
+import json
+import logging
 from typing import Any, Dict
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import interrupt
@@ -8,6 +11,8 @@ from langgraph.runtime import Runtime
 from react_agent.context import Context
 from react_agent.state import State
 from react_agent.tools.file_operation import execute_file_operation
+
+logger = logging.getLogger(__name__)
 
 
 async def check_file_approval(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
@@ -79,6 +84,25 @@ async def check_file_approval(state: State, runtime: Runtime[Context]) -> Dict[s
     
     # User approved - execute the operation
     print(f"✅ [FileApproval] Operation approved, executing...")
+    
+    # ✅ FIX: Reload BOTH semantic and working memory after interrupt
+    if state.memory and state.memory.db_path:
+        import asyncio
+        
+        # Reload semantic memory (entities/topics)
+        try:
+            await asyncio.to_thread(state.memory._reload_semantic_knowledge)
+            logger.info(f"🧠 [FileApproval] Reloaded semantic memory after interrupt")
+        except Exception as e:
+            logger.warning(f"🧠 [FileApproval] Failed to reload semantic memory: {e}")
+        
+        # ✅ NEW: Reload working memory (tool results)
+        try:
+            await asyncio.to_thread(state.memory._reload_working_memory_sync)
+            logger.info(f"🧠 [FileApproval] Reloaded working memory after interrupt")
+        except Exception as e:
+            logger.warning(f"🧠 [FileApproval] Failed to reload working memory: {e}")
+    
     execution_result = await execute_file_operation(pending_operation)
     
     # Create new tool message with execution result

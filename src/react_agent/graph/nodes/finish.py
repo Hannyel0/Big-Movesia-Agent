@@ -13,7 +13,6 @@ from react_agent.context import Context
 from react_agent.state import State
 from react_agent.narration import NarrationEngine, StreamingNarrator
 from react_agent.utils import get_message_text, get_model
-from react_agent.memory import format_memory_context
 
 logger = logging.getLogger(__name__)
 
@@ -181,24 +180,17 @@ async def _generate_comprehensive_completion_summary(state: State, model, contex
     
     # ✅ MEMORY: Get memory context if available
     memory_section = ""
-    if state.memory and state.plan:
+    if state.memory:
         try:
-            memory_context = await state.memory.get_relevant_context(state.plan.goal)
-            memory_section = format_memory_context(memory_context)
+            # ✅ FIX: Use get_memory_context() instead of deleted get_relevant_context()
+            memory_context_str = await state.memory.get_memory_context(
+                include_patterns=True,
+                include_episodes=True
+            )
+            if memory_context_str:
+                memory_section = f"\n\n## Memory Context\n{memory_context_str}"
         except Exception as e:
             print(f"⚠️ [Finish] Could not get memory context: {e}")
-    elif state.memory:
-        # For direct actions (no plan), use the most recent user message as query
-        try:
-            user_message = next(
-                (get_message_text(m) for m in reversed(state.messages) 
-                 if isinstance(m, HumanMessage)), 
-                "direct action"
-            )
-            memory_context = await state.memory.get_relevant_context(user_message)
-            memory_section = format_memory_context(memory_context)
-        except Exception as e:
-            print(f"⚠️ [Finish] Could not get memory context for direct action: {e}")
     
     # Create comprehensive prompt for AI summary with dynamic, contextual formatting
     completion_prompt = f"""You have just completed a Unity/game development session. Generate a contextual, well-formatted completion summary that dynamically adapts to what was actually accomplished.
@@ -324,13 +316,25 @@ async def finish(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
         else:
             # Planned execution
             success = (state.step_index >= len(state.plan.steps) - 1)
-            completed_count = len(state.completed_steps)
+            # ✅ FIX: Count actually completed steps from plan status
+            from react_agent.state import StepStatus
+            completed_count = sum(1 for step in state.plan.steps if step.status == StepStatus.SUCCEEDED)
             total_count = len(state.plan.steps)
             outcome_summary = f"Completed {completed_count}/{total_count} steps"
             logger.info(f"🏁 [FINISH] Planned execution: {'✅ success' if success else '❌ failure'}")
+            logger.info(f"🏁 [FINISH]   Steps with SUCCEEDED status: {completed_count}/{total_count}")
+            logger.info(f"🏁 [FINISH]   completed_steps list: {len(state.completed_steps)} items")
         
-        # ✅ FIXED: Only clear working memory for PLANNED executions, not direct actions
-        clear_working = not is_direct_action
+        # ✅ FIXED: Only clear working memory for complex multi-step plans
+        # Preserve memory for:
+        # - Direct actions (single tool calls)
+        # - Simple plans (1-3 steps, like search queries)
+        # Clear memory only for:
+        # - Complex plans (4+ steps, like multi-file operations)
+        is_complex_plan = (state.plan is not None and 
+                          len(state.plan.steps) > 3 and 
+                          not is_direct_action)
+        clear_working = is_complex_plan
         
         # End episode
         await state.memory.end_task(
@@ -341,14 +345,17 @@ async def finish(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
         
         logger.info(f"🧠 [FINISH] Episode ended: {'✅ success' if success else '❌ incomplete'}")
         logger.info(f"🧠 [FINISH]   Outcome: {outcome_summary}")
-        logger.info(f"🧠 [FINISH]   Working memory {'PRESERVED' if not clear_working else 'CLEARED'}")
+        logger.info(f"🧠 [FINISH]   Working memory {'CLEARED (complex plan)' if clear_working else 'PRESERVED (simple/direct)'}")
         
         # Log working memory state
         if hasattr(state.memory, 'working_memory'):
             recent_tools = state.memory.working_memory.recent_tool_results
+            step_count = len(state.plan.steps) if state.plan else 0
             logger.info(f"🧠 [FINISH] Working memory has {len(recent_tools)} tool results stored")
             print(f"\n🧠 [FINISH] Working memory state:")
             print(f"   Direct action: {is_direct_action}")
+            print(f"   Plan steps: {step_count}")
+            print(f"   Complex plan (>3 steps): {is_complex_plan}")
             print(f"   Memory preserved: {not clear_working}")
             print(f"   Tool results stored: {len(recent_tools)}")
             for i, tool in enumerate(recent_tools, 1):

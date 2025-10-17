@@ -164,7 +164,8 @@ class WorkingMemory:
         
         elif tool_name == "file_operation":
             operation = result.get("operation", "operation")
-            file_path = result.get("file_path", "unknown")
+            # ✅ FIX: Check both top-level and pending_operation for file path
+            file_path = result.get("file_path") or result.get("pending_operation", {}).get("rel_path", "unknown")
             
             # Get just the filename
             if "/" in file_path:

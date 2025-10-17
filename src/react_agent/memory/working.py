@@ -417,7 +417,11 @@ def extract_entities_from_request(request: str) -> List[str]:
     for word in words:
         # Check if word contains a file extension
         if any(ext in word.lower() for ext in extensions):
-            entities.append(word.strip(".,;:\"'()[]{}"))
+            # ✅ FIX: Normalize and filter out template patterns
+            entity = word.strip(".,;:\"'()[]{}").lower()
+            # Don't add template patterns like test[number].cs or file[id].cs
+            if '[' not in entity and ']' not in entity:
+                entities.append(entity)
         # Check for common Unity class names
         elif any(cls in word for cls in ["Controller", "Manager", "System", "Handler"]):
             entities.append(word)
@@ -671,7 +675,7 @@ async def initialize_memory_system(state: State, config: Dict[str, Any]) -> Dict
     entities = extract_entities_from_state(state)
     topics = extract_topics_from_state(state)
     if entities or topics:
-        memory.update_focus(entities, topics)
+        await memory.update_focus(entities, topics)
     
     print(f"🧠 [Memory] Episode started: {episode_id}")
     print(f"   Task: {task_description[:60]}...")

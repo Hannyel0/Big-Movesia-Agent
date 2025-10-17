@@ -84,6 +84,11 @@ class MemoryManager:
             logger.info(f"   Patterns: {len(self.semantic_memory.patterns)}")
             logger.info(f"   Entities: {len(self.semantic_memory.entity_knowledge)}")
             logger.info(f"   Topics: {len(self.semantic_memory.topic_knowledge)}")
+            
+            # ✅ FIX: Force reload semantic memory if empty (after interrupt resume)
+            if len(self.semantic_memory.entity_knowledge) == 0:
+                self._reload_semantic_knowledge()
+                logger.info(f"🧠 [MemoryManager] Force reloaded semantic memory after empty state")
         
         # Clean up dangling in-progress episodes
         if self.episodic_memory.current_episode:
@@ -111,6 +116,19 @@ class MemoryManager:
         # ✅ FIXED: Async persistence
         if self.auto_persist and self.db_path:
             await self._persist_session_metadata()
+    
+    def update_focus_sync(self, entities: List[str], topics: List[str]):
+        """Synchronous version of update_focus for sync contexts."""
+        self.working_memory.update_focus(entities, topics)
+        self.episodic_memory.update_entities(entities)
+        self.episodic_memory.update_topics(topics)
+        
+        # Persist session metadata synchronously
+        if self.auto_persist and self.db_path:
+            try:
+                self._persist_session_metadata_sync()
+            except Exception as e:
+                logger.warning(f"🧠 [MemoryManager] Failed to persist session metadata: {e}")
     
     def get_working_context(self) -> str:
         """Get current working memory context (synchronous)."""
@@ -186,7 +204,13 @@ class MemoryManager:
         logger.info(f"🧠 [MemoryManager]   ✅ Added to episodic memory")
         
         # Add to working memory
-        query = args.get("query", "") or args.get("sql_query", "") or args.get("operation", "") or args.get("query_description", "")
+        # ✅ FIX: Better context for file operations
+        if tool_name == "file_operation":
+            operation = args.get("operation", "unknown")
+            file_path = args.get("file_path", "")
+            query = f"{operation} {file_path}"  # e.g., "write Assets/Scripts/test7284.cs"
+        else:
+            query = args.get("query", "") or args.get("sql_query", "") or args.get("operation", "") or args.get("query_description", "")
         self.working_memory.add_tool_result(tool_name, result, query)
         logger.info(f"🧠 [MemoryManager]   ✅ Added to working memory")
         
@@ -203,6 +227,9 @@ class MemoryManager:
             for item in results[:5]:  # Store knowledge about top 5 results
                 entity = item.get("path") or item.get("name")
                 if entity:
+                    # ✅ FIX: Normalize to lowercase for consistent storage
+                    entity = entity.lower()
+                    
                     knowledge = {
                         "type": item.get("kind", "asset"),
                         "size": item.get("size"),
@@ -217,6 +244,9 @@ class MemoryManager:
             for snippet in snippets[:5]:
                 entity = snippet.get("file_path")
                 if entity:
+                    # ✅ FIX: Normalize to lowercase for consistent storage
+                    entity = entity.lower()
+                    
                     knowledge = {
                         "type": "script",
                         "language": "csharp",
@@ -227,11 +257,15 @@ class MemoryManager:
                     entity_count += 1
         
         elif tool_name == "file_operation" and result.get("success"):
-            file_path = result.get("file_path")
+            # ✅ FIX: Check both top-level and pending_operation for file path
+            file_path = result.get("file_path") or result.get("pending_operation", {}).get("rel_path")
             if file_path:
+                # ✅ FIX: Normalize to lowercase for consistent storage
+                file_path = file_path.lower()
+                
                 knowledge = {
                     "type": "file",
-                    "operation": result.get("operation", "unknown"),
+                    "operation": result.get("operation") or result.get("pending_operation", {}).get("operation", "unknown"),
                     "last_modified": datetime.now(UTC).isoformat(),
                     "modification_count": 1
                 }
@@ -242,7 +276,15 @@ class MemoryManager:
             logger.info(f"🧠 [MemoryManager]   ✅ Stored knowledge for {entity_count} entities")
         
         # ✅ NEW: Extract and store topic knowledge from queries
-        query_text = args.get("query", "") or args.get("query_description", "") or args.get("natural_query", "")
+        # ✅ FIX: Better query extraction for file operations
+        if tool_name == "file_operation":
+            # Extract meaningful context from file operation
+            file_path = args.get("file_path", "")
+            operation = args.get("operation", "")
+            query_text = f"{operation} {file_path}"  # Clean semantic text
+        else:
+            query_text = args.get("query", "") or args.get("query_description", "") or args.get("natural_query", "")
+        
         if query_text:
             topic_keywords = ["movement", "ui", "physics", "animation", "audio", "input", "player", "enemy", "camera", "inventory"]
             topics_found = []
@@ -283,7 +325,13 @@ class MemoryManager:
         logger.info(f"🧠 [MemoryManager]   ✅ Added to episodic memory")
         
         # Add to working memory (synchronous)
-        query = args.get("query", "") or args.get("sql_query", "") or args.get("operation", "") or args.get("query_description", "")
+        # ✅ FIX: Better context for file operations
+        if tool_name == "file_operation":
+            operation = args.get("operation", "unknown")
+            file_path = args.get("file_path", "")
+            query = f"{operation} {file_path}"  # e.g., "write Assets/Scripts/test7284.cs"
+        else:
+            query = args.get("query", "") or args.get("sql_query", "") or args.get("operation", "") or args.get("query_description", "")
         self.working_memory.add_tool_result(tool_name, result, query)
         logger.info(f"🧠 [MemoryManager]   ✅ Added to working memory")
         
@@ -324,6 +372,8 @@ class MemoryManager:
                     if isinstance(item, dict):
                         entity = item.get("path") or item.get("name")
                         if entity:
+                            # ✅ FIX: Normalize to lowercase for consistent storage
+                            entity = entity.lower()
                             logger.info(f"🔍 [MemoryManager]     Processing entity {i}: {entity}")
                             
                             knowledge = {
@@ -353,9 +403,11 @@ class MemoryManager:
                     
                     if isinstance(snippet, dict):
                         entity = snippet.get("file_path")
-                        logger.info(f"🧠 [MemoryManager]     Entity: {entity}")
-                        
                         if entity:
+                            # ✅ FIX: Normalize to lowercase for consistent storage
+                            entity = entity.lower()
+                            logger.info(f"🧠 [MemoryManager]     Entity: {entity}")
+                            
                             knowledge = {
                                 "type": "script",
                                 "language": "csharp",
@@ -374,13 +426,17 @@ class MemoryManager:
         
         elif tool_name == "file_operation" and isinstance(result, dict) and result.get("success"):
             logger.info(f"🧠 [MemoryManager] 🔍 Extracting entities from file_operation")
-            file_path = result.get("file_path")
+            # ✅ FIX: Check both top-level and pending_operation for file path
+            file_path = result.get("file_path") or result.get("pending_operation", {}).get("rel_path")
             logger.info(f"🧠 [MemoryManager]   File path: {file_path}")
             
             if file_path:
+                # ✅ FIX: Normalize to lowercase for consistent storage
+                file_path = file_path.lower()
+                
                 knowledge = {
                     "type": "file",
-                    "operation": result.get("operation", "unknown"),
+                    "operation": result.get("operation") or result.get("pending_operation", {}).get("operation", "unknown"),
                     "last_modified": datetime.now(UTC).isoformat(),
                     "modification_count": 1
                 }
@@ -405,7 +461,14 @@ class MemoryManager:
         
         # ✅ EXTRACT TOPICS: Extract and store topic knowledge from queries
         logger.info(f"🧠 [MemoryManager] 🔍 Extracting topics from query")
-        query_text = args.get("query", "") or args.get("query_description", "") or args.get("natural_query", "")
+        # ✅ FIX: Better query extraction for file operations
+        if tool_name == "file_operation":
+            # Extract meaningful context from file operation
+            file_path = args.get("file_path", "")
+            operation = args.get("operation", "")
+            query_text = f"{operation} {file_path}"  # Clean semantic text
+        else:
+            query_text = args.get("query", "") or args.get("query_description", "") or args.get("natural_query", "")
         logger.info(f"🧠 [MemoryManager]   Query text: {query_text[:100]}")
         
         if query_text:
@@ -443,13 +506,34 @@ class MemoryManager:
         else:
             logger.warning(f"🧠 [MemoryManager]   ⚠️ No query text to extract topics from")
         
-        # ✅ FIX: Use synchronous persistence in sync context
+        # ✅ FIX: Persist ALL memory types in ONE transaction to avoid locks
         if self.auto_persist and self.db_path:
             try:
                 logger.info(f"🧠 [MemoryManager] 💾 Starting synchronous persistence")
-                # Don't try to schedule async - just persist synchronously
-                self._persist_working_memory_sync()
-                logger.info(f"🧠 [MemoryManager]   ✅ Persisted synchronously")
+                
+                # ✅ NEW: Use single connection for all operations to avoid locks
+                conn = sqlite3.connect(str(self.db_path), timeout=10.0)  # Longer timeout
+                cursor = conn.cursor()
+                cursor.execute("PRAGMA busy_timeout = 10000")  # 10 second timeout
+                
+                try:
+                    # 1. Persist working memory (tool results)
+                    self._persist_working_memory_with_cursor(cursor)
+                    
+                    # 2. Persist semantic memory (entities/topics)
+                    if len(self.semantic_memory.entity_knowledge) > 0 or len(self.semantic_memory.topic_knowledge) > 0:
+                        self._persist_semantic_memory_with_cursor(cursor)
+                    
+                    # 3. Persist session metadata (focus_entities, focus_topics)
+                    self._persist_session_metadata_with_cursor(cursor)
+                    
+                    # Commit everything at once
+                    conn.commit()
+                    logger.info(f"🧠 [MemoryManager]   ✅ Persisted all memory in single transaction")
+                    
+                finally:
+                    conn.close()
+                    
             except Exception as e:
                 logger.warning(f"🧠 [MemoryManager]   ⚠️ Persistence failed: {e}")
                 # Store in a pending queue for next async opportunity
@@ -964,6 +1048,151 @@ class MemoryManager:
         await asyncio.to_thread(self._persist_working_memory_sync)
 
     @retry_on_lock(max_attempts=3, delay=0.1)
+    def _persist_semantic_memory_sync(self):
+        """Persist semantic memory (entities/topics) synchronously."""
+        if not self.db_path or not self.db_path.exists():
+            return
+
+        try:
+            conn = sqlite3.connect(str(self.db_path), timeout=5.0)
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA busy_timeout = 5000")
+
+            # Persist entities
+            entity_count = 0
+            for entity, knowledge in self.semantic_memory.entity_knowledge.items():
+                try:
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO memory_entities VALUES (?, ?, ?)
+                    """, (
+                        entity,
+                        json.dumps(knowledge),
+                        knowledge.get("last_updated", datetime.now(UTC).isoformat())
+                    ))
+                    entity_count += 1
+                except Exception as e:
+                    logger.warning(f"🧠 [MemoryManager] Failed to persist entity {entity}: {e}")
+
+            # Persist topics
+            topic_count = 0
+            for topic, knowledge in self.semantic_memory.topic_knowledge.items():
+                try:
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO memory_topics VALUES (?, ?, ?)
+                    """, (
+                        topic,
+                        json.dumps(knowledge),
+                        knowledge.get("last_updated", datetime.now(UTC).isoformat())
+                    ))
+                    topic_count += 1
+                except Exception as e:
+                    logger.warning(f"🧠 [MemoryManager] Failed to persist topic {topic}: {e}")
+
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"🧠 [MemoryManager] Persisted {entity_count} entities, {topic_count} topics to database")
+            
+        except Exception as e:
+            logger.error(f"🧠 [MemoryManager] Failed to persist semantic memory: {e}")
+
+    def _persist_working_memory_with_cursor(self, cursor):
+        """Persist working memory using provided cursor (no new connection)."""
+        if not hasattr(self, '_persisted_tool_hashes'):
+            self._persisted_tool_hashes = set()
+        
+        persisted_count = 0
+        for tool_result in self.working_memory.recent_tool_results:
+            try:
+                result_hash = hashlib.md5(
+                    f"{tool_result['tool_name']}_{tool_result['timestamp']}_{tool_result.get('query', '')}".encode()
+                ).hexdigest()
+                
+                if result_hash in self._persisted_tool_hashes:
+                    continue
+                
+                cursor.execute("""
+                    INSERT OR IGNORE INTO memory_working(session_id, tool_name, query, result, summary, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    self.session_id,
+                    tool_result["tool_name"],
+                    tool_result.get("query", ""),
+                    json.dumps(tool_result["result"]),
+                    tool_result["summary"],
+                    tool_result["timestamp"]
+                ))
+                
+                self._persisted_tool_hashes.add(result_hash)
+                persisted_count += 1
+                
+            except Exception as e:
+                logger.warning(f"🧠 [MemoryManager] Failed to persist tool result: {e}")
+                continue
+        
+        if persisted_count > 0:
+            logger.info(f"🧠 [MemoryManager]   Persisted {persisted_count} tool results")
+
+    def _persist_semantic_memory_with_cursor(self, cursor):
+        """Persist semantic memory using provided cursor (no new connection)."""
+        # Persist entities
+        entity_count = 0
+        for entity, knowledge in self.semantic_memory.entity_knowledge.items():
+            try:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO memory_entities VALUES (?, ?, ?)
+                """, (
+                    entity,
+                    json.dumps(knowledge),
+                    knowledge.get("last_updated", datetime.now(UTC).isoformat())
+                ))
+                entity_count += 1
+            except Exception as e:
+                logger.warning(f"🧠 [MemoryManager] Failed to persist entity: {e}")
+        
+        # Persist topics
+        topic_count = 0
+        for topic, knowledge in self.semantic_memory.topic_knowledge.items():
+            try:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO memory_topics VALUES (?, ?, ?)
+                """, (
+                    topic,
+                    json.dumps(knowledge),
+                    knowledge.get("last_updated", datetime.now(UTC).isoformat())
+                ))
+                topic_count += 1
+            except Exception as e:
+                logger.warning(f"🧠 [MemoryManager] Failed to persist topic: {e}")
+        
+        if entity_count > 0 or topic_count > 0:
+            logger.info(f"🧠 [MemoryManager]   Persisted {entity_count} entities, {topic_count} topics")
+
+    def _persist_session_metadata_with_cursor(self, cursor):
+        """Persist session metadata using provided cursor (no new connection)."""
+        try:
+            cursor.execute("""
+                INSERT INTO memory_sessions(session_id, user_intent, focus_entities, focus_topics, last_updated)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    user_intent = excluded.user_intent,
+                    focus_entities = excluded.focus_entities,
+                    focus_topics = excluded.focus_topics,
+                    last_updated = excluded.last_updated
+            """, (
+                self.session_id,
+                self.working_memory.user_intent,
+                json.dumps(self.working_memory.focus_entities),
+                json.dumps(self.working_memory.focus_topics),
+                datetime.now(UTC).isoformat()
+            ))
+            
+            logger.info(f"🧠 [MemoryManager]   Persisted session metadata (focus: {len(self.working_memory.focus_entities)} entities)")
+            
+        except Exception as e:
+            logger.error(f"🧠 [MemoryManager] Failed to persist session metadata: {e}")
+
+    @retry_on_lock(max_attempts=3, delay=0.1)
     def _persist_session_metadata_sync(self):
         """Persist session metadata (synchronous - called via asyncio.to_thread)."""
         if not self.db_path or not self.db_path.exists():
@@ -1257,5 +1486,120 @@ class MemoryManager:
             except Exception as e:
                 logger.error(f"🧠 [MemoryManager] Failed to load topic knowledge: {e}")
         
+        finally:
+            conn.close()
+    
+    def _reload_semantic_knowledge(self):
+        """
+        Force reload entity and topic knowledge from database.
+        ✅ FIX: Used after interrupt resume to ensure semantic memory is populated.
+        """
+        if not self.db_path or not self.db_path.exists():
+            logger.warning(f"🧠 [MemoryManager] Cannot reload: database not found")
+            return
+        
+        logger.info(f"🧠 [MemoryManager] Force reloading semantic knowledge from database...")
+        
+        conn = sqlite3.connect(str(self.db_path), timeout=5.0)
+        cursor = conn.cursor()
+        
+        try:
+            # Reload entities
+            cursor.execute("SELECT entity, knowledge FROM memory_entities")
+            entity_rows = cursor.fetchall()
+            entity_count = 0
+            for row in entity_rows:
+                try:
+                    entity, knowledge_json = row
+                    knowledge = json.loads(knowledge_json)
+                    self.semantic_memory.entity_knowledge[entity] = knowledge
+                    entity_count += 1
+                except Exception as e:
+                    logger.warning(f"🧠 [MemoryManager] Failed to reload entity: {e}")
+            
+            # Reload topics  
+            cursor.execute("SELECT topic, knowledge FROM memory_topics")
+            topic_rows = cursor.fetchall()
+            topic_count = 0
+            for row in topic_rows:
+                try:
+                    topic, knowledge_json = row
+                    knowledge = json.loads(knowledge_json)
+                    self.semantic_memory.topic_knowledge[topic] = knowledge
+                    topic_count += 1
+                except Exception as e:
+                    logger.warning(f"🧠 [MemoryManager] Failed to reload topic: {e}")
+            
+            logger.info(f"🧠 [MemoryManager] ✅ Force reloaded: {entity_count} entities, {topic_count} topics")
+            
+        except Exception as e:
+            logger.error(f"🧠 [MemoryManager] Failed to reload semantic knowledge: {e}")
+        finally:
+            conn.close()
+    
+    def _reload_working_memory_sync(self):
+        """
+        Force reload working memory tool results from database.
+        ✅ FIX: Called after interrupts to ensure tool results are available.
+        """
+        if not self.db_path or not self.db_path.exists():
+            logger.warning(f"🧠 [MemoryManager] Cannot reload working memory: database not found")
+            return
+        
+        logger.info(f"🧠 [MemoryManager] Force reloading working memory from database...")
+        
+        conn = sqlite3.connect(str(self.db_path), timeout=5.0)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("""
+                SELECT tool_name, query, result, summary, timestamp
+                FROM memory_working
+                WHERE session_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+            """, (self.session_id, self.working_memory.max_tool_results))
+            
+            # Clear current results
+            self.working_memory.recent_tool_results.clear()
+            
+            # Reload from database
+            tool_count = 0
+            for row in cursor.fetchall():
+                try:
+                    tool_result = {
+                        "tool_name": row[0],
+                        "query": row[1],
+                        "result": json.loads(row[2]),
+                        "summary": row[3],
+                        "timestamp": row[4]
+                    }
+                    self.working_memory.recent_tool_results.append(tool_result)
+                    tool_count += 1
+                except Exception as e:
+                    logger.warning(f"🧠 [MemoryManager] Failed to reload tool result: {e}")
+            
+            logger.info(f"🧠 [MemoryManager] ✅ Force reloaded: {tool_count} tool results")
+            
+            # ✅ NEW: Reload focus_entities from memory_sessions table
+            cursor.execute("""
+                SELECT user_intent, focus_entities, focus_topics
+                FROM memory_sessions
+                WHERE session_id = ?
+            """, (self.session_id,))
+            
+            session_row = cursor.fetchone()
+            if session_row:
+                self.working_memory.user_intent = session_row[0] or ""
+                self.working_memory.focus_entities = json.loads(session_row[1]) if session_row[1] else []
+                self.working_memory.focus_topics = json.loads(session_row[2]) if session_row[2] else []
+                logger.info(f"🧠 [MemoryManager]   ✅ Reloaded focus from movesia.db:")
+                logger.info(f"🧠 [MemoryManager]     focus_entities: {self.working_memory.focus_entities}")
+                logger.info(f"🧠 [MemoryManager]     focus_topics: {self.working_memory.focus_topics}")
+            else:
+                logger.warning(f"🧠 [MemoryManager]   ⚠️ No session metadata found in movesia.db for session {self.session_id}")
+            
+        except Exception as e:
+            logger.error(f"🧠 [MemoryManager] Failed to reload working memory: {e}")
         finally:
             conn.close()

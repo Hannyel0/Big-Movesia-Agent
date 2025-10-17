@@ -8,6 +8,7 @@ from functools import wraps
 
 from langgraph.graph import StateGraph
 from langgraph.prebuilt import ToolNode
+from langgraph.errors import GraphInterrupt
 
 from react_agent.context import Context
 from react_agent.state import State, InputState
@@ -78,6 +79,11 @@ def log_node_execution(node_name: str):
                         logger.info(f"🔷 [{node_name}]   Retry count: {result['retry_count']}")
                 
                 return result
+            except GraphInterrupt as e:
+                # ✅ FIX: GraphInterrupt is expected for human-in-the-loop - don't log as error
+                logger.info(f"🔷 [{node_name}] ===== PAUSED FOR APPROVAL =====")
+                logger.info(f"🔷 [{node_name}]   Waiting for user approval")
+                raise  # Re-raise to let LangGraph handle it
             except Exception as e:
                 logger.error(f"🔷 [{node_name}] ===== FAILED =====")
                 logger.error(f"🔷 [{node_name}]   Error: {str(e)}", exc_info=True)
