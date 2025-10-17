@@ -139,10 +139,7 @@ class SemanticMemory:
         self.failure_patterns: List[str] = []
         self.optimization_patterns: List[str] = []
         
-        # Knowledge graph: subject -> [(predicate, object, confidence)]
-        self.knowledge_graph: Dict[str, List[tuple]] = defaultdict(list)
-        
-        # Legacy knowledge bases
+        # Knowledge bases
         self.entity_knowledge: Dict[str, Dict[str, Any]] = {}
         self.topic_knowledge: Dict[str, Dict[str, Any]] = {}
         
@@ -338,68 +335,22 @@ class SemanticMemory:
         existing["last_updated"] = datetime.now(UTC).isoformat()
     
     def _init_storage(self):
-        """Initialize persistent storage."""
+        """Verify database connection - tables are created by frontend."""
+        if not self.storage_path or not self.storage_path.exists():
+            logger.warning(f"Database not found at {self.storage_path}")
+            return
+        
+        # Just verify we can connect - don't create any tables
         conn = sqlite3.connect(str(self.storage_path))
-        
-        # Facts table
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS facts (
-                fact_id TEXT PRIMARY KEY,
-                category TEXT NOT NULL,
-                subject TEXT NOT NULL,
-                predicate TEXT NOT NULL,
-                object TEXT NOT NULL,
-                confidence REAL NOT NULL,
-                evidence_count INTEGER NOT NULL,
-                first_seen TEXT NOT NULL,
-                last_updated TEXT NOT NULL,
-                source TEXT NOT NULL
-            )
-        """)
-        
-        # Indexes for fast lookup
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_subject ON facts(subject)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_category ON facts(category)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_predicate ON facts(predicate)")
-        
-        # Patterns table (existing)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS patterns (
-                pattern_id TEXT PRIMARY KEY,
-                pattern_type TEXT NOT NULL,
-                context TEXT NOT NULL,
-                action TEXT NOT NULL,
-                outcome TEXT NOT NULL,
-                confidence REAL NOT NULL,
-                times_applied INTEGER NOT NULL,
-                success_rate REAL NOT NULL,
-                created_at TEXT NOT NULL,
-                last_updated TEXT NOT NULL,
-                data TEXT NOT NULL
-            )
-        """)
-        
-        conn.commit()
         conn.close()
     
     def _load_into_memory(self):
-        """Load facts and patterns into in-memory structures."""
+        """Load patterns and knowledge into in-memory structures."""
         conn = sqlite3.connect(str(self.storage_path))
         conn.row_factory = sqlite3.Row
         
-        # Load facts into knowledge graph
-        cursor = conn.execute("SELECT * FROM facts WHERE confidence > 0.3")
-        for row in cursor:
-            subject = row["subject"]
-            self.knowledge_graph[subject].append((
-                row["predicate"],
-                row["object"],
-                row["confidence"],
-                row["evidence_count"]
-            ))
-        
         # Load patterns
-        cursor = conn.execute("SELECT * FROM patterns")
+        cursor = conn.execute("SELECT * FROM memory_patterns")
         for row in cursor:
             try:
                 pattern_data = json.loads(row["data"])
@@ -447,143 +398,6 @@ class SemanticMemory:
             pass
         
         conn.close()
-    
-    async def learn_fact(self, fact: SemanticFact):
-        """Learn a new fact or reinforce an existing one."""
-        def _learn_fact_sync():
-            conn = sqlite3.connect(str(self.storage_path))
-            conn.row_factory = sqlite3.Row
-            
-            # Check if fact exists
-            existing = conn.execute("""
-                SELECT * FROM facts 
-                WHERE subject = ? AND predicate = ? AND object = ?
-            """, (fact.subject, fact.predicate, fact.object)).fetchone()
-            
-            if existing:
-                # Reinforce existing fact
-                new_confidence = min(1.0, existing["confidence"] + 0.1)
-                new_evidence = existing["evidence_count"] + 1
-                
-                conn.execute("""
-                    UPDATE facts 
-                    SET confidence = ?, evidence_count = ?, last_updated = ?
-                    WHERE fact_id = ?
-                """, (new_confidence, new_evidence, datetime.now(UTC).isoformat(), existing["fact_id"]))
-            else:
-                # Store new fact
-                conn.execute("""
-                    INSERT INTO facts 
-                    (fact_id, category, subject, predicate, object, confidence, 
-                     evidence_count, first_seen, last_updated, source)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    fact.fact_id, fact.category, fact.subject, fact.predicate,
-                    fact.object, fact.confidence, fact.evidence_count,
-                    fact.first_seen.isoformat(), fact.last_updated.isoformat(),
-                    fact.source
-                ))
-            
-            conn.commit()
-            conn.close()
-        
-        # Execute in separate thread to avoid blocking
-        await asyncio.to_thread(_learn_fact_sync)
-        
-        # Update in-memory graph
-        self.knowledge_graph[fact.subject].append((
-            fact.predicate, fact.object, fact.confidence, fact.evidence_count
-        ))
-    
-    async def query_knowledge(
-        self, 
-        subject: Optional[str] = None,
-        predicate: Optional[str] = None,
-        category: Optional[str] = None,
-        min_confidence: float = 0.5
-    ) -> List[SemanticFact]:
-        """Query the knowledge base."""
-        def _query_sync():
-            conn = sqlite3.connect(str(self.storage_path))
-            conn.row_factory = sqlite3.Row
-            
-            sql = "SELECT * FROM facts WHERE confidence >= ?"
-            params = [min_confidence]
-            
-            if subject:
-                sql += " AND subject = ?"
-                params.append(subject)
-            
-            if predicate:
-                sql += " AND predicate = ?"
-                params.append(predicate)
-            
-            if category:
-                sql += " AND category = ?"
-                params.append(category)
-            
-            sql += " ORDER BY confidence DESC, evidence_count DESC"
-            
-            cursor = conn.execute(sql, params)
-            facts = [SemanticFact.from_dict(dict(row)) for row in cursor]
-            
-            conn.close()
-            return facts
-        
-        return await asyncio.to_thread(_query_sync)
-    
-    async def get_project_profile(self) -> Dict[str, Any]:
-        """Get a summary of learned project knowledge."""
-        facts = await self.query_knowledge(category="project", min_confidence=0.6)
-        
-        profile = {
-            "common_scripts": [],
-            "frequent_components": [],
-            "project_patterns": [],
-            "total_facts": len(facts)
-        }
-        
-        for fact in facts:
-            if fact.predicate == "has_script":
-                profile["common_scripts"].append({
-                    "name": fact.object,
-                    "confidence": fact.confidence,
-                    "uses": fact.evidence_count
-                })
-            elif fact.predicate == "uses_component":
-                profile["frequent_components"].append({
-                    "component": fact.object,
-                    "confidence": fact.confidence,
-                    "frequency": fact.evidence_count
-                })
-            elif fact.predicate == "follows_pattern":
-                profile["project_patterns"].append({
-                    "pattern": fact.object,
-                    "confidence": fact.confidence
-                })
-        
-        return profile
-    
-    async def get_user_preferences(self) -> Dict[str, Any]:
-        """Get learned user preferences."""
-        facts = await self.query_knowledge(category="user_preference", min_confidence=0.5)
-        
-        preferences = {
-            "planning_style": None,
-            "code_verbosity": None,
-            "error_handling": None,
-            "tool_preferences": []
-        }
-        
-        for fact in facts:
-            if fact.predicate == "prefers_planning":
-                preferences["planning_style"] = fact.object
-            elif fact.predicate == "prefers_verbosity":
-                preferences["code_verbosity"] = fact.object
-            elif fact.predicate == "prefers_tool":
-                preferences["tool_preferences"].append(fact.object)
-        
-        return preferences
     
     def _generate_pattern_id(self, context: str, pattern_type: str) -> str:
         """Generate unique pattern ID."""
