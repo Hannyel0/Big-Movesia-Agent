@@ -1125,21 +1125,35 @@ class MemoryManager:
                 ))
                 topic_count += 1
             except Exception as e:
-                logger.warning(f"🧠 [MemoryManager] Failed to persist topic: {e}")
+                logger.warning(f" [MemoryManager] Failed to persist topic: {e}")
         
         if entity_count > 0 or topic_count > 0:
-            logger.info(f"🧠 [MemoryManager]   Persisted {entity_count} entities, {topic_count} topics")
+            logger.info(f" [MemoryManager]   Persisted {entity_count} entities, {topic_count} topics")
 
     def _persist_session_metadata_with_cursor(self, cursor):
         """Persist session metadata using provided cursor (no new connection)."""
+        # FIX 2: Skip persisting if focus is empty after clear
+        if (not self.working_memory.focus_entities and 
+            not self.working_memory.focus_topics and
+            not self.working_memory.user_intent):
+            logger.debug(" [MemoryManager] Skipping session persist - no meaningful data")
+            return
+        
         try:
+            # FIX 1: Prevent overwriting non-empty data with empty arrays
             cursor.execute("""
                 INSERT INTO memory_sessions(session_id, user_intent, focus_entities, focus_topics, last_updated)
                 VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET
                     user_intent = excluded.user_intent,
-                    focus_entities = excluded.focus_entities,
-                    focus_topics = excluded.focus_topics,
+                    focus_entities = CASE 
+                        WHEN excluded.focus_entities = '[]' THEN memory_sessions.focus_entities
+                        ELSE excluded.focus_entities
+                    END,
+                    focus_topics = CASE 
+                        WHEN excluded.focus_topics = '[]' THEN memory_sessions.focus_topics
+                        ELSE excluded.focus_topics
+                    END,
                     last_updated = excluded.last_updated
             """, (
                 self.session_id,
@@ -1149,15 +1163,22 @@ class MemoryManager:
                 datetime.now(UTC).isoformat()
             ))
             
-            logger.info(f"🧠 [MemoryManager]   Persisted session metadata (focus: {len(self.working_memory.focus_entities)} entities)")
+            logger.info(f" [MemoryManager]   Persisted session metadata (focus: {len(self.working_memory.focus_entities)} entities)")
             
         except Exception as e:
-            logger.error(f"🧠 [MemoryManager] Failed to persist session metadata: {e}")
+            logger.error(f" [MemoryManager] Failed to persist session metadata: {e}")
 
     @retry_on_lock(max_attempts=3, delay=0.1)
     def _persist_session_metadata_sync(self):
         """Persist session metadata (synchronous - called via asyncio.to_thread)."""
         if not self.db_path or not self.db_path.exists():
+            return
+        
+        # ✅ FIX 2: Skip persisting if focus is empty after clear
+        if (not self.working_memory.focus_entities and 
+            not self.working_memory.focus_topics and
+            not self.working_memory.user_intent):
+            logger.debug("🧠 [MemoryManager] Skipping session persist - no meaningful data")
             return
 
         try:
@@ -1166,13 +1187,20 @@ class MemoryManager:
             cursor = conn.cursor()
             cursor.execute("PRAGMA busy_timeout = 5000")
 
+            # ✅ FIX 1: Prevent overwriting non-empty data with empty arrays
             cursor.execute("""
                 INSERT INTO memory_sessions(session_id, user_intent, focus_entities, focus_topics, last_updated)
                 VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET
-                    user_intent = COALESCE(excluded.user_intent, memory_sessions.user_intent),
-                    focus_entities = COALESCE(excluded.focus_entities, memory_sessions.focus_entities),
-                    focus_topics = COALESCE(excluded.focus_topics, memory_sessions.focus_topics),
+                    user_intent = excluded.user_intent,
+                    focus_entities = CASE 
+                        WHEN excluded.focus_entities = '[]' THEN memory_sessions.focus_entities
+                        ELSE excluded.focus_entities
+                    END,
+                    focus_topics = CASE 
+                        WHEN excluded.focus_topics = '[]' THEN memory_sessions.focus_topics
+                        ELSE excluded.focus_topics
+                    END,
                     last_updated = excluded.last_updated
             """, (
                 self.session_id,

@@ -203,6 +203,8 @@ async def get_memory_manager(config: Optional[Dict[str, Any]] = None):
     if _global_memory:
         current_thread = getattr(_global_memory, 'session_id', 'unknown')
         print(f"   Current thread: {current_thread}")
+        print(f"   ⚠️  REUSING: {current_thread == thread_id}")  # ✅ NEW
+        print(f"   🆕 NEW SESSION: {current_thread != thread_id}")  # ✅ NEW
         if hasattr(_global_memory, 'working_memory'):
             tool_count = len(_global_memory.working_memory.recent_tool_results)
             print(f"   Stored tool results: {tool_count}")
