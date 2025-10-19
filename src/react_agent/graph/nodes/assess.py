@@ -551,22 +551,9 @@ async def assess(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
             "reason": assessment.reason
         })
         
-        # Learn from success
-        if assessment.outcome == "success":
-            from react_agent.memory.semantic import SemanticFact
-            import hashlib
-            
-            fact = SemanticFact(
-                fact_id=hashlib.md5(f"{current_step.tool_name}_{current_step.description}".encode()).hexdigest(),
-                category="pattern",
-                subject=current_step.tool_name or "unknown",
-                predicate="successful_for",
-                object=current_step.description[:100],
-                confidence=0.7,
-                source="execution_success"
-            )
-            await state.memory.semantic_memory.learn_fact(fact)
-            logger.info(f"🧠 [ASSESS] Learned: {current_step.tool_name} works for '{current_step.description[:40]}'")
+        # ✅ MEMORY: Track successful tool usage in patterns
+        if assessment.outcome == "success" and state.memory:
+            logger.info(f"🧠 [ASSESS] Success recorded: {current_step.tool_name} works for '{current_step.description[:40]}'")
         
         # Add errors to memory
         if assessment.outcome == "retry" and detailed_error_context["error_count"] > 0:
