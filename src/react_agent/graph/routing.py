@@ -214,23 +214,35 @@ def route_after_tools(state: State) -> Literal["check_file_approval", "assess"]:
             
             # Extract query from the preceding AIMessage
             query = ""
+            args = {}
             for msg in reversed(state.messages):
                 if isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls') and msg.tool_calls:
                     for tc in msg.tool_calls:
                         if tc.get("name") == tool_name:
                             args = tc.get("args", {})
-                            query = (args.get("query", "") or 
-                                   args.get("sql_query", "") or 
-                                   args.get("natural_query", "") or 
-                                   str(args)[:100])
+                            
+                            # ✅ FIX: Check for query_description specifically for search_project
+                            if tool_name == "search_project":
+                                query = args.get("query_description", "")
+                            else:
+                                query = (args.get("query", "") or 
+                                       args.get("sql_query", "") or 
+                                       args.get("natural_query", "") or
+                                       args.get("description", ""))
+                            
+                            # Only fallback to str() if still empty
+                            if not query:
+                                query = str(args)[:100]
                             break
                     if query:
                         break
             
             logger.info(f"🧠 [ROUTER]   Query: {query[:80]}")
+            logger.info(f"🧠 [ROUTER]   Args keys: {list(args.keys())}")
             
             # Store in memory (using sync wrapper for non-async routing context)
-            state.memory.add_tool_call_sync(tool_name, {"query": query}, result)
+            # ✅ FIX: Pass full args dict, not just {"query": query}
+            state.memory.add_tool_call_sync(tool_name, args, result)
             
             # ✅ FIX: Update focus with actual filename after file operations
             if tool_name == "file_operation" and result.get("success"):

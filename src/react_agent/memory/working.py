@@ -357,53 +357,56 @@ def extract_entities_from_state(state: State) -> List[str]:
 
 def extract_topics_from_state(state: State) -> List[str]:
     """
-    Extract topics (Unity concepts) from current state.
+    Extract topics from current state using comprehensive topic extractor.
+    
+    Analyzes plan, steps, and recent messages to identify relevant topics.
     
     Args:
         state: Current agent state
         
     Returns:
-        List of topic keywords
+        List of topic keywords (up to 10 most relevant)
     """
-    topics = set()
+    from react_agent.memory.topic_extractor import extract_topics_simple
     
-    # Unity/game dev topic keywords
-    topic_keywords = {
-        "movement": ["move", "movement", "walk", "run", "jump", "player"],
-        "input": ["input", "keyboard", "mouse", "controller", "button"],
-        "physics": ["physics", "rigidbody", "collider", "collision", "force"],
-        "animation": ["animation", "animator", "anim", "animate"],
-        "ui": ["ui", "menu", "button", "canvas", "panel", "text"],
-        "audio": ["audio", "sound", "music", "sfx"],
-        "camera": ["camera", "view", "perspective"],
-        "ai": ["ai", "enemy", "npc", "pathfinding", "navmesh"],
-        "scene": ["scene", "level", "load", "transition"],
-        "prefab": ["prefab", "instantiate", "spawn"],
-        "shader": ["shader", "material", "graphics", "rendering"],
-        "error": ["error", "fix", "debug", "problem", "compilation"],
-    }
+    all_topics = set()
     
-    # Extract from plan
+    # Extract from plan goal
+    if state.plan and state.plan.goal:
+        topics = extract_topics_simple(
+            query=state.plan.goal,
+            tool_name="plan_goal",
+            result_summary=""
+        )
+        all_topics.update(topics)
+    
+    # Extract from plan steps
     if state.plan:
-        goal_lower = state.plan.goal.lower()
-        for topic, keywords in topic_keywords.items():
-            if any(kw in goal_lower for kw in keywords):
-                topics.add(topic)
-        
         for step in state.plan.steps:
-            desc_lower = step.description.lower()
-            for topic, keywords in topic_keywords.items():
-                if any(kw in desc_lower for kw in keywords):
-                    topics.add(topic)
+            topics = extract_topics_simple(
+                query=step.description,
+                tool_name=step.tool_name,
+                result_summary=step.success_criteria
+            )
+            all_topics.update(topics)
     
-    # Extract from recent messages
+    # Extract from recent messages (last 3)
     for msg in state.messages[-3:]:
-        content_lower = get_message_text(msg).lower()
-        for topic, keywords in topic_keywords.items():
-            if any(kw in content_lower for kw in keywords):
-                topics.add(topic)
+        content = get_message_text(msg)
+        if content and len(content) > 10:  # Skip very short messages
+            topics = extract_topics_simple(
+                query=content,
+                tool_name="message",
+                result_summary=""
+            )
+            all_topics.update(topics)
     
-    return list(topics)
+    result = list(all_topics)[:10]  # Limit to top 10 most relevant
+    
+    if result:
+        print(f"🔖 [TopicExtraction] Extracted {len(result)} topics from state: {result}")
+    
+    return result
 
 
 def extract_entities_from_request(request: str) -> List[str]:
@@ -430,26 +433,19 @@ def extract_entities_from_request(request: str) -> List[str]:
 
 
 def extract_topics_from_request(request: str) -> List[str]:
-    """Extract topics from a user request string."""
-    topics = []
+    """
+    Extract topics from a user request using the comprehensive topic extractor.
     
-    topic_keywords = {
-        "movement": ["move", "movement", "walk", "run", "jump", "player"],
-        "input": ["input", "keyboard", "mouse", "controller", "button"],
-        "physics": ["physics", "rigidbody", "collider", "collision"],
-        "animation": ["animation", "animator", "anim"],
-        "ui": ["ui", "menu", "button", "canvas"],
-        "audio": ["audio", "sound", "music"],
-        "camera": ["camera", "view"],
-        "ai": ["ai", "enemy", "npc", "pathfinding"],
-        "scene": ["scene", "level"],
-        "prefab": ["prefab", "instantiate"],
-    }
+    This now uses the same extraction logic as tool results for consistency.
+    """
+    from react_agent.memory.topic_extractor import extract_topics_simple
     
-    request_lower = request.lower()
-    for topic, keywords in topic_keywords.items():
-        if any(kw in request_lower for kw in keywords):
-            topics.append(topic)
+    # Use the comprehensive topic extractor
+    topics = extract_topics_simple(
+        query=request,
+        tool_name="user_request",  # Special tool name for user requests
+        result_summary=""  # No result summary for initial requests
+    )
     
     return topics
 

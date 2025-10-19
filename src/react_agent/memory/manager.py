@@ -275,21 +275,45 @@ class MemoryManager:
         if entity_count > 0:
             logger.info(f"🧠 [MemoryManager]   ✅ Stored knowledge for {entity_count} entities")
         
-        # ✅ NEW: Extract and store topic knowledge from queries
+        # ✅ SIMPLE: Extract topics using synchronous keyword matching
+        from react_agent.memory.topic_extractor import extract_topics_simple
+        
+        logger.info(f"🧠 [MemoryManager] 🔍 Extracting topics from query (async)")
+        
         # ✅ FIX: Better query extraction for file operations
         if tool_name == "file_operation":
             # Extract meaningful context from file operation
             file_path = args.get("file_path", "")
             operation = args.get("operation", "")
             query_text = f"{operation} {file_path}"  # Clean semantic text
+            logger.info(f"🧠 [MemoryManager]   Query text (file_operation): {query_text}")
         else:
-            query_text = args.get("query", "") or args.get("query_description", "") or args.get("natural_query", "")
+            # Try multiple possible query field names
+            query_text = (
+                args.get("query", "") or 
+                args.get("query_description", "") or 
+                args.get("natural_query", "") or
+                args.get("description", "") or
+                args.get("sql_query", "")
+            )
+            logger.info(f"🧠 [MemoryManager]   Query text (other): {query_text}")
+            logger.info(f"🧠 [MemoryManager]   Checked fields: query, query_description, natural_query, description, sql_query")
+        
+        logger.info(f"🧠 [MemoryManager]   Final query_text: '{query_text}'")
+        logger.info(f"🧠 [MemoryManager]   Query length: {len(query_text)}")
         
         if query_text:
-            topic_keywords = ["movement", "ui", "physics", "animation", "audio", "input", "player", "enemy", "camera", "inventory"]
-            topics_found = []
-            for topic in topic_keywords:
-                if topic in query_text.lower():
+            try:
+                # Simple synchronous extraction (works in async context too)
+                result_summary = result.get("summary", "") if isinstance(result, dict) else str(result)[:200]
+                topics_found = extract_topics_simple(
+                    query=query_text,
+                    tool_name=tool_name,
+                    result_summary=result_summary
+                )
+                
+                # Store extracted topics
+                for topic in topics_found:
                     topic_knowledge = {
                         "queries": [query_text[:100]],
                         "tool_used": tool_name,
@@ -298,10 +322,13 @@ class MemoryManager:
                         "query_count": 1
                     }
                     self.update_topic_knowledge(topic, topic_knowledge)
-                    topics_found.append(topic)
-            
-            if topics_found:
-                logger.info(f"🧠 [MemoryManager]   ✅ Stored knowledge for topics: {', '.join(topics_found)}")
+                
+                if topics_found:
+                    logger.info(f"🧠 [MemoryManager]   ✅ Extracted {len(topics_found)} topics: {', '.join(topics_found)}")
+                else:
+                    logger.info(f"🧠 [MemoryManager]   ℹ️ No topics matched")
+            except Exception as e:
+                logger.error(f"🧠 [MemoryManager]   ❌ Topic extraction failed: {e}", exc_info=True)
         
         # ✅ FIXED: Async persistence
         if self.auto_persist and self.db_path:
@@ -319,6 +346,8 @@ class MemoryManager:
         """
         logger.info(f"🧠 [MemoryManager] add_tool_call_sync invoked")
         logger.info(f"🧠 [MemoryManager]   Tool: {tool_name}")
+        logger.info(f"🧠 [MemoryManager]   Args keys: {list(args.keys())}")
+        logger.info(f"🧠 [MemoryManager]   Args: {args}")
         
         # Add to episodic memory (synchronous)
         self.episodic_memory.add_tool_call(tool_name, args, result)
@@ -459,27 +488,44 @@ class MemoryManager:
         else:
             logger.warning(f"🧠 [MemoryManager]   ⚠️ No entities extracted from this tool call")
         
-        # ✅ EXTRACT TOPICS: Extract and store topic knowledge from queries
+        # ✅ SIMPLE: Extract topics using synchronous keyword matching
+        from react_agent.memory.topic_extractor import extract_topics_simple
+        
         logger.info(f"🧠 [MemoryManager] 🔍 Extracting topics from query")
+        
         # ✅ FIX: Better query extraction for file operations
         if tool_name == "file_operation":
-            # Extract meaningful context from file operation
             file_path = args.get("file_path", "")
             operation = args.get("operation", "")
             query_text = f"{operation} {file_path}"  # Clean semantic text
+            logger.info(f"🧠 [MemoryManager]   Query text (file_operation): {query_text}")
         else:
-            query_text = args.get("query", "") or args.get("query_description", "") or args.get("natural_query", "")
-        logger.info(f"🧠 [MemoryManager]   Query text: {query_text[:100]}")
+            # Try multiple possible query field names
+            query_text = (
+                args.get("query", "") or 
+                args.get("query_description", "") or 
+                args.get("natural_query", "") or
+                args.get("description", "") or
+                args.get("sql_query", "")
+            )
+            logger.info(f"🧠 [MemoryManager]   Query text (other): {query_text}")
+            logger.info(f"🧠 [MemoryManager]   Checked fields: query, query_description, natural_query, description, sql_query")
+        
+        logger.info(f"🧠 [MemoryManager]   Final query_text: '{query_text}'")
+        logger.info(f"🧠 [MemoryManager]   Query length: {len(query_text)}")
         
         if query_text:
-            topic_keywords = ["movement", "ui", "physics", "animation", "audio", "input", "player", "enemy", "camera", "inventory", "script", "scripts"]
-            logger.info(f"🧠 [MemoryManager]   Checking against {len(topic_keywords)} topic keywords")
-            
-            topics_found = []
-            for topic in topic_keywords:
-                if topic in query_text.lower():
-                    logger.info(f"🧠 [MemoryManager]   ✅ Found topic: {topic}")
-                    
+            try:
+                # Simple synchronous extraction (no async/event loop issues)
+                result_summary = result.get("summary", "") if isinstance(result, dict) else str(result)[:200]
+                topics_found = extract_topics_simple(
+                    query=query_text,
+                    tool_name=tool_name,
+                    result_summary=result_summary
+                )
+                
+                # Store extracted topics
+                for topic in topics_found:
                     topic_knowledge = {
                         "queries": [query_text[:100]],
                         "tool_used": tool_name,
@@ -487,22 +533,14 @@ class MemoryManager:
                         "success": result.get("success", True) if isinstance(result, dict) else True,
                         "query_count": 1
                     }
-                    logger.info(f"🧠 [MemoryManager]   Storing topic: {topic}")
-                    logger.info(f"🧠 [MemoryManager]   Knowledge: {topic_knowledge}")
-                    
                     self.update_topic_knowledge(topic, topic_knowledge)
-                    topics_found.append(topic)
-                    logger.info(f"🧠 [MemoryManager]   ✅ Topic stored successfully")
-            
-            if topics_found:
-                logger.info(f"🧠 [MemoryManager]   ✅ Stored knowledge for topics: {', '.join(topics_found)}")
-                logger.info(f"🧠 [MemoryManager]   📊 Total topics in memory: {len(self.semantic_memory.topic_knowledge)}")
-                # Log all topics
-                topics_list = list(self.semantic_memory.topic_knowledge.keys())
-                for topic in topics_list:
-                    logger.info(f"🧠 [MemoryManager]     - {topic}")
-            else:
-                logger.info(f"🧠 [MemoryManager]   ℹ️ No matching topics found in query")
+                
+                if topics_found:
+                    logger.info(f"🧠 [MemoryManager]   ✅ Extracted {len(topics_found)} topics: {', '.join(topics_found)}")
+                else:
+                    logger.info(f"🧠 [MemoryManager]   ℹ️ No topics matched")
+            except Exception as e:
+                logger.error(f"🧠 [MemoryManager]   ❌ Topic extraction failed: {e}", exc_info=True)
         else:
             logger.warning(f"🧠 [MemoryManager]   ⚠️ No query text to extract topics from")
         
