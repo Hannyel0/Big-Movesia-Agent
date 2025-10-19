@@ -141,7 +141,7 @@ Create a smart, streamlined plan that efficiently solves this specific request."
 TOOL PURPOSE CLARIFICATION:
 **search_project**: Query indexed Unity project database using natural language
 **code_snippets**: Semantic search through C# scripts by functionality
-**file_operation**: Safe file I/O with validation (read/write/modify/delete/move/diff)
+**file_operation**: Safe file I/O with validation (read/write/modify/delete/move)
 **web_search**: Research external Unity documentation and tutorials
 
 VALID TOOLS: search_project, code_snippets, file_operation, web_search

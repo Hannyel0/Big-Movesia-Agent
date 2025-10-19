@@ -205,7 +205,7 @@ TOOL USAGE CLARIFICATION:
 - Use to discover implementations and patterns in the project
 - Use when you need to understand how something is already coded
 
-**file_operation**: Safe file I/O with validation and diff previews
+**file_operation**: Safe file I/O with validation and approval flow
 - Use to read existing scripts and understand current implementations
 - Use to write new files or modify existing ones safely
 - Use with validate_only=True to preview changes before applying

@@ -354,7 +354,7 @@ def _search_filesystem(
 
 @tool
 async def file_operation(
-    operation: Literal["read", "write", "modify", "delete", "move", "diff"],
+    operation: Literal["read", "write", "modify", "delete", "move"],
     file_path: str,
     config: RunnableConfig,
     content: Optional[str] = None,
@@ -372,7 +372,7 @@ async def file_operation(
     triggers human approval in the graph routing logic.
     
     Args:
-        operation: Type of operation (read/write/modify/delete/move/diff)
+        operation: Type of operation (read/write/modify/delete/move)
         file_path: Target file path (can be partial like "test4073" or full like "Assets/Scripts/test4073.cs")
         content: Content for write/modify operations
         modification_spec: Specification for surgical edits
@@ -465,11 +465,6 @@ async def file_operation(
     # Route to appropriate handler (EXISTING CODE CONTINUES)
     if operation == "read":
         return await _file_read(abs_path, resolved_path)
-    
-    elif operation == "diff":
-        if not content:
-            return {"success": False, "error": "Content required for diff operation"}
-        return await _file_diff(abs_path, resolved_path, content)
     
     elif operation == "write":
         if not content:
@@ -696,41 +691,6 @@ async def _file_move_prepare(abs_path: Path, new_abs_path: Path, rel_path: str, 
             "to_path": new_rel_path
         }
     }
-
-
-async def _file_diff(abs_path: Path, rel_path: str, new_content: str) -> Dict[str, Any]:
-    """Generate diff without modifying file - no approval needed."""
-    # Check existence in thread pool
-    exists = await asyncio.to_thread(abs_path.exists)
-    if not exists:
-        return {
-            "success": True,
-            "operation": "diff",
-            "file_path": rel_path,
-            "file_exists": False,
-            "diff": f"New file would be created:\n{new_content}"
-        }
-    
-    try:
-        # Read file in thread pool
-        old_content = await asyncio.to_thread(abs_path.read_text, encoding="utf-8")
-        unified_diff = "\n".join(difflib.unified_diff(
-            old_content.splitlines(keepends=True),
-            new_content.splitlines(keepends=True),
-            fromfile=f"{rel_path} (current)",
-            tofile=f"{rel_path} (proposed)",
-            lineterm=""
-        ))
-        
-        return {
-            "success": True,
-            "operation": "diff",
-            "file_path": rel_path,
-            "diff": unified_diff,
-            "changes_detected": bool(unified_diff)
-        }
-    except Exception as e:
-        return {"success": False, "error": f"Failed to generate diff: {str(e)}"}
 
 
 def _detect_language(file_path: str) -> str:

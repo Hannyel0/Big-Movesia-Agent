@@ -30,7 +30,7 @@ TOOL_METADATA = {
         "cost": "low",
         "reliability": "very_high",
         "best_for": ["reading files", "writing scripts", "modifying code", "file manipulation"],
-        "description": "Safe file I/O with validation and diff generation"
+        "description": "Safe file I/O with validation and approval flow"
     },
     "web_search": {
         "category": "information_retrieval",
