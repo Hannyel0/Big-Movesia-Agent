@@ -242,16 +242,8 @@ def route_after_tools(state: State) -> Literal["check_file_approval", "assess"]:
             
             # Store in memory (using sync wrapper for non-async routing context)
             # ✅ FIX: Pass full args dict, not just {"query": query}
+            # Note: add_tool_call_sync now handles entity extraction and focus updates automatically
             state.memory.add_tool_call_sync(tool_name, args, result)
-            
-            # ✅ FIX: Update focus with actual filename after file operations
-            if tool_name == "file_operation" and result.get("success"):
-                actual_file = result.get("file_path") or result.get("pending_operation", {}).get("rel_path")
-                if actual_file:
-                    # Normalize to lowercase for consistent matching
-                    actual_file_normalized = actual_file.lower()
-                    state.memory.update_focus_sync([actual_file_normalized], [])
-                    logger.info(f"🧠 [ROUTER]   ✅ Updated focus with actual filename: {actual_file_normalized}")
             
             # ✅ FIX: Persist immediately to survive interrupts
             if state.memory and state.memory.auto_persist:

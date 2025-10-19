@@ -220,72 +220,11 @@ class MemoryManager:
             latest = self.working_memory.recent_tool_results[-1]
             logger.info(f"🧠 [MemoryManager]   Latest: {latest['summary']}")
         
-        # ✅ NEW: Extract and store entity knowledge from tool results
-        entity_count = 0
-        if tool_name == "search_project" and result.get("success"):
-            results = result.get("results", [])
-            for item in results[:5]:  # Store knowledge about top 5 results
-                entity = item.get("path") or item.get("name")
-                if entity:
-                    # ✅ FIX: Normalize to lowercase for consistent storage
-                    entity = entity.lower()
-                    
-                    knowledge = {
-                        "type": item.get("kind", "asset"),
-                        "size": item.get("size"),
-                        "last_accessed": datetime.now(UTC).isoformat(),
-                        "access_count": 1
-                    }
-                    self.update_entity_knowledge(entity, knowledge)
-                    entity_count += 1
-        
-        elif tool_name == "code_snippets" and result.get("success"):
-            snippets = result.get("snippets", [])
-            for snippet in snippets[:5]:
-                entity = snippet.get("file_path")
-                if entity:
-                    # ✅ FIX: Normalize to lowercase for consistent storage
-                    entity = entity.lower()
-                    
-                    knowledge = {
-                        "type": "script",
-                        "language": "csharp",
-                        "last_accessed": datetime.now(UTC).isoformat(),
-                        "functionality": snippet.get("description", "")[:100]
-                    }
-                    self.update_entity_knowledge(entity, knowledge)
-                    entity_count += 1
-        
-        elif tool_name == "file_operation" and result.get("success"):
-            # ✅ FIX: Check both top-level and pending_operation for file path
-            file_path = result.get("file_path") or result.get("pending_operation", {}).get("rel_path")
-            if file_path:
-                # ✅ FIX: Normalize to lowercase for consistent storage
-                file_path = file_path.lower()
-                
-                knowledge = {
-                    "type": "file",
-                    "operation": result.get("operation") or result.get("pending_operation", {}).get("operation", "unknown"),
-                    "last_modified": datetime.now(UTC).isoformat(),
-                    "modification_count": 1
-                }
-                self.update_entity_knowledge(file_path, knowledge)
-                entity_count += 1
-        
-        if entity_count > 0:
-            logger.info(f"🧠 [MemoryManager]   ✅ Stored knowledge for {entity_count} entities")
-        
-        # ✅ SIMPLE: Extract topics using synchronous keyword matching
-        from react_agent.memory.topic_extractor import extract_topics_simple
-        
-        logger.info(f"🧠 [MemoryManager] 🔍 Extracting topics from query (async)")
-        
-        # ✅ FIX: Better query extraction for file operations
+        # ✅ FIX: Extract query_text FIRST, before using it
         if tool_name == "file_operation":
-            # Extract meaningful context from file operation
+            operation = args.get("operation", "unknown")
             file_path = args.get("file_path", "")
-            operation = args.get("operation", "")
-            query_text = f"{operation} {file_path}"  # Clean semantic text
+            query_text = f"{operation} {file_path}"  # e.g., "write Assets/Scripts/test7284.cs"
             logger.info(f"🧠 [MemoryManager]   Query text (file_operation): {query_text}")
         else:
             # Try multiple possible query field names
@@ -297,10 +236,57 @@ class MemoryManager:
                 args.get("sql_query", "")
             )
             logger.info(f"🧠 [MemoryManager]   Query text (other): {query_text}")
-            logger.info(f"🧠 [MemoryManager]   Checked fields: query, query_description, natural_query, description, sql_query")
         
         logger.info(f"🧠 [MemoryManager]   Final query_text: '{query_text}'")
-        logger.info(f"🧠 [MemoryManager]   Query length: {len(query_text)}")
+        
+        # ✅ EXTRACT ENTITIES: Use smart extractor with tool results
+        from react_agent.memory.entity_extractor import extract_entities_simple
+
+        logger.info(f"🧠 [MemoryManager] 🔍 Extracting entities from tool result (async)")
+
+        entity_count = 0
+        entities_found = extract_entities_simple(
+            text=query_text,  # Also uses query text as secondary source
+            tool_name=tool_name,
+            tool_result=result
+        )
+
+        for entity in entities_found:
+            # Entity already normalized by extractor
+            knowledge = {
+                "type": "file" if any(ext in entity for ext in [".cs", ".shader"]) else "asset",
+                "last_accessed": datetime.now(UTC).isoformat(),
+                "access_count": 1
+            }
+            
+            # Enhance with tool-specific data
+            if tool_name == "search_project" and isinstance(result, dict):
+                structured = result.get("results_structured", [])
+                for item in structured:
+                    if isinstance(item, dict):
+                        item_name = (item.get("path") or item.get("name", "")).lower()
+                        if entity in item_name:
+                            knowledge["size"] = item.get("size")
+                            knowledge["mtime"] = item.get("mtime")
+                            knowledge["type"] = item.get("kind", knowledge["type"])
+                            break
+            
+            self.update_entity_knowledge(entity, knowledge)
+            entity_count += 1
+            logger.info(f"🔍 [MemoryManager]     Stored entity: {entity}")
+
+        if entity_count > 0:
+            logger.info(f"🧠 [MemoryManager]   ✅ Stored knowledge for {entity_count} entities")
+            # ✅ FIX: Also add extracted entities to focus_entities
+            self.update_focus_sync(entities_found, [])  # Add entities to focus, keep current topics
+            logger.info(f"🧠 [MemoryManager]   ✅ Updated focus_entities with {len(entities_found)} entities")
+        else:
+            logger.warning(f"🧠 [MemoryManager]   ⚠️ No entities extracted from this tool call")
+        
+        # ✅ SIMPLE: Extract topics using synchronous keyword matching
+        from react_agent.memory.topic_extractor import extract_topics_simple
+        
+        logger.info(f"🧠 [MemoryManager] 🔍 Extracting topics from query (async)")
         
         if query_text:
             try:
@@ -325,6 +311,9 @@ class MemoryManager:
                 
                 if topics_found:
                     logger.info(f"🧠 [MemoryManager]   ✅ Extracted {len(topics_found)} topics: {', '.join(topics_found)}")
+                    # ✅ FIX: Also add extracted topics to focus_topics
+                    self.update_focus_sync([], topics_found)  # Keep current entities, add topics to focus
+                    logger.info(f"🧠 [MemoryManager]   ✅ Updated focus_topics with {len(topics_found)} topics")
                 else:
                     logger.info(f"🧠 [MemoryManager]   ℹ️ No topics matched")
             except Exception as e:
@@ -353,15 +342,27 @@ class MemoryManager:
         self.episodic_memory.add_tool_call(tool_name, args, result)
         logger.info(f"🧠 [MemoryManager]   ✅ Added to episodic memory")
         
-        # Add to working memory (synchronous)
-        # ✅ FIX: Better context for file operations
+        # ✅ FIX: Extract query_text FIRST, before using it
         if tool_name == "file_operation":
             operation = args.get("operation", "unknown")
             file_path = args.get("file_path", "")
-            query = f"{operation} {file_path}"  # e.g., "write Assets/Scripts/test7284.cs"
+            query_text = f"{operation} {file_path}"  # e.g., "write Assets/Scripts/test7284.cs"
+            logger.info(f"🧠 [MemoryManager]   Query text (file_operation): {query_text}")
         else:
-            query = args.get("query", "") or args.get("sql_query", "") or args.get("operation", "") or args.get("query_description", "")
-        self.working_memory.add_tool_result(tool_name, result, query)
+            # Try multiple possible query field names
+            query_text = (
+                args.get("query", "") or 
+                args.get("query_description", "") or 
+                args.get("natural_query", "") or
+                args.get("description", "") or
+                args.get("sql_query", "")
+            )
+            logger.info(f"🧠 [MemoryManager]   Query text (other): {query_text}")
+        
+        logger.info(f"🧠 [MemoryManager]   Final query_text: '{query_text}'")
+        
+        # Add to working memory (synchronous) - NOW query_text exists
+        self.working_memory.add_tool_result(tool_name, result, query_text)
         logger.info(f"🧠 [MemoryManager]   ✅ Added to working memory")
         
         # Log current state
@@ -385,106 +386,47 @@ class MemoryManager:
                     logger.info(f"🧠 [MemoryManager]   First result type: {type(results_data[0])}")
                     logger.info(f"🧠 [MemoryManager]   First result preview: {str(results_data[0])[:100]}")
         
-        # ✅ EXTRACT ENTITIES: Extract and store entity knowledge from tool results
+        # ✅ EXTRACT ENTITIES: Use smart extractor with tool results
+        from react_agent.memory.entity_extractor import extract_entities_simple
+
+        logger.info(f"🧠 [MemoryManager] 🔍 Extracting entities from tool result")
+
         entity_count = 0
-        
-        if tool_name == "search_project" and isinstance(result, dict) and result.get("success"):
-            logger.info(f"🧠 [MemoryManager] 🔍 Extracting entities from search_project")
+        entities_found = extract_entities_simple(
+            text=query_text,  # Also uses query text as secondary source
+            tool_name=tool_name,
+            tool_result=result
+        )
+
+        for entity in entities_found:
+            # Entity already normalized by extractor
+            knowledge = {
+                "type": "file" if any(ext in entity for ext in [".cs", ".shader"]) else "asset",
+                "last_accessed": datetime.now(UTC).isoformat(),
+                "access_count": 1
+            }
             
-            # ✅ PRIORITY: Use results_structured which has size data
-            results_structured = result.get("results_structured", [])
-            
-            if isinstance(results_structured, list) and len(results_structured) > 0:
-                logger.info(f"🔍 [MemoryManager]   Using results_structured with SIZE data: {len(results_structured)} items")
-                
-                for i, item in enumerate(results_structured[:10], 1):
+            # Enhance with tool-specific data
+            if tool_name == "search_project" and isinstance(result, dict):
+                structured = result.get("results_structured", [])
+                for item in structured:
                     if isinstance(item, dict):
-                        entity = item.get("path") or item.get("name")
-                        if entity:
-                            # ✅ FIX: Normalize to lowercase for consistent storage
-                            entity = entity.lower()
-                            logger.info(f"🔍 [MemoryManager]     Processing entity {i}: {entity}")
-                            
-                            knowledge = {
-                                "type": item.get("kind", "asset"),
-                                "size": item.get("size"),  # ✅ NOW HAS SIZE!
-                                "mtime": item.get("mtime"),
-                                "last_accessed": datetime.now(UTC).isoformat(),
-                                "access_count": 1
-                            }
-                            
-                            logger.info(f"🔍 [MemoryManager]       Knowledge: {knowledge}")
-                            self.update_entity_knowledge(entity, knowledge)
-                            entity_count += 1
-                            logger.info(f"🔍 [MemoryManager]       ✅ Entity stored with size: {item.get('size')} bytes")
-            else:
-                logger.warning(f"🧠 [MemoryManager]   ⚠️ No results_structured available")
-        
-        elif tool_name == "code_snippets" and isinstance(result, dict) and result.get("success"):
-            logger.info(f"🧠 [MemoryManager] 🔍 Extracting entities from code_snippets")
-            snippets = result.get("snippets", [])
+                        item_name = (item.get("path") or item.get("name", "")).lower()
+                        if entity in item_name:
+                            knowledge["size"] = item.get("size")
+                            knowledge["mtime"] = item.get("mtime")
+                            knowledge["type"] = item.get("kind", knowledge["type"])
+                            break
             
-            if isinstance(snippets, list):
-                logger.info(f"🧠 [MemoryManager]   Found {len(snippets)} snippets to process")
-                
-                for i, snippet in enumerate(snippets[:5], 1):
-                    logger.info(f"🧠 [MemoryManager]   Processing snippet {i}/{min(5, len(snippets))}")
-                    
-                    if isinstance(snippet, dict):
-                        entity = snippet.get("file_path")
-                        if entity:
-                            # ✅ FIX: Normalize to lowercase for consistent storage
-                            entity = entity.lower()
-                            logger.info(f"🧠 [MemoryManager]     Entity: {entity}")
-                            
-                            knowledge = {
-                                "type": "script",
-                                "language": "csharp",
-                                "last_accessed": datetime.now(UTC).isoformat(),
-                                "functionality": snippet.get("description", "")[:100]
-                            }
-                            logger.info(f"🧠 [MemoryManager]     Storing entity: {entity}")
-                            
-                            self.update_entity_knowledge(entity, knowledge)
-                            entity_count += 1
-                            logger.info(f"🧠 [MemoryManager]     ✅ Entity stored successfully")
-                    else:
-                        logger.warning(f"🧠 [MemoryManager]     ⚠️ Snippet is not dict: {type(snippet)}")
-            else:
-                logger.warning(f"🧠 [MemoryManager]   ⚠️ Snippets is not a list: {type(snippets)}")
-        
-        elif tool_name == "file_operation" and isinstance(result, dict) and result.get("success"):
-            logger.info(f"🧠 [MemoryManager] 🔍 Extracting entities from file_operation")
-            # ✅ FIX: Check both top-level and pending_operation for file path
-            file_path = result.get("file_path") or result.get("pending_operation", {}).get("rel_path")
-            logger.info(f"🧠 [MemoryManager]   File path: {file_path}")
-            
-            if file_path:
-                # ✅ FIX: Normalize to lowercase for consistent storage
-                file_path = file_path.lower()
-                
-                knowledge = {
-                    "type": "file",
-                    "operation": result.get("operation") or result.get("pending_operation", {}).get("operation", "unknown"),
-                    "last_modified": datetime.now(UTC).isoformat(),
-                    "modification_count": 1
-                }
-                logger.info(f"🧠 [MemoryManager]   Storing entity: {file_path}")
-                logger.info(f"🧠 [MemoryManager]   Knowledge: {knowledge}")
-                
-                self.update_entity_knowledge(file_path, knowledge)
-                entity_count += 1
-                logger.info(f"🧠 [MemoryManager]   ✅ Entity stored successfully")
-            else:
-                logger.warning(f"🧠 [MemoryManager]   ⚠️ No file_path in result")
-        
+            self.update_entity_knowledge(entity, knowledge)
+            entity_count += 1
+            logger.info(f"🔍 [MemoryManager]     Stored entity: {entity}")
+
         if entity_count > 0:
             logger.info(f"🧠 [MemoryManager]   ✅ Stored knowledge for {entity_count} entities")
-            logger.info(f"🧠 [MemoryManager]   📊 Total entities in memory: {len(self.semantic_memory.entity_knowledge)}")
-            # Log first 3 entities
-            entities_list = list(self.semantic_memory.entity_knowledge.keys())[:3]
-            for entity in entities_list:
-                logger.info(f"🧠 [MemoryManager]     - {entity}")
+            # ✅ FIX: Also add extracted entities to focus_entities
+            self.update_focus_sync(entities_found, [])  # Add entities to focus, keep current topics
+            logger.info(f"🧠 [MemoryManager]   ✅ Updated focus_entities with {len(entities_found)} entities")
         else:
             logger.warning(f"🧠 [MemoryManager]   ⚠️ No entities extracted from this tool call")
         
@@ -492,26 +434,7 @@ class MemoryManager:
         from react_agent.memory.topic_extractor import extract_topics_simple
         
         logger.info(f"🧠 [MemoryManager] 🔍 Extracting topics from query")
-        
-        # ✅ FIX: Better query extraction for file operations
-        if tool_name == "file_operation":
-            file_path = args.get("file_path", "")
-            operation = args.get("operation", "")
-            query_text = f"{operation} {file_path}"  # Clean semantic text
-            logger.info(f"🧠 [MemoryManager]   Query text (file_operation): {query_text}")
-        else:
-            # Try multiple possible query field names
-            query_text = (
-                args.get("query", "") or 
-                args.get("query_description", "") or 
-                args.get("natural_query", "") or
-                args.get("description", "") or
-                args.get("sql_query", "")
-            )
-            logger.info(f"🧠 [MemoryManager]   Query text (other): {query_text}")
-            logger.info(f"🧠 [MemoryManager]   Checked fields: query, query_description, natural_query, description, sql_query")
-        
-        logger.info(f"🧠 [MemoryManager]   Final query_text: '{query_text}'")
+        logger.info(f"🧠 [MemoryManager]   Using query_text: '{query_text}'")
         logger.info(f"🧠 [MemoryManager]   Query length: {len(query_text)}")
         
         if query_text:
@@ -528,8 +451,6 @@ class MemoryManager:
                 for topic in topics_found:
                     topic_knowledge = {
                         "queries": [query_text[:100]],
-                        "tool_used": tool_name,
-                        "last_queried": datetime.now(UTC).isoformat(),
                         "success": result.get("success", True) if isinstance(result, dict) else True,
                         "query_count": 1
                     }
@@ -537,6 +458,9 @@ class MemoryManager:
                 
                 if topics_found:
                     logger.info(f"🧠 [MemoryManager]   ✅ Extracted {len(topics_found)} topics: {', '.join(topics_found)}")
+                    # ✅ FIX: Also add extracted topics to focus_topics
+                    self.update_focus_sync([], topics_found)  # Keep current entities, add topics to focus
+                    logger.info(f"🧠 [MemoryManager]   ✅ Updated focus_topics with {len(topics_found)} topics")
                 else:
                     logger.info(f"🧠 [MemoryManager]   ℹ️ No topics matched")
             except Exception as e:

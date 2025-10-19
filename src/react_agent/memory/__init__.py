@@ -16,6 +16,7 @@ from react_agent.memory.working_memory import WorkingMemory
 from react_agent.memory.episodic import EpisodicMemory, Episode, EpisodeStatus
 from react_agent.memory.semantic import SemanticMemory, Pattern, SemanticFact
 from react_agent.memory.manager import MemoryManager
+from react_agent.memory.entity_extractor import extract_entities_simple, debug_extraction
 from react_agent.memory.working import (
     get_memory_manager,
     extract_entities_from_state,
@@ -39,6 +40,9 @@ __all__ = [
     "Pattern",
     "SemanticFact",
     "MemoryManager",
+    # Extraction utilities
+    "extract_entities_simple",
+    "debug_extraction",
     # Integration utilities (from working.py)
     "get_memory_manager",
     "extract_entities_from_state",

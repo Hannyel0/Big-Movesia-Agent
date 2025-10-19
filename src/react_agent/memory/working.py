@@ -21,6 +21,7 @@ from langgraph.runtime import Runtime
 
 from react_agent.context import Context
 from react_agent.utils import get_model, get_message_text
+from react_agent.memory.entity_extractor import extract_entities_simple
 
 # Avoid circular import
 if TYPE_CHECKING:
@@ -321,45 +322,44 @@ async def get_memory_manager(config: Optional[Dict[str, Any]] = None):
 def extract_entities_from_state(state: State) -> List[str]:
     """
     Extract entities (files, classes) from current state.
-    Works with both plan and messages.
     
-    Args:
-        state: Current agent state
-        
-    Returns:
-        List of entity names
+    Priority:
+    1. Use focus_entities from memory (extracted from tool results)
+    2. Fallback to extracting from plan/messages text
     """
-    entities = set()
+    # Priority 1: If memory exists and has focus_entities, use those (from tool results)
+    if state.memory and hasattr(state.memory, 'working_memory'):
+        focus_entities = state.memory.working_memory.focus_entities
+        if focus_entities:
+            return list(focus_entities)[:10]  # Return top 10
+    
+    # Priority 2: Fallback to text extraction from plan/messages
+    all_text = []
     
     # Extract from plan
     if state.plan:
+        all_text.append(state.plan.goal)
         for step in state.plan.steps:
-            desc = step.description.lower()
-            # Look for file extensions
-            words = desc.split()
-            for word in words:
-                if any(ext in word for ext in [".cs", ".unity", ".prefab", ".asset", ".mat", ".shader"]):
-                    entities.add(word.strip(".,;:\"'()[]{}"))
-                # Look for Unity class names
-                elif any(cls in word for cls in ["Controller", "Manager", "System", "Handler", "Component"]):
-                    entities.add(word.strip(".,;:\"'()[]{}"))
+            all_text.append(step.description)
     
     # Extract from recent messages
     for msg in state.messages[-3:]:
-        content = get_message_text(msg).lower()
-        words = content.split()
-        for word in words:
-            if any(ext in word for ext in [".cs", ".unity", ".prefab", ".asset"]):
-                entities.add(word.strip(".,;:\"'()[]{}"))
+        content = get_message_text(msg)
+        if content:
+            all_text.append(content)
     
-    return list(entities)
+    # Use the smart extractor
+    combined_text = " ".join(all_text)
+    return extract_entities_simple(text=combined_text)
 
 
 def extract_topics_from_state(state: State) -> List[str]:
     """
     Extract topics from current state using comprehensive topic extractor.
     
-    Analyzes plan, steps, and recent messages to identify relevant topics.
+    Priority:
+    1. Use focus_topics from memory (extracted from tool results)
+    2. Fallback to extracting from plan/messages text
     
     Args:
         state: Current agent state
@@ -367,6 +367,13 @@ def extract_topics_from_state(state: State) -> List[str]:
     Returns:
         List of topic keywords (up to 10 most relevant)
     """
+    # Priority 1: If memory exists and has focus_topics, use those (from tool results)
+    if state.memory and hasattr(state.memory, 'working_memory'):
+        focus_topics = state.memory.working_memory.focus_topics
+        if focus_topics:
+            return list(focus_topics)[:10]  # Return top 10
+    
+    # Priority 2: Fallback to text extraction from plan/messages
     from react_agent.memory.topic_extractor import extract_topics_simple
     
     all_topics = set()
@@ -410,26 +417,8 @@ def extract_topics_from_state(state: State) -> List[str]:
 
 
 def extract_entities_from_request(request: str) -> List[str]:
-    """Extract entities from a user request string."""
-    entities = []
-    
-    # Common Unity file extensions
-    extensions = [".cs", ".unity", ".prefab", ".asset", ".mat", ".shader"]
-    
-    words = request.split()
-    for word in words:
-        # Check if word contains a file extension
-        if any(ext in word.lower() for ext in extensions):
-            # ✅ FIX: Normalize and filter out template patterns
-            entity = word.strip(".,;:\"'()[]{}").lower()
-            # Don't add template patterns like test[number].cs or file[id].cs
-            if '[' not in entity and ']' not in entity:
-                entities.append(entity)
-        # Check for common Unity class names
-        elif any(cls in word for cls in ["Controller", "Manager", "System", "Handler"]):
-            entities.append(word)
-    
-    return entities
+    """Extract entities from a user request string using smart extractor."""
+    return extract_entities_simple(text=request)
 
 
 def extract_topics_from_request(request: str) -> List[str]:
