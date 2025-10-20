@@ -343,7 +343,20 @@ class MemoryManager:
         # ✅ FIX: Extract query_text FIRST, before using it
         if tool_name in ["read_file", "write_file", "modify_file", "delete_file", "move_file"]:
             file_path = args.get("file_path", "")
-            query_text = f"{tool_name} {file_path}"  # e.g., "write_file Assets/Scripts/test7284.cs"
+            
+            # ⚠️ Special handling for modify_file with Pydantic model
+            if tool_name == "modify_file" and "modification_spec" in args:
+                spec = args["modification_spec"]
+                # Extract type for logging (handle both dict and Pydantic model)
+                if isinstance(spec, dict):
+                    spec_type = spec.get("type", "unknown")
+                else:
+                    # Pydantic model - access type attribute
+                    spec_type = getattr(spec, "type", "unknown")
+                query_text = f"{tool_name} {file_path} (type: {spec_type})"
+            else:
+                query_text = f"{tool_name} {file_path}"  # e.g., "write_file Assets/Scripts/test7284.cs"
+            
             logger.info(f"🧠 [MemoryManager]   Query text (file operation): {query_text}")
         else:
             # Try multiple possible query field names

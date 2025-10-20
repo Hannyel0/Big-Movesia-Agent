@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
+from react_agent.tools.file_operation_schemas import ModificationSpec, modification_spec_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -449,17 +450,14 @@ async def write_file(
 @tool
 async def modify_file(
     file_path: str,
-    modification_spec: Dict[str, Any],
+    modification_spec: ModificationSpec,
     config: RunnableConfig,
 ) -> Dict[str, Any]:
     """Modify an existing file in the Unity project (requires approval).
     
-    Args:
-        file_path: Target file path
-        modification_spec: Specification for surgical edits
-        
-    Returns:
-        Approval request for destructive operation
+    Use structured modification specs to make precise changes to existing code.
+    Supports replace_all, insert_after, insert_before, append, and prepend operations.
+    All modifications require human approval before execution.
     """
     configurable = config.get("configurable", {})
     project_root = configurable.get("project_root")
@@ -484,7 +482,10 @@ async def modify_file(
     resolved_path = resolution["resolved_path"]
     abs_path = project_root_path / resolved_path
     
-    return await _file_modify_prepare(abs_path, resolved_path, modification_spec)
+    # ⭐ Convert Pydantic model to dict for existing implementation
+    spec_dict = modification_spec_to_dict(modification_spec)
+    
+    return await _file_modify_prepare(abs_path, resolved_path, spec_dict)
 
 
 @tool
@@ -659,6 +660,69 @@ async def _file_modify_prepare(abs_path: Path, rel_path: str, spec: Dict[str, An
                 modified_content = "\n".join(modified_lines)
                 modified_content = re.sub(pattern, replacement, modified_content)
                 modified_lines = modified_content.split("\n")
+    
+    # ✅ NEW: Handle insert_after
+    elif "insert_after" in spec:
+        target_line = spec.get("insert_after", "")
+        content_to_insert = spec.get("content_to_insert", "")
+        
+        # Find the line to insert after
+        insert_index = -1
+        for i, line in enumerate(modified_lines):
+            if target_line in line:
+                insert_index = i + 1
+                break
+        
+        if insert_index != -1:
+            # Split the content to insert into lines
+            lines_to_insert = content_to_insert.split("\n")
+            # Insert after the target line
+            modified_lines[insert_index:insert_index] = lines_to_insert
+        else:
+            logger.warning(f"✏️ [FileOp] Could not find target line: '{target_line}'")
+    
+    # ✅ NEW: Handle insert_before
+    elif "insert_before" in spec:
+        target_line = spec.get("insert_before", "")
+        content_to_insert = spec.get("content_to_insert", "")
+        
+        # Find the line to insert before
+        insert_index = -1
+        for i, line in enumerate(modified_lines):
+            if target_line in line:
+                insert_index = i
+                break
+        
+        if insert_index != -1:
+            lines_to_insert = content_to_insert.split("\n")
+            modified_lines[insert_index:insert_index] = lines_to_insert
+        else:
+            logger.warning(f"✏️ [FileOp] Could not find target line: '{target_line}'")
+    
+    # ✅ NEW: Handle append (add to end of file)
+    elif "append" in spec:
+        content_to_append = spec.get("append", "")
+        lines_to_append = content_to_append.split("\n")
+        modified_lines.extend(lines_to_append)
+    
+    # ✅ NEW: Handle prepend (add to start of file)
+    elif "prepend" in spec:
+        content_to_prepend = spec.get("prepend", "")
+        lines_to_prepend = content_to_prepend.split("\n")
+        modified_lines = lines_to_prepend + modified_lines
+    
+    # ✅ NEW: Handle full replacement
+    elif "replace_all" in spec:
+        new_content_full = spec.get("replace_all", "")
+        modified_lines = new_content_full.split("\n")
+    
+    else:
+        # ⚠️ Unknown modification spec format
+        logger.error(f"✏️ [FileOp] Unknown modification spec format: {list(spec.keys())}")
+        return {
+            "success": False,
+            "error": f"Invalid modification spec format. Must be one of: replace_all, insert_after, insert_before, append, prepend, line_ranges, pattern_replacements"
+        }
     
     new_content = "\n".join(modified_lines)
     
