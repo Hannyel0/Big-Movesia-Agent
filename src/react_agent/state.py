@@ -20,7 +20,11 @@ from react_agent.memory import MemoryManager
 ToolName = Literal[
     "search_project",    # Natural language SQL queries
     "code_snippets",     # Vector search through scripts
-    "file_operation",    # Unified file I/O
+    "read_file",         # Read file contents
+    "write_file",        # Write/create files (with approval)
+    "modify_file",       # Modify existing files (with approval)
+    "delete_file",       # Delete files (with approval)
+    "move_file",         # Move files (with approval)
     "web_search"         # External web search
 ]
 

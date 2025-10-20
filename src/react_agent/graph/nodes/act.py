@@ -239,10 +239,10 @@ def _build_conversation_context(state: State, current_step: PlanStep, user_messa
                                       f"Results include: {', '.join([r.get('name', 'unknown') for r in results[:3]])}"
                         })
                 
-                elif tool_name == "file_operation":
+                elif tool_name in ["read_file", "write_file", "modify_file", "delete_file", "move_file"]:
                     context_messages.append({
                         "role": "system",
-                        "content": f"Recent tool result: file_operation {result.get('operation', 'completed')} "
+                        "content": f"Recent tool result: {tool_name} "
                                   f"on {result.get('file_path', 'file')}"
                     })
     
@@ -679,7 +679,6 @@ def _create_rich_pre_step_narration(
     base_narrations = {
         "search_project": f"Querying indexed project data for: {current_step.description}",
         "code_snippets": f"Searching scripts semantically for: {current_step.description}",
-        "file_operation": f"Performing file operation for: {current_step.description}",
         "web_search": f"Searching Unity/Unreal resources and tutorials for: {current_step.description}",
     }
 

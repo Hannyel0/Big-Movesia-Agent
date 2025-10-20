@@ -161,8 +161,8 @@ def extract_entities_from_tool_result(
                             entities.append((normalized, EntityType.FILE))
                             logger.debug(f"    {idx}. ✅ Extracted: {normalized}")
     
-    elif tool_name == "file_operation":
-        logger.debug(f"  Checking file_operation result...")
+    elif tool_name in ["read_file", "write_file", "modify_file", "delete_file", "move_file"]:
+        logger.debug(f"  Checking {tool_name} result...")
         # Check both locations for file path
         file_path = result.get("file_path") or result.get("pending_operation", {}).get("rel_path")
         if file_path:
@@ -170,7 +170,17 @@ def extract_entities_from_tool_result(
             if normalized and not _is_template_pattern(normalized):
                 entities.append((normalized, EntityType.FILE))
                 logger.debug(f"    ✅ Extracted: {normalized}")
-        else:
+        
+        # For move_file, also extract destination path
+        if tool_name == "move_file":
+            to_path = result.get("to_path") or result.get("pending_operation", {}).get("to_path")
+            if to_path:
+                normalized = normalize_entity(to_path)
+                if normalized and not _is_template_pattern(normalized):
+                    entities.append((normalized, EntityType.FILE))
+                    logger.debug(f"    ✅ Extracted destination: {normalized}")
+        
+        if not file_path:
             logger.warning(f"    ⚠️ No file_path found in result")
     
     logger.info(f"✅ [EntityExtractor] Extracted {len(entities)} entities from {tool_name}")

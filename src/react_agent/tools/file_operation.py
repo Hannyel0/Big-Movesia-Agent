@@ -349,144 +349,223 @@ def _search_filesystem(
 
 
 # ============================================================================
-# MAIN FILE OPERATION TOOL
+# FILE OPERATION TOOLS (5 separate tools)
 # ============================================================================
 
 @tool
-async def file_operation(
-    operation: Literal["read", "write", "modify", "delete", "move"],
+async def read_file(
     file_path: str,
     config: RunnableConfig,
-    content: Optional[str] = None,
-    modification_spec: Optional[Dict[str, Any]] = None,
-    new_path: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Unified file I/O with Unity AssetDatabase integration and SMART PATH RESOLUTION.
-    
-    ✅ NEW: Automatically resolves partial paths using:
-    - SQLite database queries (fastest)
-    - Unity structure heuristics
-    - Filesystem search (fallback)
-    
-    For destructive operations, this tool returns a special response that
-    triggers human approval in the graph routing logic.
+    """Read file contents from the Unity project.
     
     Args:
-        operation: Type of operation (read/write/modify/delete/move)
         file_path: Target file path (can be partial like "test4073" or full like "Assets/Scripts/test4073.cs")
-        content: Content for write/modify operations
-        modification_spec: Specification for surgical edits
-        new_path: Destination path for move operations
         
     Returns:
-        Operation result, or approval request for destructive operations
+        File contents and metadata
     """
     configurable = config.get("configurable", {})
     project_root = configurable.get("project_root")
     sqlite_path = configurable.get("sqlite_path")
     
     if not project_root:
-        return {
-            "success": False,
-            "error": "Project root not available. Ensure Unity project is connected."
-        }
+        return {"success": False, "error": "Project root not available"}
     
     project_root_path = Path(project_root)
     sqlite_db_path = Path(sqlite_path) if sqlite_path else None
-    
-    # ✅ NEW: SMART PATH RESOLUTION
-    logger.info(f"🎯 [FileOp] Operation: {operation}")
-    logger.info(f"🎯 [FileOp] Input path: {file_path}")
     
     resolution = await _resolve_file_path(
         partial_path=file_path,
         project_root=project_root_path,
         sqlite_path=sqlite_db_path,
-        operation=operation
+        operation="read"
     )
     
-    # Handle resolution results
     if resolution.get("needs_clarification"):
-        # Multiple matches found
-        candidates = resolution.get("candidates", [])
         return {
             "success": False,
             "error": resolution.get("error", "Multiple files found"),
-            "candidates": candidates[:5],  # Show top 5
-            "suggestion": f"Please specify which file:\n" + "\n".join(f"  - {c}" for c in candidates[:5])
+            "candidates": resolution.get("candidates", [])[:5]
         }
     
     if not resolution.get("success"):
-        # No matches found
-        logger.warning(f"🎯 [FileOp] ❌ Could not resolve path: {file_path}")
-        
-        # For write/create operations, use the path as-is (creating new file)
-        if operation == "write":
-            logger.info(f"🎯 [FileOp] Write operation - will create new file")
-            resolved_path = file_path
-            # Add Assets/Scripts/ prefix if missing
-            if not resolved_path.startswith("Assets"):
-                resolved_path = f"Assets/Scripts/{resolved_path}"
-            # Add .cs extension if missing
-            if not any(resolved_path.endswith(ext) for ext in [".cs", ".txt", ".json"]):
-                resolved_path += ".cs"
-        else:
-            # For other operations, fail with helpful message
-            return {
-                "success": False,
-                "error": f"Could not find file '{file_path}' in project. Please provide the full path like 'Assets/Scripts/filename.cs' or use search_project to find it first.",
-                "suggestion": "search_first"
-            }
-    else:
-        # Successfully resolved!
-        resolved_path = resolution["resolved_path"]
-        logger.info(f"🎯 [FileOp] ✅ Resolved to: {resolved_path}")
-        logger.info(f"🎯 [FileOp] Strategy: {resolution['strategy_used']}")
-    
-    # Now use the resolved path for the actual operation
-    abs_path = project_root_path / resolved_path
-    
-    # Validate path is within project
-    try:
-        abs_path_resolved = await asyncio.to_thread(lambda: abs_path.resolve())
-        project_root_resolved = await asyncio.to_thread(lambda: Path(project_root).resolve())
-        
-        if not str(abs_path_resolved).startswith(str(project_root_resolved)):
-            return {
-                "success": False,
-                "error": f"Path {resolved_path} is outside project root"
-            }
-    except Exception as e:
         return {
             "success": False,
-            "error": f"Invalid file path: {str(e)}"
+            "error": f"Could not find file '{file_path}'"
         }
     
-    # Route to appropriate handler (EXISTING CODE CONTINUES)
-    if operation == "read":
-        return await _file_read(abs_path, resolved_path)
+    resolved_path = resolution["resolved_path"]
+    abs_path = project_root_path / resolved_path
     
-    elif operation == "write":
-        if not content:
-            return {"success": False, "error": "Content required for write operation"}
-        return await _file_write_prepare(abs_path, resolved_path, content)
+    return await _file_read(abs_path, resolved_path)
+
+
+@tool
+async def write_file(
+    file_path: str,
+    content: str,
+    config: RunnableConfig,
+) -> Dict[str, Any]:
+    """Write or create a file in the Unity project (requires approval).
     
-    elif operation == "modify":
-        if not modification_spec:
-            return {"success": False, "error": "Modification spec required"}
-        return await _file_modify_prepare(abs_path, resolved_path, modification_spec)
+    Args:
+        file_path: Target file path
+        content: Content to write
+        
+    Returns:
+        Approval request for destructive operation
+    """
+    configurable = config.get("configurable", {})
+    project_root = configurable.get("project_root")
+    sqlite_path = configurable.get("sqlite_path")
     
-    elif operation == "delete":
-        return await _file_delete_prepare(abs_path, resolved_path)
+    if not project_root:
+        return {"success": False, "error": "Project root not available"}
     
-    elif operation == "move":
-        if not new_path:
-            return {"success": False, "error": "new_path required for move"}
-        new_abs_path = project_root_path / new_path
-        return await _file_move_prepare(abs_path, new_abs_path, resolved_path, new_path)
+    project_root_path = Path(project_root)
+    sqlite_db_path = Path(sqlite_path) if sqlite_path else None
     
+    resolution = await _resolve_file_path(
+        partial_path=file_path,
+        project_root=project_root_path,
+        sqlite_path=sqlite_db_path,
+        operation="write"
+    )
+    
+    if not resolution.get("success"):
+        resolved_path = file_path
+        if not resolved_path.startswith("Assets"):
+            resolved_path = f"Assets/Scripts/{resolved_path}"
+        if not any(resolved_path.endswith(ext) for ext in [".cs", ".txt", ".json"]):
+            resolved_path += ".cs"
     else:
-        return {"success": False, "error": f"Unknown operation: {operation}"}
+        resolved_path = resolution["resolved_path"]
+    
+    abs_path = project_root_path / resolved_path
+    return await _file_write_prepare(abs_path, resolved_path, content)
+
+
+@tool
+async def modify_file(
+    file_path: str,
+    modification_spec: Dict[str, Any],
+    config: RunnableConfig,
+) -> Dict[str, Any]:
+    """Modify an existing file in the Unity project (requires approval).
+    
+    Args:
+        file_path: Target file path
+        modification_spec: Specification for surgical edits
+        
+    Returns:
+        Approval request for destructive operation
+    """
+    configurable = config.get("configurable", {})
+    project_root = configurable.get("project_root")
+    sqlite_path = configurable.get("sqlite_path")
+    
+    if not project_root:
+        return {"success": False, "error": "Project root not available"}
+    
+    project_root_path = Path(project_root)
+    sqlite_db_path = Path(sqlite_path) if sqlite_path else None
+    
+    resolution = await _resolve_file_path(
+        partial_path=file_path,
+        project_root=project_root_path,
+        sqlite_path=sqlite_db_path,
+        operation="modify"
+    )
+    
+    if not resolution.get("success"):
+        return {"success": False, "error": f"Could not find file '{file_path}'"}
+    
+    resolved_path = resolution["resolved_path"]
+    abs_path = project_root_path / resolved_path
+    
+    return await _file_modify_prepare(abs_path, resolved_path, modification_spec)
+
+
+@tool
+async def delete_file(
+    file_path: str,
+    config: RunnableConfig,
+) -> Dict[str, Any]:
+    """Delete a file from the Unity project (requires approval).
+    
+    Args:
+        file_path: Target file path
+        
+    Returns:
+        Approval request for destructive operation
+    """
+    configurable = config.get("configurable", {})
+    project_root = configurable.get("project_root")
+    sqlite_path = configurable.get("sqlite_path")
+    
+    if not project_root:
+        return {"success": False, "error": "Project root not available"}
+    
+    project_root_path = Path(project_root)
+    sqlite_db_path = Path(sqlite_path) if sqlite_path else None
+    
+    resolution = await _resolve_file_path(
+        partial_path=file_path,
+        project_root=project_root_path,
+        sqlite_path=sqlite_db_path,
+        operation="delete"
+    )
+    
+    if not resolution.get("success"):
+        return {"success": False, "error": f"Could not find file '{file_path}'"}
+    
+    resolved_path = resolution["resolved_path"]
+    abs_path = project_root_path / resolved_path
+    
+    return await _file_delete_prepare(abs_path, resolved_path)
+
+
+@tool
+async def move_file(
+    file_path: str,
+    new_path: str,
+    config: RunnableConfig,
+) -> Dict[str, Any]:
+    """Move a file to a new location in the Unity project (requires approval).
+    
+    Args:
+        file_path: Source file path
+        new_path: Destination path
+        
+    Returns:
+        Approval request for destructive operation
+    """
+    configurable = config.get("configurable", {})
+    project_root = configurable.get("project_root")
+    sqlite_path = configurable.get("sqlite_path")
+    
+    if not project_root:
+        return {"success": False, "error": "Project root not available"}
+    
+    project_root_path = Path(project_root)
+    sqlite_db_path = Path(sqlite_path) if sqlite_path else None
+    
+    resolution = await _resolve_file_path(
+        partial_path=file_path,
+        project_root=project_root_path,
+        sqlite_path=sqlite_db_path,
+        operation="move"
+    )
+    
+    if not resolution.get("success"):
+        return {"success": False, "error": f"Could not find file '{file_path}'"}
+    
+    resolved_path = resolution["resolved_path"]
+    abs_path = project_root_path / resolved_path
+    new_abs_path = project_root_path / new_path
+    
+    return await _file_move_prepare(abs_path, new_abs_path, resolved_path, new_path)
 
 
 async def _file_read(abs_path: Path, rel_path: str) -> Dict[str, Any]:

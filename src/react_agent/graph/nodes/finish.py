@@ -93,10 +93,10 @@ Generate your response now:"""
             elif latest_result['tool'] == 'web_search':
                 results_count = len(result_data.get('results', []))
                 return f"I found {results_count} relevant resources for your query."
-            elif latest_result['tool'] == 'file_operation':
-                operation = result_data.get('operation', 'operation')
+            elif latest_result['tool'] in ['read_file', 'write_file', 'modify_file', 'delete_file', 'move_file']:
+                tool_name = latest_result['tool']
                 file_path = result_data.get('file_path', 'file')
-                return f"Successfully completed {operation} on {file_path}."
+                return f"Successfully completed {tool_name} on {file_path}."
             else:
                 return f"The {latest_result['tool']} operation completed successfully."
         
@@ -122,8 +122,8 @@ async def _generate_comprehensive_completion_summary(state: State, model, contex
         completed_steps_summary.append(f"{status}: {step.description}")
         
         # Track what was actually built/created
-        if step.tool_name == "file_operation":
-            key_outputs.append("Performed file operations")
+        if step.tool_name in ["read_file", "write_file", "modify_file", "delete_file", "move_file"]:
+            key_outputs.append(f"Performed {step.tool_name}")
         elif step.tool_name == "search_project":
             key_outputs.append("Queried project data")
         elif step.tool_name == "code_snippets":
@@ -143,10 +143,9 @@ async def _generate_comprehensive_completion_summary(state: State, model, contex
                 tool_name = msg.name or 'unknown'
                 
                 if result.get("success", False):
-                    if tool_name == "file_operation":
-                        operation = result.get('operation', 'operation')
+                    if tool_name in ["read_file", "write_file", "modify_file", "delete_file", "move_file"]:
                         file_path = result.get('file_path', 'file')
-                        files_created.append(f"📄 {operation}: {file_path}")
+                        files_created.append(f"📄 {tool_name}: {file_path}")
                         
                     elif tool_name == "search_project":
                         result_count = result.get('result_count', 0)

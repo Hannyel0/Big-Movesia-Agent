@@ -176,21 +176,20 @@ def _extract_detailed_tool_errors(tool_result: dict, tool_name: str) -> Dict[str
         
         logger.info(f"Extracted {error_count} compilation errors from tool result")
         
-    elif tool_name == "file_operation":
+    elif tool_name in ["read_file", "write_file", "modify_file", "delete_file", "move_file"]:
         # Extract file operation errors
         error_msg = tool_result.get("error", "")
         if error_msg:
-            operation = tool_result.get("operation", "unknown")
             file_path = tool_result.get("file_path", "")
             detailed_context["extracted_errors"].append({
                 "type": "file_operation_error",
-                "operation": operation,
+                "operation": tool_name,
                 "file": file_path,
                 "error": error_msg,
                 "severity": "error"
             })
             detailed_context["error_count"] = 1
-            detailed_context["error_summary"] = f"File {operation} error: {error_msg[:50]}"
+            detailed_context["error_summary"] = f"{tool_name} error: {error_msg[:50]}"
     
     elif tool_name == "web_search":
         # Extract web search errors
@@ -301,7 +300,7 @@ def _is_tool_result_successful(tool_result: dict, tool_name: str) -> bool:
         return bool(tool_result.get("results")) and tool_result.get("result_count", 0) > 0
     elif tool_name == "code_snippets":
         return bool(tool_result.get("snippets")) and tool_result.get("total_found", 0) > 0
-    elif tool_name == "file_operation":
+    elif tool_name in ["read_file", "write_file", "modify_file", "delete_file", "move_file"]:
         return tool_result.get("success", False)
     elif tool_name == "web_search":
         return bool(tool_result.get("results")) and len(tool_result.get("results", [])) > 0

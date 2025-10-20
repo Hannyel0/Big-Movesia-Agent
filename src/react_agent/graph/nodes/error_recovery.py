@@ -87,7 +87,7 @@ CONTEXT_AWARE_TEMPLATE_FIXES = {
         "single_error": {
             "fix_step": {
                 "description": "Fix the compilation error in the script",
-                "tool_name": "write_file",
+                "tool_name": "modify_file",
                 "success_criteria": "Resolved the specific compilation issue"
             },
             "max_steps": 2
@@ -171,13 +171,14 @@ def extract_detailed_error_context(tool_result: Dict[str, Any], tool_name: str) 
                     "severity": "warning"
                 })
     
-    elif tool_name == "write_file":
+    elif tool_name in ["read_file", "write_file", "modify_file", "delete_file", "move_file"]:
         # Extract file-specific errors
         error_msg = tool_result.get("error", "")
         if error_msg:
             detailed_errors.append({
                 "type": "file_error",
-                "file": tool_result.get("attempted_path", ""),
+                "tool": tool_name,
+                "file": tool_result.get("file_path", "") or tool_result.get("attempted_path", ""),
                 "error": error_msg,
                 "severity": "error"
             })
@@ -246,7 +247,7 @@ def create_context_aware_template_recovery(error_category: ErrorCategory, failed
         if "input_system" in error_types:
             recovery_steps.append(PlanStep(
                 description="Fix Input System namespace and reference issues in PlayerController.cs",
-                tool_name="write_file",
+                tool_name="modify_file",
                 success_criteria="Resolved Input System compilation errors",
                 dependencies=[]
             ))
@@ -254,7 +255,7 @@ def create_context_aware_template_recovery(error_category: ErrorCategory, failed
         if "character_controller" in error_types:
             recovery_steps.append(PlanStep(
                 description="Fix CharacterController type and namespace issues",
-                tool_name="write_file", 
+                tool_name="modify_file", 
                 success_criteria="Resolved CharacterController compilation errors",
                 dependencies=[]
             ))
@@ -262,7 +263,7 @@ def create_context_aware_template_recovery(error_category: ErrorCategory, failed
         if "missing_reference" in error_types or "namespace" in error_types:
             recovery_steps.append(PlanStep(
                 description="Add missing using statements and namespace references",
-                tool_name="write_file",
+                tool_name="modify_file",
                 success_criteria="Added all required namespace references",
                 dependencies=[]
             ))
@@ -272,7 +273,7 @@ def create_context_aware_template_recovery(error_category: ErrorCategory, failed
             for i, file in enumerate(list(unique_files)[:2]):  # Max 2 files
                 recovery_steps.append(PlanStep(
                     description=f"Fix compilation errors in {file}",
-                    tool_name="write_file",
+                    tool_name="modify_file",
                     success_criteria=f"Resolved compilation issues in {file}",
                     dependencies=[]
                 ))
@@ -436,7 +437,7 @@ REQUIREMENTS:
 4. Maximum {4 if diagnosis.error_count > 2 else 2} steps total
 5. Final step should verify the solution works
 
-VALID TOOLS: search, get_project_info, create_asset, write_file, edit_project_config, get_script_snippets, compile_and_test, scene_management
+VALID TOOLS: search_project, code_snippets, read_file, write_file, modify_file, delete_file, move_file, web_search
 
 Create a recovery plan that addresses the specific errors listed above, not just the general error category."""
 
@@ -493,7 +494,7 @@ def _create_context_aware_fallback_recovery(failed_step: PlanStep, diagnosis: Er
         # Multiple compilation errors - create systematic fix
         recovery_steps.append(PlanStep(
             description=f"Fix all {diagnosis.error_count} compilation errors systematically",
-            tool_name="write_file",
+            tool_name="modify_file",
             success_criteria=f"Resolved all {diagnosis.error_count} compilation issues"
         ))
         

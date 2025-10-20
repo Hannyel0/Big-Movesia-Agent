@@ -3,11 +3,11 @@
 from typing import List
 from react_agent.tools.search_project import search_project, get_cache_stats, clear_query_cache
 from react_agent.tools.code_snippets import code_snippets
-from react_agent.tools.file_operation import file_operation
+from react_agent.tools.file_operation import read_file, write_file, modify_file, delete_file, move_file
 from react_agent.tools.web_search import web_search
 
-# Export all tools
-TOOLS = [search_project, code_snippets, file_operation, web_search]
+# Export all tools (now 8 tools total: 1 search + 1 code + 5 file + 1 web)
+TOOLS = [search_project, code_snippets, read_file, write_file, modify_file, delete_file, move_file, web_search]
 
 # Tool metadata for planning and optimization
 TOOL_METADATA = {
@@ -25,12 +25,40 @@ TOOL_METADATA = {
         "best_for": ["finding code by functionality", "semantic code search", "discovering implementations"],
         "description": "Semantic search through C# scripts using vector embeddings"
     },
-    "file_operation": {
+    "read_file": {
         "category": "file_management",
         "cost": "low",
         "reliability": "very_high",
-        "best_for": ["reading files", "writing scripts", "modifying code", "file manipulation"],
-        "description": "Safe file I/O with validation and approval flow"
+        "best_for": ["reading file contents", "viewing scripts", "inspecting code"],
+        "description": "Read file contents from Unity project with smart path resolution"
+    },
+    "write_file": {
+        "category": "file_management",
+        "cost": "low",
+        "reliability": "very_high",
+        "best_for": ["creating new files", "writing scripts", "generating code"],
+        "description": "Write or create files in Unity project (requires approval)"
+    },
+    "modify_file": {
+        "category": "file_management",
+        "cost": "low",
+        "reliability": "very_high",
+        "best_for": ["editing existing files", "updating scripts", "surgical code changes"],
+        "description": "Modify existing files in Unity project (requires approval)"
+    },
+    "delete_file": {
+        "category": "file_management",
+        "cost": "low",
+        "reliability": "very_high",
+        "best_for": ["removing files", "cleaning up scripts", "deleting assets"],
+        "description": "Delete files from Unity project (requires approval)"
+    },
+    "move_file": {
+        "category": "file_management",
+        "cost": "low",
+        "reliability": "very_high",
+        "best_for": ["moving files", "renaming scripts", "reorganizing project"],
+        "description": "Move or rename files in Unity project (requires approval)"
     },
     "web_search": {
         "category": "information_retrieval",
@@ -50,7 +78,11 @@ def get_available_tool_names() -> List[str]:
 __all__ = [
     "search_project",
     "code_snippets", 
-    "file_operation",
+    "read_file",
+    "write_file",
+    "modify_file",
+    "delete_file",
+    "move_file",
     "web_search",
     "TOOLS",
     "TOOL_METADATA",

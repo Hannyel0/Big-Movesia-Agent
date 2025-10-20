@@ -205,10 +205,9 @@ class MemoryManager:
         
         # Add to working memory
         # ✅ FIX: Better context for file operations
-        if tool_name == "file_operation":
-            operation = args.get("operation", "unknown")
+        if tool_name in ["read_file", "write_file", "modify_file", "delete_file", "move_file"]:
             file_path = args.get("file_path", "")
-            query = f"{operation} {file_path}"  # e.g., "write Assets/Scripts/test7284.cs"
+            query = f"{tool_name} {file_path}"  # e.g., "write_file Assets/Scripts/test7284.cs"
         else:
             query = args.get("query", "") or args.get("sql_query", "") or args.get("operation", "") or args.get("query_description", "")
         self.working_memory.add_tool_result(tool_name, result, query)
@@ -221,11 +220,10 @@ class MemoryManager:
             logger.info(f"🧠 [MemoryManager]   Latest: {latest['summary']}")
         
         # ✅ FIX: Extract query_text FIRST, before using it
-        if tool_name == "file_operation":
-            operation = args.get("operation", "unknown")
+        if tool_name in ["read_file", "write_file", "modify_file", "delete_file", "move_file"]:
             file_path = args.get("file_path", "")
-            query_text = f"{operation} {file_path}"  # e.g., "write Assets/Scripts/test7284.cs"
-            logger.info(f"🧠 [MemoryManager]   Query text (file_operation): {query_text}")
+            query_text = f"{tool_name} {file_path}"  # e.g., "write_file Assets/Scripts/test7284.cs"
+            logger.info(f"🧠 [MemoryManager]   Query text (file operation): {query_text}")
         else:
             # Try multiple possible query field names
             query_text = (
@@ -343,11 +341,10 @@ class MemoryManager:
         logger.info(f"🧠 [MemoryManager]   ✅ Added to episodic memory")
         
         # ✅ FIX: Extract query_text FIRST, before using it
-        if tool_name == "file_operation":
-            operation = args.get("operation", "unknown")
+        if tool_name in ["read_file", "write_file", "modify_file", "delete_file", "move_file"]:
             file_path = args.get("file_path", "")
-            query_text = f"{operation} {file_path}"  # e.g., "write Assets/Scripts/test7284.cs"
-            logger.info(f"🧠 [MemoryManager]   Query text (file_operation): {query_text}")
+            query_text = f"{tool_name} {file_path}"  # e.g., "write_file Assets/Scripts/test7284.cs"
+            logger.info(f"🧠 [MemoryManager]   Query text (file operation): {query_text}")
         else:
             # Try multiple possible query field names
             query_text = (

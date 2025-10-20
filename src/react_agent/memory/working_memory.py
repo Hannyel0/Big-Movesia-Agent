@@ -162,8 +162,7 @@ class WorkingMemory:
             else:
                 return "No scripts found"
         
-        elif tool_name == "file_operation":
-            operation = result.get("operation", "operation")
+        elif tool_name in ["read_file", "write_file", "modify_file", "delete_file", "move_file"]:
             # ✅ FIX: Check both top-level and pending_operation for file path
             file_path = result.get("file_path") or result.get("pending_operation", {}).get("rel_path", "unknown")
             
@@ -171,17 +170,24 @@ class WorkingMemory:
             if "/" in file_path:
                 file_path = file_path.split("/")[-1]
             
-            if operation == "read":
+            if tool_name == "read_file":
                 line_count = result.get("line_count", 0)
                 return f"Read {file_path} ({line_count} lines)"
-            elif operation == "write":
+            elif tool_name == "write_file":
                 line_count = result.get("line_count", 0)
                 return f"Wrote {file_path} ({line_count} lines)"
-            elif operation == "modify":
+            elif tool_name == "modify_file":
                 modifications = result.get("modifications_applied", 0)
                 return f"Modified {file_path} ({modifications} changes)"
+            elif tool_name == "delete_file":
+                return f"Deleted {file_path}"
+            elif tool_name == "move_file":
+                to_path = result.get("to_path", "unknown")
+                if "/" in to_path:
+                    to_path = to_path.split("/")[-1]
+                return f"Moved {file_path} to {to_path}"
             else:
-                return f"File {operation}: {file_path}"
+                return f"{tool_name}: {file_path}"
         
         elif tool_name == "web_search":
             results = result.get("results", [])

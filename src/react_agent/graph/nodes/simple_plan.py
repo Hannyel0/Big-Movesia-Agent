@@ -117,13 +117,13 @@ Based on the analysis, choose the most effective approach:
    - web_search → provide comprehensive answer (maybe + search_project for context)
 
 2. **Direct Implementation** (for simple creation):
-   - code_snippets → file_operation (skip excessive research for basic requests)
+   - code_snippets → write_file (skip excessive research for basic requests)
 
 3. **Diagnose Then Solve** (for troubleshooting):
-   - search_project → code_snippets → (web_search if needed) → file_operation
+   - search_project → code_snippets → (web_search if needed) → modify_file
 
 4. **Context Then Implement** (for standard creation):
-   - search_project → file_operation → (search_project validation if needed)
+   - search_project → write_file → (search_project validation if needed)
 
 EFFICIENCY PRINCIPLES:
 - Don't over-research simple requests
@@ -141,25 +141,34 @@ Create a smart, streamlined plan that efficiently solves this specific request."
 TOOL PURPOSE CLARIFICATION:
 **search_project**: Query indexed Unity project database using natural language
 **code_snippets**: Semantic search through C# scripts by functionality
-**file_operation**: Safe file I/O with validation (read/write/modify/delete/move)
+**read_file**: Read file contents safely (no approval)
+**write_file**: Create/write files (requires approval)
+**modify_file**: Modify existing files (requires approval)
+**delete_file**: Delete files (requires approval)
+**move_file**: Move/rename files (requires approval)
 **web_search**: Research external Unity documentation and tutorials
 
-VALID TOOLS: search_project, code_snippets, file_operation, web_search
+VALID TOOLS: search_project, code_snippets, read_file, write_file, modify_file, delete_file, move_file, web_search
 
 INTELLIGENT EFFICIENCY:
 - **Information requests**: web_search
-- **Understanding existing code**: code_snippets
-- **Modifying existing features**: code_snippets → file_operation
-- **Creating new features**: web_search → file_operation  
+- **Understanding existing code**: code_snippets → read_file
+- **Modifying existing features**: code_snippets → modify_file
+- **Creating new features**: web_search → write_file
 - **Project inspection**: search_project
 - **Asset discovery**: search_project
-- **Configuration**: file_operation
+- **File cleanup**: delete_file
+- **File reorganization**: move_file
 
 DECISION FLOWCHART:
 1. Need to find existing code by functionality? → code_snippets
 2. Need to learn new Unity concepts? → web_search
 3. Need project structure/asset info? → search_project
-4. Need to implement/modify files? → file_operation
+4. Need to read files? → read_file
+5. Need to create files? → write_file
+6. Need to modify files? → modify_file
+7. Need to delete files? → delete_file
+8. Need to move/rename files? → move_file
 
 Create plans that use production tools for real Unity project integration."""
 
@@ -299,7 +308,7 @@ def _create_intelligent_fallback_plan(user_request: str, analysis: Dict[str, Any
                 ),
                 PlanStep(
                     description="Create the requested implementation",
-                    tool_name="file_operation",
+                    tool_name="write_file",
                     success_criteria="Successfully created the requested file",
                     dependencies=[0]
                 )
@@ -314,7 +323,7 @@ def _create_intelligent_fallback_plan(user_request: str, analysis: Dict[str, Any
                 ),
                 PlanStep(
                     description="Create the requested implementation",
-                    tool_name="file_operation",
+                    tool_name="write_file",
                     success_criteria="Successfully created the requested item",
                     dependencies=[0]
                 )
@@ -330,7 +339,7 @@ def _create_intelligent_fallback_plan(user_request: str, analysis: Dict[str, Any
             ),
             PlanStep(
                 description="Apply requested configuration changes",
-                tool_name="file_operation",
+                tool_name="modify_file",
                 success_criteria="Successfully updated project configuration",
                 dependencies=[0]
             )

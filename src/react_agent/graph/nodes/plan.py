@@ -48,8 +48,17 @@ def _build_comprehensive_tools_description() -> str:
             tool_info += "   - Example uses: Find assets by name, query GameObject hierarchy, check component usage\n"
         elif tool.name == "code_snippets":
             tool_info += "   - Example uses: Find movement code by functionality, locate UI patterns, discover physics implementations\n"
-        elif tool.name == "file_operation":
-            tool_info += "   - Example uses: Read existing scripts, write new implementations, modify code safely\n"
+        elif tool.name in ["read_file", "write_file", "modify_file", "delete_file", "move_file"]:
+            if tool.name == "read_file":
+                tool_info += "   - Example uses: Read existing scripts, inspect file contents\n"
+            elif tool.name == "write_file":
+                tool_info += "   - Example uses: Create new scripts, generate code files\n"
+            elif tool.name == "modify_file":
+                tool_info += "   - Example uses: Update existing code, fix bugs, add features\n"
+            elif tool.name == "delete_file":
+                tool_info += "   - Example uses: Remove old scripts, clean up files\n"
+            elif tool.name == "move_file":
+                tool_info += "   - Example uses: Reorganize scripts, rename files\n"
         elif tool.name == "web_search":
             tool_info += "   - Example uses: Research Unity patterns, find tutorials, troubleshoot errors\n"
             
@@ -205,10 +214,30 @@ TOOL USAGE CLARIFICATION:
 - Use to discover implementations and patterns in the project
 - Use when you need to understand how something is already coded
 
-**file_operation**: Safe file I/O with validation and approval flow
+**read_file**: Read file contents safely
 - Use to read existing scripts and understand current implementations
-- Use to write new files or modify existing ones safely
-- Use with validate_only=True to preview changes before applying
+- Use to inspect file contents before making changes
+- No approval required
+
+**write_file**: Create/write files (requires approval)
+- Use to create new script files
+- Use to generate new implementations
+- Requires human approval before execution
+
+**modify_file**: Modify existing files (requires approval)
+- Use to update existing scripts
+- Use for surgical code edits
+- Requires human approval before execution
+
+**delete_file**: Delete files (requires approval)
+- Use to remove old or unused scripts
+- Use to clean up project files
+- Requires human approval before execution
+
+**move_file**: Move/rename files (requires approval)
+- Use to reorganize project structure
+- Use to rename scripts
+- Requires human approval before execution
 
 **web_search**: Research external Unity documentation, tutorials, best practices
 - Use for finding implementation approaches for new features
@@ -219,14 +248,14 @@ INTELLIGENT PLANNING PRINCIPLES:
 - **To understand existing project**: search_project → discover assets and structure
 - **To find existing code**: code_snippets → locate relevant implementations
 - **To learn new approaches**: web_search → research implementation methods  
-- **To build on existing code**: code_snippets → file_operation (read/modify)
-- **To create new features**: web_search → file_operation (write new)
+- **To build on existing code**: code_snippets → read_file → modify_file
+- **To create new features**: web_search → write_file
 
 PLANNING EXAMPLES:
-- "Fix player movement" → code_snippets → find movement code → file_operation (modify)
-- "Add grass physics" → web_search → research approaches → file_operation (write)  
-- "Improve existing UI" → search_project → find UI assets → code_snippets → file_operation (modify)
-- "Create AI enemy" → web_search → learn AI patterns → file_operation (write)
+- "Fix player movement" → code_snippets → find movement code → modify_file
+- "Add grass physics" → web_search → research approaches → write_file
+- "Improve existing UI" → search_project → find UI assets → code_snippets → modify_file
+- "Create AI enemy" → web_search → learn AI patterns → write_file
 
 CREATE PLANS BASED ON WHETHER YOU NEED TO READ EXISTING CODE OR RESEARCH NEW SOLUTIONS.
 
@@ -342,7 +371,7 @@ def _create_intelligent_planning_narration(plan: ExecutionPlan, user_message: st
             narration += " (checking your project setup for compatibility)"
         elif step.tool_name == "code_snippets" and "web_search" not in [s.tool_name for s in plan.steps[:i-1]]:
             narration += " (I have the code patterns you need)"
-        elif step.tool_name == "file_operation" and step_count > 3:
+        elif step.tool_name in ["write_file", "modify_file", "delete_file", "move_file"] and step_count > 3:
             narration += " (ensuring everything integrates properly)"
     
     # Add context-aware conclusion
@@ -383,7 +412,7 @@ def _create_minimal_intelligent_plan(user_message: str, context: str) -> List[Pl
             ),
             PlanStep(
                 description="Create the script file with the implementation",
-                tool_name="file_operation",
+                tool_name="write_file",
                 success_criteria="Successfully created working script file",
                 dependencies=[0]
             )
@@ -432,7 +461,7 @@ def _create_minimal_intelligent_plan(user_message: str, context: str) -> List[Pl
             ),
             PlanStep(
                 description="Implement the complete solution",
-                tool_name="file_operation", 
+                tool_name="write_file", 
                 success_criteria="Created working implementation file",
                 dependencies=[2]
             ),

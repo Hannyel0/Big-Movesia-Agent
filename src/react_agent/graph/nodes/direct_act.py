@@ -357,7 +357,11 @@ Do NOT provide guidance on how to do it themselves - they want YOU to execute th
 Available tools:
 - search_project: For querying project data, assets, hierarchy, components
 - code_snippets: For semantic search through C# scripts by functionality
-- file_operation: For reading, writing, modifying project files safely
+- read_file: For reading file contents
+- write_file: For creating new files (requires approval)
+- modify_file: For modifying existing files (requires approval)
+- delete_file: For deleting files (requires approval)
+- move_file: For moving/renaming files (requires approval)
 - web_search: For finding tutorials, documentation, best practices
 
 Response types:
@@ -530,10 +534,24 @@ def _determine_tool_from_request(user_request: str, analysis_text: str) -> str:
             "how is this implemented", "code that does", "full code",
             "complete code", "source code"
         ],
-        "file_operation": [
-            "create script", "write script", "create file", "generate code", 
-            "write code", "modify file", "read file", "update script",
-            "new script", "make script"
+        "read_file": [
+            "read file", "show me", "display", "view file", "check file",
+            "show file", "see file", "open file"
+        ],
+        "write_file": [
+            "create script", "write script", "create file", "generate code",
+            "write code", "new script", "make script", "generate file",
+            "new file", "make file"
+        ],
+        "modify_file": [
+            "modify file", "update script", "edit file", "change file",
+            "fix file", "update file", "patch file", "edit script"
+        ],
+        "delete_file": [
+            "delete file", "remove file", "delete script", "remove script"
+        ],
+        "move_file": [
+            "move file", "rename file", "move script", "rename script"
         ],
         "web_search": [
             "search for", "find tutorials", "look up", "research", 
