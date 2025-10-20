@@ -151,10 +151,6 @@ def _is_project_data_request(request: str) -> bool:
 async def direct_act(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     """Enhanced direct action with comprehensive logging."""
     
-    print(f"\n{'='*60}")
-    print(f"🎬 [DIRECT_ACT] ===== STARTING DIRECT ACTION =====")
-    print(f"{'='*60}")
-    
     context = runtime.context
     model = get_model(context.model)
     
@@ -166,59 +162,24 @@ async def direct_act(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
             break
     
     if not user_request:
-        print(f"❌ [DirectAct] No user request found")
         return {
             "messages": [AIMessage(content="I need a clear request to help you with your Unity development.")]
         }
     
-    print(f"\n💬 [DirectAct] User Request:")
-    print(f"   \"{user_request}\"")
-    print(f"   Length: {len(user_request)} chars, {len(user_request.split())} words")
-    
-    # ✅ FIXED: Detect continuation using memory manager
+    # FIXED: Detect continuation using memory manager
     continuation = None
     if user_request:
         continuation = _detect_continuation(user_request, state.messages, state.memory)
-        
-        if continuation:
-            print(f"\n🔄 [DirectAct] Continuation detected!")
-            print(f"   Previous: {continuation.get('previous_message', '')[:80]}...")
-            if continuation.get('tool_result'):
-                tool_name = continuation['tool_result'].get('tool_name', 'unknown')
-                print(f"   Tool result available: {tool_name}")
     
-    # ✅ NEW: Log memory state
-    print(f"\n🧠 [DirectAct] Memory State:")
+    # Record user message
     if state.memory:
         if hasattr(state.memory, 'working_memory'):
-            wm = state.memory.working_memory
-            tool_count = len(wm.recent_tool_results)
-            print(f"   Tool results in memory: {tool_count}")
+            state.memory.add_message("user", user_request)
             
-            if tool_count > 0:
-                print(f"   Recent tool results:")
-                for i, tool in enumerate(wm.recent_tool_results[-3:], 1):
-                    print(f"      {i}. {tool['tool_name']}: {tool['summary'][:60]}")
-                    print(f"         Timestamp: {tool['timestamp']}")
-            else:
-                print(f"   No tool results stored")
-            
-            print(f"   Focus entities: {wm.focus_entities[:3] if wm.focus_entities else 'None'}")
-            print(f"   Focus topics: {wm.focus_topics[:3] if wm.focus_topics else 'None'}")
-            print(f"   User intent: {wm.user_intent[:60] if wm.user_intent else 'None'}...")
-        else:
-            print(f"   Working memory not available")
-            
-        # Record user message
-        state.memory.add_message("user", user_request)
-        
-        entities = extract_entities_from_request(user_request)
-        topics = extract_topics_from_request(user_request)
-        if entities or topics:
-            await state.memory.update_focus(entities, topics)
-            print(f"   Updated focus - Entities: {entities[:3]}, Topics: {topics[:3]}")
-    else:
-        print(f"   ⚠️  No memory available")
+            entities = extract_entities_from_request(user_request)
+            topics = extract_topics_from_request(user_request)
+            if entities or topics:
+                await state.memory.update_focus(entities, topics)
     
     # Base system content
     base_system_content = """You are a Unity/Unreal Engine development assistant that EXECUTES TOOLS to retrieve data from the user's project.
@@ -239,7 +200,7 @@ CONTINUATION AWARENESS:
 If you previously showed someone a summary and they ask to "see more", "show full code", or "yes show me",
 they're asking for more detail about what you just discussed. Check recent tool results and provide the full data."""
     
-    # ✅ FIXED: Add continuation context if detected
+    # FIXED: Add continuation context if detected
     if continuation:
         tool_result = continuation.get('tool_result', {})
         tool_name = tool_result.get('tool_name', 'unknown')
@@ -253,17 +214,15 @@ The user is continuing from a previous interaction. Here's what they saw:
 
 **Previous Message:** {continuation.get('previous_message', 'N/A')[:200]}
 
-**Previous Tool Result ({tool_name}):**
+**Previous Tool Result ({tool_name}):$
 {json.dumps(result_data, indent=2)[:1000]}
 
 The user's current request ("{user_request}") is likely asking for more details, full code, or additional information about the above result.
 Provide the complete information they're requesting based on this context."""
         
         base_system_content += continuation_context
-        print(f"\n📋 [DirectAct] Added continuation context ({len(continuation_context)} chars)")
     
     # Inject memory context
-    print(f"\n🔄 [DirectAct] Injecting memory context into prompt...")
     static_system_content = await inject_memory_into_prompt(
         base_prompt=base_system_content,
         state=state,
@@ -273,41 +232,23 @@ Provide the complete information they're requesting based on this context."""
     
     base_length = len(base_system_content)
     enhanced_length = len(static_system_content)
-    added_context = enhanced_length - base_length
     
-    print(f"   Base prompt: {base_length} chars")
-    print(f"   Enhanced prompt: {enhanced_length} chars")
-    print(f"   Memory context added: {added_context} chars")
-    
-    if added_context > 0:
-        print(f"\n📝 [DirectAct] Memory Context Preview:")
-        memory_section = static_system_content[base_length:base_length+300]
-        print(f"   {memory_section}...")
-    
-    # ✅ NEW: Check if this is a project data request
+    # NEW: Check if this is a project data request
     is_project_query = _is_project_data_request(user_request)
-    print(f"\n🔍 [DirectAct] Request Analysis:")
-    print(f"   Is project data request: {is_project_query}")
     
     if is_project_query:
         tool_name = _determine_tool_from_request(user_request, "")
-        print(f"   Inferred tool: {tool_name}")
         
         if tool_name:
-            print(f"\n🔧 [DirectAct] Forcing tool execution for project data request")
-            print(f"   Tool: {tool_name}")
             
             tool_prompt = f"""Execute the {tool_name} tool to retrieve data for: "{user_request}"
 
 The user is asking for data FROM their project. Use the tool to query their actual project database.
 Do NOT provide guidance on how to do it themselves - they want YOU to execute the query and show them the results."""
             
-            print(f"   Tool prompt length: {len(tool_prompt)} chars")
-            
             model_with_tools = model.bind_tools(TOOLS)
             
             try:
-                print(f"   ⏳ Executing {tool_name}...")
                 
                 tool_response = await model_with_tools.ainvoke(
                     [
@@ -316,14 +257,6 @@ Do NOT provide guidance on how to do it themselves - they want YOU to execute th
                     ],
                     tool_choice={"type": "function", "function": {"name": tool_name}}
                 )
-                
-                print(f"\n✅ [DirectAct] Tool execution requested:")
-                if tool_response.tool_calls:
-                    for tc in tool_response.tool_calls:
-                        print(f"   Tool: {tc.get('name')}")
-                        print(f"   Args: {str(tc.get('args', {}))[:100]}...")
-                else:
-                    print(f"   ⚠️  No tool calls generated")
                 
                 # Store expectation in memory
                 if state.memory and tool_response.tool_calls:
@@ -334,10 +267,6 @@ Do NOT provide guidance on how to do it themselves - they want YOU to execute th
                             metadata={"tool_call": True, "tool_name": tc.get('name')}
                         )
                 
-                print(f"\n{'='*60}")
-                print(f"🎬 [DIRECT_ACT] ===== DIRECT ACTION COMPLETE =====")
-                print(f"{'='*60}\n")
-                
                 return {
                     "messages": [tool_response],
                     "total_tool_calls": state.total_tool_calls + (
@@ -345,11 +274,9 @@ Do NOT provide guidance on how to do it themselves - they want YOU to execute th
                     )
                 }
             except Exception as e:
-                print(f"   ❌ Tool execution failed: {str(e)}")
-                print(f"   Falling through to normal processing")
+                pass  # Fall through to normal processing
     
     # Normal LLM response path
-    print(f"\n🤖 [DirectAct] Using LLM for direct response (no forced tool)")
     
     # Analyze request to determine approach
     analysis_prompt = f"""Analyze this Unity/game development request: "{user_request}"
@@ -371,33 +298,21 @@ Response types:
 
 Choose the most efficient approach."""
     
-    print(f"\n📤 [DirectAct] Sending analysis request to LLM...")
-    print(f"   Analysis prompt: {len(analysis_prompt)} chars")
-    
     analysis_messages = [
         {"role": "system", "content": static_system_content},
         {"role": "user", "content": analysis_prompt}
     ]
     
     try:
-        print(f"   ⏳ Waiting for analysis...")
-        
         analysis_response = await model.ainvoke(analysis_messages)
         analysis_text = get_message_text(analysis_response).lower()
         
-        print(f"\n✅ [DirectAct] Analysis received:")
-        print(f"   Response length: {len(analysis_text)} chars")
-        print(f"   Preview: {analysis_text[:200]}...")
-        
         should_use_tool = "tool_call" in analysis_text
-        print(f"   Should use tool: {should_use_tool}")
         
         if should_use_tool:
             tool_name = _determine_tool_from_request(user_request, analysis_text)
-            print(f"   Determined tool: {tool_name}")
             
             if tool_name:
-                print(f"\n🔧 [DirectAct] Executing tool based on analysis")
                 
                 tool_prompt = f"""Execute the {tool_name} tool to respond to: "{user_request}"
 
@@ -406,7 +321,6 @@ Use appropriate parameters based on the request. Focus on providing exactly what
                 model_with_tools = model.bind_tools(TOOLS)
                 
                 try:
-                    print(f"   ⏳ Executing {tool_name}...")
                     
                     tool_response = await model_with_tools.ainvoke(
                         [
@@ -415,12 +329,6 @@ Use appropriate parameters based on the request. Focus on providing exactly what
                         ],
                         tool_choice={"type": "function", "function": {"name": tool_name}}
                     )
-                    
-                    print(f"\n✅ [DirectAct] Tool execution requested:")
-                    if tool_response.tool_calls:
-                        for tc in tool_response.tool_calls:
-                            print(f"   Tool: {tc.get('name')}")
-                            print(f"   Args: {str(tc.get('args', {}))[:100]}...")
                     
                     # Store in memory
                     if state.memory and tool_response.tool_calls:
@@ -431,10 +339,6 @@ Use appropriate parameters based on the request. Focus on providing exactly what
                                 metadata={"tool_call": True, "tool_name": tc.get('name')}
                             )
                     
-                    print(f"\n{'='*60}")
-                    print(f"🎬 [DIRECT_ACT] ===== DIRECT ACTION COMPLETE =====")
-                    print(f"{'='*60}\n")
-                    
                     return {
                         "messages": [tool_response],
                         "total_tool_calls": state.total_tool_calls + (
@@ -443,18 +347,12 @@ Use appropriate parameters based on the request. Focus on providing exactly what
                     }
                     
                 except Exception as tool_error:
-                    print(f"   ❌ Tool execution failed: {str(tool_error)}")
-                    print(f"   Falling back to informational response")
+                    pass  # Fall back to informational response
         
         # Provide informational response
-        print(f"\n💬 [DirectAct] Generating informational response")
-        
-        info_prompt = f"""Provide a direct, helpful answer to this Unity/game development question: "{user_request}"
+        info_prompt = f"""Provide a direct, helpful answer to this Unity/game development question: "{user_request}""
 
 Give practical guidance, explanations, or instructions based on your knowledge. Be specific and actionable."""
-        
-        print(f"   Info prompt length: {len(info_prompt)} chars")
-        print(f"   ⏳ Waiting for response...")
         
         info_response = await model.ainvoke([
             {"role": "system", "content": static_system_content},
@@ -462,34 +360,18 @@ Give practical guidance, explanations, or instructions based on your knowledge. 
         ])
         
         response_content = get_message_text(info_response)
-        print(f"\n✅ [DirectAct] Response generated:")
-        print(f"   Length: {len(response_content)} chars")
-        print(f"   Preview: {response_content[:100]}...")
         
         # Record in memory
         if state.memory:
             state.memory.add_message("assistant", response_content)
-            print(f"   ✅ Response recorded in memory")
-        
-        print(f"\n{'='*60}")
-        print(f"🎬 [DIRECT_ACT] ===== DIRECT ACTION COMPLETE =====")
-        print(f"{'='*60}\n")
         
         return {"messages": [info_response]}
         
     except Exception as e:
-        print(f"\n❌ [DirectAct] ERROR during processing:")
-        print(f"   Error type: {type(e).__name__}")
-        print(f"   Error message: {str(e)}")
-        
         error_response = f"I can help you with that. Let me provide some guidance on: {user_request}"
         
         if state.memory:
             state.memory.add_message("assistant", error_response)
-        
-        print(f"\n{'='*60}")
-        print(f"🎬 [DIRECT_ACT] ===== DIRECT ACTION COMPLETE (ERROR) =====")
-        print(f"{'='*60}\n")
         
         return {
             "messages": [AIMessage(content=error_response)],

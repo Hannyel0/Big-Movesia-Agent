@@ -192,31 +192,12 @@ async def get_memory_manager(config: Optional[Dict[str, Any]] = None):
     # If still no thread_id, generate one (fallback)
     if not thread_id:
         thread_id = f"session_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
-        print(f"⚠️  [Memory] No thread_id found in config, generated: {thread_id}")
-    
-    # Debug logging
-    print(f"\n{'='*60}")
-    print(f"🧠 [MemoryManager] get_memory_manager called")
-    print(f"   Thread ID: {thread_id}")
-    print(f"   Global memory exists: {_global_memory is not None}")
-    
-    if _global_memory:
-        current_thread = getattr(_global_memory, 'session_id', 'unknown')
-        print(f"   Current thread: {current_thread}")
-        print(f"   ⚠️  REUSING: {current_thread == thread_id}")  # ✅ NEW
-        print(f"   🆕 NEW SESSION: {current_thread != thread_id}")  # ✅ NEW
-        if hasattr(_global_memory, 'working_memory'):
-            tool_count = len(_global_memory.working_memory.recent_tool_results)
-            print(f"   Stored tool results: {tool_count}")
-            for i, tool in enumerate(_global_memory.working_memory.recent_tool_results[-3:], 1):
-                print(f"      {i}. {tool['summary'][:60]}")
-    print(f"{'='*60}\n")
     
     # ✅ FIXED: Session tracking with thread_id
     if _global_memory is not None and thread_id:
         current_thread = getattr(_global_memory, 'session_id', None)
         if current_thread and current_thread != thread_id:
-            print(f"🧠 [Memory] New thread detected ({thread_id}) - loading new thread memory")
+            logger.info(f"🧠 [Memory] Session changed: {current_thread} → {thread_id}")
             _global_memory = None
     
     # Clean up old tool results based on age (if memory exists)
@@ -231,8 +212,6 @@ async def get_memory_manager(config: Optional[Dict[str, Any]] = None):
         ]
         
         after_count = len(_global_memory.working_memory.recent_tool_results)
-        if after_count < before_count:
-            print(f" [Memory] Cleaned up {before_count - after_count} old tool results (older than 30 minutes)")
     
     if _global_memory is None:
         # CRITICAL: Get movesia.db path
@@ -247,7 +226,6 @@ async def get_memory_manager(config: Optional[Dict[str, Any]] = None):
                 electron_db_path = Path(configurable["sqlite_path"])
                 if electron_db_path.exists():
                     db_path = electron_db_path
-                    print(f" [Memory] Using database path from Electron: {db_path}")
             
             # Check for explicit memory_db_path
             elif "memory_db_path" in configurable:
@@ -255,15 +233,10 @@ async def get_memory_manager(config: Optional[Dict[str, Any]] = None):
                 if config_db_path.exists():
                     db_path = config_db_path
         
-        if db_path:
-            print(f" [Memory] Using database: {db_path}")
-        else:
-            print(f" [Memory] No database found - memory will not persist across sessions")
-        
-        # ✅ ADD: Verify session data in database (async-safe)
+        # FIXED: Verify session data in database (async-safe)
         if db_path and db_path.exists():
             try:
-                # ✅ FIX: Use asyncio.to_thread for blocking SQLite operations
+                # FIXED: Use asyncio.to_thread for blocking SQLite operations
                 def _verify_database():
                     conn = sqlite3.connect(str(db_path))
                     cursor = conn.cursor()
@@ -271,12 +244,10 @@ async def get_memory_manager(config: Optional[Dict[str, Any]] = None):
                     # Check what sessions exist
                     cursor.execute("SELECT DISTINCT session_id FROM memory_working LIMIT 10")
                     existing_sessions = [row[0] for row in cursor.fetchall()]
-                    print(f"📊 [Memory] Database has {len(existing_sessions)} sessions: {existing_sessions[:3]}")
                     
                     # Check if our session has data
                     cursor.execute("SELECT COUNT(*) FROM memory_working WHERE session_id = ?", (thread_id,))
                     count = cursor.fetchone()[0]
-                    print(f"📊 [Memory] Session '{thread_id}' has {count} tool results in database")
                     
                     conn.close()
                 
@@ -284,35 +255,15 @@ async def get_memory_manager(config: Optional[Dict[str, Any]] = None):
                 await asyncio.to_thread(_verify_database)
                 
             except Exception as e:
-                print(f"⚠️  [Memory] Could not verify database: {e}")
+                logger.warning(f" [Memory] Could not verify database: {e}")
         
-        # FIX: Use asyncio.to_thread() to avoid blocking
+        # FIXED: Use asyncio.to_thread() to avoid blocking
         _global_memory = await asyncio.to_thread(
             MemoryManager,
             db_path=db_path,
             auto_persist=bool(db_path),
             session_id=thread_id
         )
-        
-        print(f"🧠 [Memory] Initialized global memory manager")
-        print(f"   Thread ID: {_global_memory.session_id}")
-        print(f"   Database: {db_path}")
-        print(f"   Auto-persist: {bool(db_path)}")
-        
-        # Log loaded state
-        if hasattr(_global_memory, 'working_memory'):
-            tool_count = len(_global_memory.working_memory.recent_tool_results)
-            print(f"   Loaded tool results: {tool_count}")
-            if tool_count > 0:
-                for i, tool in enumerate(_global_memory.working_memory.recent_tool_results[:3], 1):
-                    print(f"      {i}. {tool['tool_name']}: {tool['summary'][:50]}")
-        else:
-            _global_memory._session_id = None
-            print(f" [Memory] Initialized global memory manager (no session ID)")
-        
-        if db_path:
-            print(f" [Memory] Loaded memory from database: {db_path}")
-            print(f"   Persistent storage: {db_path}")
     
     return _global_memory
 
@@ -411,9 +362,6 @@ def extract_topics_from_state(state: State) -> List[str]:
             all_topics.update(topics)
     
     result = list(all_topics)[:10]  # Limit to top 10 most relevant
-    
-    if result:
-        print(f"🔖 [TopicExtraction] Extracted {len(result)} topics from state: {result}")
     
     return result
 
@@ -663,13 +611,6 @@ async def initialize_memory_system(state: State, config: Dict[str, Any]) -> Dict
     topics = extract_topics_from_state(state)
     if entities or topics:
         await memory.update_focus(entities, topics)
-    
-    print(f"🧠 [Memory] Episode started: {episode_id}")
-    print(f"   Task: {task_description[:60]}...")
-    if entities:
-        print(f"   Entities: {', '.join(entities[:3])}")
-    if topics:
-        print(f"   Topics: {', '.join(topics[:3])}")
     
     return {
         "memory": memory,

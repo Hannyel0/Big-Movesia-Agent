@@ -99,22 +99,15 @@ def extract_entities_from_tool_result(
     
     Returns list of (entity, entity_type) tuples.
     """
-    logger.info(f"🔍 [EntityExtractor] Extracting from {tool_name} tool result")
-    
     entities = []
     
     if not isinstance(result, dict) or not result.get("success", True):
-        logger.warning(f"  ⚠️ Tool result not valid or unsuccessful")
         return entities
     
     if tool_name == "search_project":
-        logger.debug(f"  Checking search_project result structure...")
-        
         # Priority 1: Use results_structured (has full data)
         structured = result.get("results_structured", [])
         if isinstance(structured, list):
-            logger.info(f"  Found results_structured with {len(structured)} items")
-            
             for idx, item in enumerate(structured[:20], 1):  # Top 20 results
                 if isinstance(item, dict):
                     entity = item.get("path") or item.get("name")
@@ -123,17 +116,11 @@ def extract_entities_from_tool_result(
                         if normalized and not _is_template_pattern(normalized):
                             entity_type = classify_entity(normalized)
                             entities.append((normalized, entity_type))
-                            logger.debug(f"    {idx}. ✅ Extracted: {normalized} (type: {entity_type})")
-                        else:
-                            logger.debug(f"    {idx}. ❌ Skipped template: {entity}")
         
         # Fallback: Use regular results
         if not entities:
-            logger.debug(f"  No results_structured, trying regular results...")
             results = result.get("results", [])
             if isinstance(results, list):
-                logger.info(f"  Found regular results with {len(results)} items")
-                
                 for idx, item in enumerate(results[:20], 1):
                     if isinstance(item, dict):
                         entity = item.get("path") or item.get("name") or item.get("guid")
@@ -142,16 +129,10 @@ def extract_entities_from_tool_result(
                             if normalized and not _is_template_pattern(normalized):
                                 entity_type = classify_entity(normalized)
                                 entities.append((normalized, entity_type))
-                                logger.debug(f"    {idx}. ✅ Extracted: {normalized} (type: {entity_type})")
-                            else:
-                                logger.debug(f"    {idx}. ❌ Skipped template: {entity}")
     
     elif tool_name == "code_snippets":
-        logger.debug(f"  Checking code_snippets result...")
         snippets = result.get("snippets", [])
         if isinstance(snippets, list):
-            logger.info(f"  Found {len(snippets)} snippets")
-            
             for idx, snippet in enumerate(snippets[:10], 1):
                 if isinstance(snippet, dict):
                     file_path = snippet.get("file_path")
@@ -159,17 +140,14 @@ def extract_entities_from_tool_result(
                         normalized = normalize_entity(file_path)
                         if normalized and not _is_template_pattern(normalized):
                             entities.append((normalized, EntityType.FILE))
-                            logger.debug(f"    {idx}. ✅ Extracted: {normalized}")
     
     elif tool_name in ["read_file", "write_file", "modify_file", "delete_file", "move_file"]:
-        logger.debug(f"  Checking {tool_name} result...")
         # Check both locations for file path
         file_path = result.get("file_path") or result.get("pending_operation", {}).get("rel_path")
         if file_path:
             normalized = normalize_entity(file_path)
             if normalized and not _is_template_pattern(normalized):
                 entities.append((normalized, EntityType.FILE))
-                logger.debug(f"    ✅ Extracted: {normalized}")
         
         # For move_file, also extract destination path
         if tool_name == "move_file":
@@ -178,12 +156,7 @@ def extract_entities_from_tool_result(
                 normalized = normalize_entity(to_path)
                 if normalized and not _is_template_pattern(normalized):
                     entities.append((normalized, EntityType.FILE))
-                    logger.debug(f"    ✅ Extracted destination: {normalized}")
-        
-        if not file_path:
-            logger.warning(f"    ⚠️ No file_path found in result")
     
-    logger.info(f"✅ [EntityExtractor] Extracted {len(entities)} entities from {tool_name}")
     return entities
 
 
@@ -194,20 +167,15 @@ def extract_entities_from_text(text: str) -> List[Tuple[str, str]]:
     Used for extracting from queries, messages, etc.
     Returns list of (entity, entity_type) tuples.
     """
-    logger.info(f"🔍 [EntityExtractor] Extracting from text ({len(text)} chars)")
-    logger.debug(f"  Text preview: '{text[:100]}'")
-    
     entities = []
     text_lower = text.lower()
     
     # Strategy 1: Find file paths/names with extensions
-    logger.debug(f"  Strategy 1: Looking for file extensions...")
     all_extensions = set()
     for exts in FILE_EXTENSIONS.values():
         all_extensions.update(exts)
     
     words = text.split()
-    found_by_extension = 0
     for word in words:
         word_clean = word.strip(".,;:\"'()[]{}" ).lower()
         
@@ -217,14 +185,8 @@ def extract_entities_from_text(text: str) -> List[Tuple[str, str]]:
             if normalized and not _is_template_pattern(normalized):
                 entity_type = classify_entity(normalized)
                 entities.append((normalized, entity_type))
-                logger.debug(f"    ✅ Found by extension: {normalized} (type: {entity_type})")
-                found_by_extension += 1
-    
-    logger.info(f"  Strategy 1 found: {found_by_extension} entities")
     
     # Strategy 2: Find Unity class patterns
-    logger.debug(f"  Strategy 2: Looking for Unity class patterns...")
-    found_by_pattern = 0
     for pattern in UNITY_CLASS_PATTERNS:
         matches = re.finditer(pattern, text, re.IGNORECASE)
         for match in matches:
@@ -232,11 +194,6 @@ def extract_entities_from_text(text: str) -> List[Tuple[str, str]]:
             normalized = normalize_entity(entity)
             if normalized and normalized not in [e[0] for e in entities]:
                 entities.append((normalized, EntityType.COMPONENT))
-                logger.debug(f"    ✅ Found by pattern: {normalized}")
-                found_by_pattern += 1
-    
-    logger.info(f"  Strategy 2 found: {found_by_pattern} entities")
-    logger.info(f"✅ [EntityExtractor] Extracted {len(entities)} entities from text")
     
     return entities
 
@@ -273,52 +230,27 @@ def extract_entities_simple(
     Returns:
         List of normalized entity names (up to 10)
     """
-    logger.info(f"🔍 [EntityExtractor] ===== STARTING EXTRACTION =====")
-    logger.info(f"  Text length: {len(text)} chars")
-    logger.info(f"  Tool name: {tool_name or 'None'}")
-    logger.info(f"  Has tool result: {tool_result is not None}")
-    
     all_entities = {}  # entity -> entity_type
     
     # Priority 1: Extract from tool result (if available)
     if tool_name and tool_result:
-        logger.info(f"📊 [EntityExtractor] Priority 1: Extracting from tool result...")
         tool_entities = extract_entities_from_tool_result(tool_name, tool_result)
         for entity, entity_type in tool_entities:
             if entity not in all_entities:
                 all_entities[entity] = entity_type
-        
-        logger.info(f"  Added {len(tool_entities)} entities from tool result")
     
     # Priority 2: Extract from text
     if text:
-        logger.info(f"📊 [EntityExtractor] Priority 2: Extracting from text...")
         text_entities = extract_entities_from_text(text)
-        new_from_text = 0
         for entity, entity_type in text_entities:
             if entity not in all_entities:
                 all_entities[entity] = entity_type
-                new_from_text += 1
-        
-        logger.info(f"  Added {new_from_text} new entities from text")
     
     # Return up to 10 most relevant
     result = list(all_entities.keys())[:10]
     
-    logger.info(f"✅ [EntityExtractor] ===== EXTRACTION COMPLETE =====")
-    logger.info(f"  Total unique entities: {len(all_entities)}")
-    logger.info(f"  Returning top {len(result)} entities")
-    
-    if result:
-        logger.info(f"  Entities: {result}")
-        # Log entity types breakdown
-        type_counts = {}
-        for entity, entity_type in all_entities.items():
-            if entity in result:
-                type_counts[entity_type] = type_counts.get(entity_type, 0) + 1
-        logger.info(f"  Type breakdown: {dict(type_counts)}")
-    else:
-        logger.warning(f"  ⚠️ No entities extracted!")
+    if not result:
+        logger.warning(f"⚠️ [EntityExtractor] No entities extracted!")
     
     return result
 

@@ -41,13 +41,8 @@ async def _resolve_file_path(
             "needs_clarification": bool
         }
     """
-    logger.info(f"🔍 [PathResolver] Resolving: '{partial_path}'")
-    logger.info(f"🔍 [PathResolver]   Operation: {operation}")
-    logger.info(f"🔍 [PathResolver]   Project root: {project_root}")
-    
     # STRATEGY 1: Check if already complete path
     if _is_complete_path(partial_path):
-        logger.info(f"🔍 [PathResolver] Strategy 1: Path is already complete")
         abs_path = project_root / partial_path
         if abs_path.exists():
             return {
@@ -60,7 +55,6 @@ async def _resolve_file_path(
     
     # STRATEGY 2: Query SQLite database (FASTEST and MOST ACCURATE)
     if sqlite_path and sqlite_path.exists():
-        logger.info(f"🔍 [PathResolver] Strategy 2: Querying movesia.db")
         db_result = await asyncio.to_thread(
             _query_database_for_file, 
             partial_path, 
@@ -72,13 +66,11 @@ async def _resolve_file_path(
             return db_result
     
     # STRATEGY 3: Unity structure heuristics (common locations)
-    logger.info(f"🔍 [PathResolver] Strategy 3: Unity structure heuristics")
     heuristic_result = _apply_unity_heuristics(partial_path, project_root, operation)
     if heuristic_result["success"]:
         return heuristic_result
     
     # STRATEGY 4: Filesystem search (last resort, slower)
-    logger.info(f"🔍 [PathResolver] Strategy 4: Filesystem search")
     search_result = await asyncio.to_thread(
         _search_filesystem,
         partial_path,
@@ -125,8 +117,6 @@ def _query_database_for_file(
         # Remove common prefixes if user included them
         clean_name = clean_name.replace("assets/", "").replace("assets\\", "")
         
-        logger.info(f"🔍 [Database] Searching for: {clean_name}")
-        
         # FUZZY SEARCH QUERY - Updated for 'assets' table structure
         query = """
             SELECT path, kind, size 
@@ -161,10 +151,7 @@ def _query_database_for_file(
         conn.close()
         
         if not results:
-            logger.info(f"🔍 [Database] No results found")
             return {"success": False}
-        
-        logger.info(f"🔍 [Database] Found {len(results)} candidates")
         
         candidates = []
         for row in results:
@@ -178,7 +165,6 @@ def _query_database_for_file(
                 "kind": kind,
                 "size": size
             })
-            logger.info(f"🔍 [Database]   - {path} ({kind}, {size} bytes)")
         
         # EXACT MATCH?
         # Check if any candidate's filename exactly matches (case-insensitive)
@@ -191,7 +177,6 @@ def _query_database_for_file(
         if len(exact_matches) == 1:
             # Single exact match - use it!
             chosen = exact_matches[0]
-            logger.info(f"🔍 [Database] ✅ Exact match found: {chosen['path']}")
             return {
                 "success": True,
                 "resolved_path": chosen["path"],
@@ -203,7 +188,6 @@ def _query_database_for_file(
         elif len(results) == 1:
             # Single fuzzy match - use it!
             chosen = candidates[0]
-            logger.info(f"🔍 [Database] ✅ Single fuzzy match: {chosen['path']}")
             return {
                 "success": True,
                 "resolved_path": chosen["path"],
@@ -214,7 +198,6 @@ def _query_database_for_file(
         
         else:
             # Multiple matches - need clarification
-            logger.info(f"🔍 [Database] ⚠️ Multiple matches, needs clarification")
             return {
                 "success": False,
                 "resolved_path": None,
@@ -264,16 +247,11 @@ def _apply_unity_heuristics(
     else:
         search_locations = [f"Assets/{clean_name}"]
     
-    logger.info(f"🔍 [Heuristics] Checking {len(search_locations)} locations")
-    
     found_paths = []
     for rel_path in search_locations:
         abs_path = project_root / rel_path
         if abs_path.exists():
-            logger.info(f"🔍 [Heuristics]   ✅ Found: {rel_path}")
             found_paths.append(rel_path)
-        else:
-            logger.debug(f"🔍 [Heuristics]   ❌ Not found: {rel_path}")
     
     if len(found_paths) == 1:
         return {
@@ -309,8 +287,6 @@ def _search_filesystem(
     if not assets_dir.exists():
         return {"success": False}
     
-    logger.info(f"🔍 [Filesystem] Searching in: {assets_dir}")
-    
     # Search patterns
     patterns = [
         f"**/*{clean_name}*",  # Anywhere in name
@@ -326,7 +302,6 @@ def _search_filesystem(
                 rel_path = match.relative_to(project_root).as_posix()
                 if rel_path not in found_paths:
                     found_paths.append(rel_path)
-                    logger.info(f"🔍 [Filesystem]   Found: {rel_path}")
     
     if len(found_paths) == 1:
         return {
@@ -758,35 +733,21 @@ async def _file_modify_prepare(abs_path: Path, rel_path: str, spec: Dict[str, An
 
 async def _file_delete_prepare(abs_path: Path, rel_path: str) -> Dict[str, Any]:
     """Prepare delete operation - return approval request."""
-    logger.info(f"🗑️ [FileOp] Preparing delete operation for: {rel_path}")
-    logger.info(f"🗑️ [FileOp]   Absolute path: {abs_path}")
-    
-    logger.info(f"🗑️ [FileOp] Checking if file exists...")
     exists = await asyncio.to_thread(abs_path.exists)
-    logger.info(f"🗑️ [FileOp]   Exists: {exists}")
     
     if not exists:
-        logger.warning(f"🗑️ [FileOp] ❌ File not found: {rel_path}")
         return {"success": False, "error": f"File not found: {rel_path}"}
     
     # ✅ ADD: Check if it's actually a file
-    logger.info(f"🗑️ [FileOp] Checking if path is a file...")
     is_file = await asyncio.to_thread(abs_path.is_file)
-    logger.info(f"🗑️ [FileOp]   Is file: {is_file}")
     
     if not is_file:
-        logger.warning(f"🗑️ [FileOp] ❌ Path is not a file (might be a directory): {rel_path}")
         return {"success": False, "error": f"Path is not a file (might be a directory): {rel_path}"}
     
-    logger.info(f"🗑️ [FileOp] Reading file content for preview...")
     try:
         content = await asyncio.to_thread(abs_path.read_text, encoding="utf-8")
-        logger.info(f"🗑️ [FileOp]   Content read successfully ({len(content)} chars)")
-    except Exception as e:
-        logger.warning(f"🗑️ [FileOp]   Could not read content: {type(e).__name__}: {str(e)}")
+    except Exception:
         content = "[Binary file or unreadable content]"
-    
-    logger.info(f"🗑️ [FileOp] ✅ Returning approval request for: {rel_path}")
     return {
         "success": True,
         "needs_approval": True,
@@ -887,38 +848,21 @@ async def _execute_write(pending_op: Dict[str, Any]) -> Dict[str, Any]:
     content = pending_op["content"]
     file_exists = pending_op["file_exists"]
     
-    logger.info(f"📝 [FileOp] Starting write operation for: {rel_path}")
-    logger.info(f"📝 [FileOp]   Absolute path: {abs_path}")
-    logger.info(f"📝 [FileOp]   File already exists: {file_exists}")
-    logger.info(f"📝 [FileOp]   Content size: {len(content)} chars")
-    
     try:
         # ✅ ADD: Ensure parent directory exists
-        logger.info(f"📝 [FileOp] Checking parent directory...")
-        logger.info(f"📝 [FileOp]   Parent: {abs_path.parent}")
-        
         parent_exists = await asyncio.to_thread(abs_path.parent.exists)
-        logger.info(f"📝 [FileOp]   Parent exists: {parent_exists}")
         
         if not parent_exists:
-            logger.info(f"📝 [FileOp] Creating parent directory...")
             await asyncio.to_thread(abs_path.parent.mkdir, parents=True, exist_ok=True)
-            logger.info(f"📝 [FileOp]   ✅ Parent directory created")
         
-        logger.info(f"📝 [FileOp] Writing content to file...")
         await asyncio.to_thread(abs_path.write_text, content, encoding="utf-8")
-        logger.info(f"📝 [FileOp]   Write call completed")
         
         # ✅ ADD: Verify write succeeded
-        logger.info(f"📝 [FileOp] Verifying write...")
         verify_exists = await asyncio.to_thread(abs_path.exists)
-        logger.info(f"📝 [FileOp]   File exists after write: {verify_exists}")
         
         if not verify_exists:
-            logger.error(f"📝 [FileOp] ❌ File was not created: {rel_path}")
+            logger.error(f"❌ [FileOp] File was not created: {rel_path}")
             return {"success": False, "error": f"File was not created: {rel_path}"}
-        
-        logger.info(f"📝 [FileOp] ✅ File written successfully: {rel_path}")
         return {
             "success": True,
             "operation": "write",
@@ -951,24 +895,13 @@ async def _execute_modify(pending_op: Dict[str, Any]) -> Dict[str, Any]:
     rel_path = pending_op["rel_path"]
     content = pending_op["content"]
     
-    logger.info(f"✏️ [FileOp] Starting modify operation for: {rel_path}")
-    logger.info(f"✏️ [FileOp]   Absolute path: {abs_path}")
-    logger.info(f"✏️ [FileOp]   New content size: {len(content)} chars")
-    
     try:
-        logger.info(f"✏️ [FileOp] Checking if file exists...")
         exists = await asyncio.to_thread(abs_path.exists)
-        logger.info(f"✏️ [FileOp]   Exists: {exists}")
         
         if not exists:
-            logger.error(f"✏️ [FileOp] ❌ File does not exist: {rel_path}")
             return {"success": False, "error": f"File not found: {rel_path}"}
         
-        logger.info(f"✏️ [FileOp] Writing modified content...")
         await asyncio.to_thread(abs_path.write_text, content, encoding="utf-8")
-        logger.info(f"✏️ [FileOp]   Write completed")
-        
-        logger.info(f"✏️ [FileOp] ✅ File modified successfully: {rel_path}")
         return {
             "success": True,
             "operation": "modify",
@@ -992,17 +925,11 @@ async def _execute_delete(pending_op: Dict[str, Any]) -> Dict[str, Any]:
     abs_path = Path(pending_op["abs_path"])
     rel_path = pending_op["rel_path"]
     
-    logger.info(f"🗑️ [FileOp] Starting delete operation for: {rel_path}")
-    logger.info(f"🗑️ [FileOp]   Absolute path: {abs_path}")
-    
     try:
         # ✅ FIX 1: Verify file still exists before deletion
-        logger.info(f"🗑️ [FileOp] Checking if file exists...")
         exists = await asyncio.to_thread(abs_path.exists)
-        logger.info(f"🗑️ [FileOp]   File exists: {exists}")
         
         if not exists:
-            logger.warning(f"🗑️ [FileOp] ❌ File no longer exists: {rel_path}")
             return {
                 "success": False,
                 "error": f"File no longer exists: {rel_path}",
@@ -1010,12 +937,9 @@ async def _execute_delete(pending_op: Dict[str, Any]) -> Dict[str, Any]:
             }
         
         # ✅ FIX 2: Check if it's a file (not a directory)
-        logger.info(f"🗑️ [FileOp] Checking if path is a file...")
         is_file = await asyncio.to_thread(abs_path.is_file)
-        logger.info(f"🗑️ [FileOp]   Is file: {is_file}")
         
         if not is_file:
-            logger.warning(f"🗑️ [FileOp] ❌ Path is not a file: {rel_path}")
             return {
                 "success": False,
                 "error": f"Path is not a file: {rel_path}",
@@ -1023,24 +947,18 @@ async def _execute_delete(pending_op: Dict[str, Any]) -> Dict[str, Any]:
             }
         
         # ✅ FIX 3: Delete with proper async handling
-        logger.info(f"🗑️ [FileOp] Attempting to delete file...")
         await asyncio.to_thread(abs_path.unlink, missing_ok=False)
-        logger.info(f"🗑️ [FileOp]   Unlink call completed")
         
         # ✅ FIX 4: Verify deletion succeeded
-        logger.info(f"🗑️ [FileOp] Verifying deletion...")
         still_exists = await asyncio.to_thread(abs_path.exists)
-        logger.info(f"🗑️ [FileOp]   File still exists after deletion: {still_exists}")
         
         if still_exists:
-            logger.error(f"🗑️ [FileOp] ❌ File still exists after deletion attempt: {rel_path}")
+            logger.error(f"❌ [FileOp] File still exists after deletion: {rel_path}")
             return {
                 "success": False,
                 "error": f"File still exists after deletion attempt: {rel_path}",
                 "operation": "delete"
             }
-        
-        logger.info(f"🗑️ [FileOp] ✅ File deleted successfully: {rel_path}")
         return {
             "success": True,
             "operation": "delete",
@@ -1084,48 +1002,26 @@ async def _execute_move(pending_op: Dict[str, Any]) -> Dict[str, Any]:
     from_path = pending_op["from_path"]
     to_path = pending_op["to_path"]
     
-    logger.info(f"📦 [FileOp] Starting move operation")
-    logger.info(f"📦 [FileOp]   From: {from_path}")
-    logger.info(f"📦 [FileOp]   To: {to_path}")
-    logger.info(f"📦 [FileOp]   Absolute from: {abs_path}")
-    logger.info(f"📦 [FileOp]   Absolute to: {new_abs_path}")
-    
     try:
-        logger.info(f"📦 [FileOp] Checking source file...")
         exists = await asyncio.to_thread(abs_path.exists)
-        logger.info(f"📦 [FileOp]   Source exists: {exists}")
         
         if not exists:
-            logger.error(f"📦 [FileOp] ❌ Source file not found: {from_path}")
             return {"success": False, "error": f"Source file not found: {from_path}"}
         
-        logger.info(f"📦 [FileOp] Checking destination...")
         dest_exists = await asyncio.to_thread(new_abs_path.exists)
-        logger.info(f"📦 [FileOp]   Destination exists: {dest_exists}")
         
         if dest_exists:
-            logger.error(f"📦 [FileOp] ❌ Destination already exists: {to_path}")
             return {"success": False, "error": f"Destination already exists: {to_path}"}
         
-        logger.info(f"📦 [FileOp] Creating destination parent directory if needed...")
         await asyncio.to_thread(new_abs_path.parent.mkdir, parents=True, exist_ok=True)
-        logger.info(f"📦 [FileOp]   Parent directory ready")
-        
-        logger.info(f"📦 [FileOp] Moving file...")
         await asyncio.to_thread(abs_path.rename, new_abs_path)
-        logger.info(f"📦 [FileOp]   Move completed")
         
-        logger.info(f"📦 [FileOp] Verifying move...")
         old_still_exists = await asyncio.to_thread(abs_path.exists)
         new_exists = await asyncio.to_thread(new_abs_path.exists)
-        logger.info(f"📦 [FileOp]   Old location exists: {old_still_exists}")
-        logger.info(f"📦 [FileOp]   New location exists: {new_exists}")
         
         if old_still_exists or not new_exists:
-            logger.error(f"📦 [FileOp] ❌ Move verification failed")
+            logger.error(f"❌ [FileOp] Move verification failed")
             return {"success": False, "error": f"Move verification failed"}
-        
-        logger.info(f"📦 [FileOp] ✅ File moved successfully")
         return {
             "success": True,
             "operation": "move",

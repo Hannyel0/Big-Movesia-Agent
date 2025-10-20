@@ -66,11 +66,6 @@ class MemoryManager:
         # Session tracking
         self.session_id = session_id or f"session_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
         
-        logger.info(f"🧠 [MemoryManager] Initialized")
-        logger.info(f"   Session ID: {self.session_id}")
-        logger.info(f"   DB Path: {db_path}")
-        logger.info(f"   Auto-persist: {auto_persist}")
-        
         # Persistence settings
         self.db_path = db_path
         self.auto_persist = auto_persist
@@ -78,26 +73,20 @@ class MemoryManager:
         # Load existing memory if database exists (blocking, but OK in __init__)
         if self.db_path and self.db_path.exists() and self.auto_persist:
             self._load_from_database_sync()  # Synchronous load in __init__
-            logger.info(f"🧠 [MemoryManager] Loaded from database:")
-            logger.info(f"   Episodes: {len(self.episodic_memory.recent_episodes)}")
-            logger.info(f"   Working memory tools: {len(self.working_memory.recent_tool_results)}")
-            logger.info(f"   Patterns: {len(self.semantic_memory.patterns)}")
             logger.info(f"   Entities: {len(self.semantic_memory.entity_knowledge)}")
             logger.info(f"   Topics: {len(self.semantic_memory.topic_knowledge)}")
             
             # ✅ FIX: Force reload semantic memory if empty (after interrupt resume)
             if len(self.semantic_memory.entity_knowledge) == 0:
                 self._reload_semantic_knowledge()
-                logger.info(f"🧠 [MemoryManager] Force reloaded semantic memory after empty state")
         
         # Clean up dangling in-progress episodes
         if self.episodic_memory.current_episode:
-            logger.warning(f"🧠 [MemoryManager] Found unclosed episode: {self.episodic_memory.current_episode.episode_id}")
+            logger.warning(f" [MemoryManager] Found unclosed episode: {self.episodic_memory.current_episode.episode_id}")
             self.episodic_memory.end_episode(
                 success=False,
                 outcome_summary="Session interrupted (recovered from crash)"
             )
-            logger.info("🧠 [MemoryManager] Dangling episode closed successfully")
             self.consolidate_memories_sync()  # Synchronous in __init__
     
     # ========== Working Memory Operations ==========
@@ -128,7 +117,7 @@ class MemoryManager:
             try:
                 self._persist_session_metadata_sync()
             except Exception as e:
-                logger.warning(f"🧠 [MemoryManager] Failed to persist session metadata: {e}")
+                logger.warning(f" [MemoryManager] Failed to persist session metadata: {e}")
     
     def get_working_context(self) -> str:
         """Get current working memory context (synchronous)."""
@@ -140,7 +129,6 @@ class MemoryManager:
         """Start a new task episode (synchronous)."""
         episode_id = self.episodic_memory.start_episode(task_description)
         self.working_memory.user_intent = task_description
-        logger.info(f"🧠 [MemoryManager] Started episode {episode_id}: {task_description[:60]}...")
         return episode_id
     
     async def end_task(
@@ -155,33 +143,24 @@ class MemoryManager:
         ✅ FIXED: Now async with proper thread handling
         """
         if not self.episodic_memory.current_episode:
-            logger.warning("🧠 [MemoryManager] end_task called but no current episode")
+            logger.warning(" [MemoryManager] end_task called but no current episode")
             return
         
         episode_id = self.episodic_memory.current_episode.episode_id
         self.episodic_memory.end_episode(success, outcome_summary)
         
-        logger.info(f"🧠 [MemoryManager] Ended episode {episode_id}: {'✅ success' if success else '❌ failure'}")
-        logger.info(f"🧠 [MemoryManager]   Outcome: {outcome_summary}")
-        logger.info(f"🧠 [MemoryManager]   Total episodes: {len(self.episodic_memory.recent_episodes)}")
-        
         # Learn from episode
         if self.episodic_memory.recent_episodes:
             last_episode = self.episodic_memory.recent_episodes[-1]
             self.semantic_memory.learn_from_episode(last_episode)
-            logger.info(f"🧠 [MemoryManager] Learned patterns from episode")
         
         # ✅ FIXED: Async persistence BEFORE clearing
         if self.auto_persist and self.db_path:
             await self._persist_to_database()  # Now async!
-            logger.info(f"🧠 [MemoryManager] Persisted to database")
         
         # Only clear working memory if explicitly requested
         if clear_working_memory:
             self.working_memory.clear()
-            logger.info(f"🧠 [MemoryManager] Cleared working memory")
-        else:
-            logger.info(f"🧠 [MemoryManager] Preserved working memory ({len(self.working_memory.recent_tool_results)} tool results)")
     
     def add_plan(self, plan: Dict[str, Any]):
         """Add plan to episodic memory (synchronous)."""
@@ -195,13 +174,8 @@ class MemoryManager:
         ✅ FIXED: Now async
         ✅ FIXED: Extracts and stores entity/topic knowledge for semantic memory
         """
-        logger.info(f"🧠 [MemoryManager] add_tool_call invoked")
-        logger.info(f"🧠 [MemoryManager]   Tool: {tool_name}")
-        logger.info(f"🧠 [MemoryManager]   Args: {str(args)[:100]}")
-        
         # Add to episodic memory
         self.episodic_memory.add_tool_call(tool_name, args, result)
-        logger.info(f"🧠 [MemoryManager]   ✅ Added to episodic memory")
         
         # Add to working memory
         # ✅ FIX: Better context for file operations
@@ -211,21 +185,12 @@ class MemoryManager:
         else:
             query = args.get("query", "") or args.get("sql_query", "") or args.get("operation", "") or args.get("query_description", "")
         self.working_memory.add_tool_result(tool_name, result, query)
-        logger.info(f"🧠 [MemoryManager]   ✅ Added to working memory")
-        
-        # Log current state
-        logger.info(f"🧠 [MemoryManager]   Working memory now has {len(self.working_memory.recent_tool_results)} tool results")
-        if self.working_memory.recent_tool_results:
-            latest = self.working_memory.recent_tool_results[-1]
-            logger.info(f"🧠 [MemoryManager]   Latest: {latest['summary']}")
         
         # ✅ FIX: Extract query_text FIRST, before using it
         if tool_name in ["read_file", "write_file", "modify_file", "delete_file", "move_file"]:
             file_path = args.get("file_path", "")
-            query_text = f"{tool_name} {file_path}"  # e.g., "write_file Assets/Scripts/test7284.cs"
-            logger.info(f"🧠 [MemoryManager]   Query text (file operation): {query_text}")
+            query_text = f"{tool_name} {file_path}"
         else:
-            # Try multiple possible query field names
             query_text = (
                 args.get("query", "") or 
                 args.get("query_description", "") or 
@@ -233,14 +198,9 @@ class MemoryManager:
                 args.get("description", "") or
                 args.get("sql_query", "")
             )
-            logger.info(f"🧠 [MemoryManager]   Query text (other): {query_text}")
-        
-        logger.info(f"🧠 [MemoryManager]   Final query_text: '{query_text}'")
         
         # ✅ EXTRACT ENTITIES: Use smart extractor with tool results
         from react_agent.memory.entity_extractor import extract_entities_simple
-
-        logger.info(f"🧠 [MemoryManager] 🔍 Extracting entities from tool result (async)")
 
         entity_count = 0
         entities_found = extract_entities_simple(
@@ -271,20 +231,12 @@ class MemoryManager:
             
             self.update_entity_knowledge(entity, knowledge)
             entity_count += 1
-            logger.info(f"🔍 [MemoryManager]     Stored entity: {entity}")
 
         if entity_count > 0:
-            logger.info(f"🧠 [MemoryManager]   ✅ Stored knowledge for {entity_count} entities")
-            # ✅ FIX: Also add extracted entities to focus_entities
-            self.update_focus_sync(entities_found, [])  # Add entities to focus, keep current topics
-            logger.info(f"🧠 [MemoryManager]   ✅ Updated focus_entities with {len(entities_found)} entities")
-        else:
-            logger.warning(f"🧠 [MemoryManager]   ⚠️ No entities extracted from this tool call")
+            self.update_focus_sync(entities_found, [])
         
         # ✅ SIMPLE: Extract topics using synchronous keyword matching
         from react_agent.memory.topic_extractor import extract_topics_simple
-        
-        logger.info(f"🧠 [MemoryManager] 🔍 Extracting topics from query (async)")
         
         if query_text:
             try:
@@ -308,19 +260,13 @@ class MemoryManager:
                     self.update_topic_knowledge(topic, topic_knowledge)
                 
                 if topics_found:
-                    logger.info(f"🧠 [MemoryManager]   ✅ Extracted {len(topics_found)} topics: {', '.join(topics_found)}")
-                    # ✅ FIX: Also add extracted topics to focus_topics
-                    self.update_focus_sync([], topics_found)  # Keep current entities, add topics to focus
-                    logger.info(f"🧠 [MemoryManager]   ✅ Updated focus_topics with {len(topics_found)} topics")
-                else:
-                    logger.info(f"🧠 [MemoryManager]   ℹ️ No topics matched")
+                    self.update_focus_sync([], topics_found)
             except Exception as e:
-                logger.error(f"🧠 [MemoryManager]   ❌ Topic extraction failed: {e}", exc_info=True)
+                logger.error(f" [MemoryManager]   ❌ Topic extraction failed: {e}", exc_info=True)
         
         # ✅ FIXED: Async persistence
         if self.auto_persist and self.db_path:
-            await self._persist_working_memory()  # Now async!
-            logger.info(f"🧠 [MemoryManager]   ✅ Persisted to database")
+            await self._persist_working_memory()
     
     def add_tool_call_sync(self, tool_name: str, args: Dict[str, Any], result: Any):
         """
@@ -331,14 +277,8 @@ class MemoryManager:
         ✅ FIXED: Now extracts entity and topic knowledge like async version.
         ✅ FIXED: Handles different result formats (natural_language vs structured).
         """
-        logger.info(f"🧠 [MemoryManager] add_tool_call_sync invoked")
-        logger.info(f"🧠 [MemoryManager]   Tool: {tool_name}")
-        logger.info(f"🧠 [MemoryManager]   Args keys: {list(args.keys())}")
-        logger.info(f"🧠 [MemoryManager]   Args: {args}")
-        
         # Add to episodic memory (synchronous)
         self.episodic_memory.add_tool_call(tool_name, args, result)
-        logger.info(f"🧠 [MemoryManager]   ✅ Added to episodic memory")
         
         # ✅ FIX: Extract query_text FIRST, before using it
         if tool_name in ["read_file", "write_file", "modify_file", "delete_file", "move_file"]:
@@ -355,11 +295,8 @@ class MemoryManager:
                     spec_type = getattr(spec, "type", "unknown")
                 query_text = f"{tool_name} {file_path} (type: {spec_type})"
             else:
-                query_text = f"{tool_name} {file_path}"  # e.g., "write_file Assets/Scripts/test7284.cs"
-            
-            logger.info(f"🧠 [MemoryManager]   Query text (file operation): {query_text}")
+                query_text = f"{tool_name} {file_path}"
         else:
-            # Try multiple possible query field names
             query_text = (
                 args.get("query", "") or 
                 args.get("query_description", "") or 
@@ -367,39 +304,12 @@ class MemoryManager:
                 args.get("description", "") or
                 args.get("sql_query", "")
             )
-            logger.info(f"🧠 [MemoryManager]   Query text (other): {query_text}")
         
-        logger.info(f"🧠 [MemoryManager]   Final query_text: '{query_text}'")
-        
-        # Add to working memory (synchronous) - NOW query_text exists
+        # Add to working memory (synchronous)
         self.working_memory.add_tool_result(tool_name, result, query_text)
-        logger.info(f"🧠 [MemoryManager]   ✅ Added to working memory")
-        
-        # Log current state
-        logger.info(f"🧠 [MemoryManager]   Working memory now has {len(self.working_memory.recent_tool_results)} tool results")
-        if self.working_memory.recent_tool_results:
-            latest = self.working_memory.recent_tool_results[-1]
-            logger.info(f"🧠 [MemoryManager]   Latest: {latest['summary']}")
-        
-        # ✅ DEBUG: Log the result structure
-        logger.info(f"🧠 [MemoryManager] 📊 Analyzing result structure:")
-        logger.info(f"🧠 [MemoryManager]   Result type: {type(result)}")
-        logger.info(f"🧠 [MemoryManager]   Result is dict: {isinstance(result, dict)}")
-        if isinstance(result, dict):
-            logger.info(f"🧠 [MemoryManager]   Result keys: {list(result.keys())}")
-            logger.info(f"🧠 [MemoryManager]   Has 'results' key: {'results' in result}")
-            if 'results' in result:
-                results_data = result.get("results")
-                logger.info(f"🧠 [MemoryManager]   Results type: {type(results_data)}")
-                logger.info(f"🧠 [MemoryManager]   Results is list: {isinstance(results_data, list)}")
-                if isinstance(results_data, list) and len(results_data) > 0:
-                    logger.info(f"🧠 [MemoryManager]   First result type: {type(results_data[0])}")
-                    logger.info(f"🧠 [MemoryManager]   First result preview: {str(results_data[0])[:100]}")
         
         # ✅ EXTRACT ENTITIES: Use smart extractor with tool results
         from react_agent.memory.entity_extractor import extract_entities_simple
-
-        logger.info(f"🧠 [MemoryManager] 🔍 Extracting entities from tool result")
 
         entity_count = 0
         entities_found = extract_entities_simple(
@@ -430,22 +340,12 @@ class MemoryManager:
             
             self.update_entity_knowledge(entity, knowledge)
             entity_count += 1
-            logger.info(f"🔍 [MemoryManager]     Stored entity: {entity}")
 
         if entity_count > 0:
-            logger.info(f"🧠 [MemoryManager]   ✅ Stored knowledge for {entity_count} entities")
-            # ✅ FIX: Also add extracted entities to focus_entities
-            self.update_focus_sync(entities_found, [])  # Add entities to focus, keep current topics
-            logger.info(f"🧠 [MemoryManager]   ✅ Updated focus_entities with {len(entities_found)} entities")
-        else:
-            logger.warning(f"🧠 [MemoryManager]   ⚠️ No entities extracted from this tool call")
+            self.update_focus_sync(entities_found, [])
         
         # ✅ SIMPLE: Extract topics using synchronous keyword matching
         from react_agent.memory.topic_extractor import extract_topics_simple
-        
-        logger.info(f"🧠 [MemoryManager] 🔍 Extracting topics from query")
-        logger.info(f"🧠 [MemoryManager]   Using query_text: '{query_text}'")
-        logger.info(f"🧠 [MemoryManager]   Query length: {len(query_text)}")
         
         if query_text:
             try:
@@ -467,22 +367,15 @@ class MemoryManager:
                     self.update_topic_knowledge(topic, topic_knowledge)
                 
                 if topics_found:
-                    logger.info(f"🧠 [MemoryManager]   ✅ Extracted {len(topics_found)} topics: {', '.join(topics_found)}")
-                    # ✅ FIX: Also add extracted topics to focus_topics
-                    self.update_focus_sync([], topics_found)  # Keep current entities, add topics to focus
-                    logger.info(f"🧠 [MemoryManager]   ✅ Updated focus_topics with {len(topics_found)} topics")
-                else:
-                    logger.info(f"🧠 [MemoryManager]   ℹ️ No topics matched")
+                    self.update_focus_sync([], topics_found)
             except Exception as e:
-                logger.error(f"🧠 [MemoryManager]   ❌ Topic extraction failed: {e}", exc_info=True)
+                logger.error(f" [MemoryManager]   ❌ Topic extraction failed: {e}", exc_info=True)
         else:
-            logger.warning(f"🧠 [MemoryManager]   ⚠️ No query text to extract topics from")
+            pass  # No query text available
         
         # ✅ FIX: Persist ALL memory types in ONE transaction to avoid locks
         if self.auto_persist and self.db_path:
             try:
-                logger.info(f"🧠 [MemoryManager] 💾 Starting synchronous persistence")
-                
                 # ✅ NEW: Use single connection for all operations to avoid locks
                 conn = sqlite3.connect(str(self.db_path), timeout=10.0)  # Longer timeout
                 cursor = conn.cursor()
@@ -501,13 +394,12 @@ class MemoryManager:
                     
                     # Commit everything at once
                     conn.commit()
-                    logger.info(f"🧠 [MemoryManager]   ✅ Persisted all memory in single transaction")
                     
                 finally:
                     conn.close()
                     
             except Exception as e:
-                logger.warning(f"🧠 [MemoryManager]   ⚠️ Persistence failed: {e}")
+                logger.warning(f" [MemoryManager]   ⚠️ Persistence failed: {e}")
                 # Store in a pending queue for next async opportunity
                 if not hasattr(self, '_pending_persistence'):
                     self._pending_persistence = []
@@ -560,16 +452,11 @@ class MemoryManager:
 
     def consolidate_memories_sync(self):
         """Consolidate memories (synchronous version for __init__)."""
-        logger.info("🧠 [MemoryManager] Starting memory consolidation...")
-
         learned_count = 0
         for episode in self.episodic_memory.recent_episodes[-5:]:
             if episode.status == EpisodeStatus.COMPLETED:
                 self.semantic_memory.learn_from_episode(episode)
                 learned_count += 1
-
-        logger.info(f"🧠 [MemoryManager]   Learned from {learned_count} episodes")
-        logger.info(f"🧠 [MemoryManager]   Total patterns: {len(self.semantic_memory.patterns)}")
 
     async def consolidate_memories(self):
         """
@@ -582,7 +469,6 @@ class MemoryManager:
         # Persist consolidated memories
         if self.auto_persist and self.db_path:
             await self._persist_to_database()
-            logger.info(f"🧠 [MemoryManager]   Persisted consolidated memories")
     
     # ========== Context Generation for LLM ==========
     
@@ -593,10 +479,6 @@ class MemoryManager:
         Returns a formatted string containing relevant memory information.
         ✅ FIXED: Now async and reloads working memory using asyncio.to_thread
         """
-        logger.info(f"🧠 [MemoryManager] Generating memory context")
-        logger.info(f"🧠 [MemoryManager]   Include patterns: {include_patterns}")
-        logger.info(f"🧠 [MemoryManager]   Include episodes: {include_episodes}")
-        logger.info(f"🧠 [MemoryManager]   Working memory tool results: {len(self.working_memory.recent_tool_results)}")
         
         # ✅ FIX: Reload working memory from database if empty but we have a session
         if len(self.working_memory.recent_tool_results) == 0 and self.db_path and self.db_path.exists():
@@ -625,7 +507,7 @@ class MemoryManager:
                             }
                             tools.append(tool_result)
                         except Exception as e:
-                            logger.warning(f"🧠 [MemoryManager] Failed to reload tool result: {e}")
+                            logger.warning(f" [MemoryManager] Failed to reload tool result: {e}")
                     
                     conn.close()
                     return tools
@@ -637,11 +519,10 @@ class MemoryManager:
                     self.working_memory.recent_tool_results.append(tool)
                 
                 if len(loaded_tools) > 0:
-                    logger.info(f"🧠 [MemoryManager]   ✅ Reloaded {len(loaded_tools)} tool results from database")
-                    logger.info(f"🧠 [MemoryManager]   Working memory now has: {len(self.working_memory.recent_tool_results)} tool results")
+                    pass  # Successfully reloaded
                     
             except Exception as e:
-                logger.warning(f"🧠 [MemoryManager]   ⚠️ Could not reload tools from database: {e}")
+                logger.warning(f" [MemoryManager]   ⚠️ Could not reload tools from database: {e}")
         
         # ✅ FIX: Reload entity knowledge from database if empty
         if len(self.semantic_memory.entity_knowledge) == 0 and self.db_path and self.db_path.exists():
@@ -658,7 +539,7 @@ class MemoryManager:
                             knowledge = json.loads(knowledge_json)
                             entities[entity] = knowledge
                         except Exception as e:
-                            logger.warning(f"🧠 [MemoryManager] Failed to reload entity: {e}")
+                            logger.warning(f" [MemoryManager] Failed to reload entity: {e}")
                     
                     conn.close()
                     return entities
@@ -667,10 +548,10 @@ class MemoryManager:
                 self.semantic_memory.entity_knowledge.update(loaded_entities)
                 
                 if len(loaded_entities) > 0:
-                    logger.info(f"🧠 [MemoryManager]   ✅ Reloaded {len(loaded_entities)} entities from database")
+                    pass  # Successfully reloaded
                     
             except Exception as e:
-                logger.warning(f"🧠 [MemoryManager]   ⚠️ Could not reload entities from database: {e}")
+                logger.warning(f" [MemoryManager]   ⚠️ Could not reload entities from database: {e}")
         
         # ✅ FIX: Reload topic knowledge from database if empty  
         if len(self.semantic_memory.topic_knowledge) == 0 and self.db_path and self.db_path.exists():
@@ -687,7 +568,7 @@ class MemoryManager:
                             knowledge = json.loads(knowledge_json)
                             topics[topic] = knowledge
                         except Exception as e:
-                            logger.warning(f"🧠 [MemoryManager] Failed to reload topic: {e}")
+                            logger.warning(f" [MemoryManager] Failed to reload topic: {e}")
                     
                     conn.close()
                     return topics
@@ -696,10 +577,10 @@ class MemoryManager:
                 self.semantic_memory.topic_knowledge.update(loaded_topics)
                 
                 if len(loaded_topics) > 0:
-                    logger.info(f"🧠 [MemoryManager]   ✅ Reloaded {len(loaded_topics)} topics from database")
+                    pass  # Successfully reloaded
                     
             except Exception as e:
-                logger.warning(f"🧠 [MemoryManager]   ⚠️ Could not reload topics from database: {e}")
+                logger.warning(f" [MemoryManager]   ⚠️ Could not reload topics from database: {e}")
         
         context_parts = []
         
@@ -707,15 +588,11 @@ class MemoryManager:
         tool_context = self.working_memory.get_recent_tool_context(limit=2)
         if tool_context:
             context_parts.append(f"## Recent Actions\n{tool_context}")
-            logger.info(f"🧠 [MemoryManager]   ✅ Added recent tool context")
-        else:
-            logger.info(f"🧠 [MemoryManager]   ⚠️ No recent tool context available")
         
         # Working memory context
         working_context = self.working_memory.get_context_summary()
         if working_context != "No active context":
             context_parts.append(f"## Current Context\n{working_context}")
-            logger.info(f"🧠 [MemoryManager]   ✅ Added working context")
         
         # Relevant patterns from semantic memory
         if include_patterns and self.working_memory.user_intent:
@@ -735,171 +612,80 @@ class MemoryManager:
                     pattern_text += f"   - Applied {pattern.times_applied} times with {pattern.success_rate:.1%} success\n"
                 context_parts.append(pattern_text)
         
-        # ✅ ENTITY KNOWLEDGE RETRIEVAL (with debug logging)
-        logger.info(f"🔍 [MemoryManager] === ENTITY KNOWLEDGE RETRIEVAL ===")
-        logger.info(f"🔍 [MemoryManager]   Total entities in semantic memory: {len(self.semantic_memory.entity_knowledge)}")
-        
-        if len(self.semantic_memory.entity_knowledge) > 0:
-            logger.info(f"🔍 [MemoryManager]   Sample entities in memory:")
-            for i, entity in enumerate(list(self.semantic_memory.entity_knowledge.keys())[:3], 1):
-                logger.info(f"🔍 [MemoryManager]     {i}. {entity}")
-        
-        # Strategy 1: Check focus_entities
-        logger.info(f"🔍 [MemoryManager]   Strategy 1 - Focus entities:")
-        logger.info(f"🔍 [MemoryManager]     focus_entities count: {len(self.working_memory.focus_entities)}")
-        if self.working_memory.focus_entities:
-            logger.info(f"🔍 [MemoryManager]     focus_entities: {self.working_memory.focus_entities[:5]}")
-        
-        # Strategy 2: Extract entities from recent tool results
-        logger.info(f"🔍 [MemoryManager]   Strategy 2 - Recent tool results:")
-        logger.info(f"🔍 [MemoryManager]     Recent tool results count: {len(self.working_memory.recent_tool_results)}")
+        # ✅ ENTITY KNOWLEDGE RETRIEVAL
         
         recent_entities = set()
         if len(self.working_memory.recent_tool_results) > 0:
-            for idx, tool_result in enumerate(self.working_memory.recent_tool_results[-2:], 1):
-                logger.info(f"🔍 [MemoryManager]     Processing tool result {idx}:")
-                logger.info(f"🔍 [MemoryManager]       Tool: {tool_result.get('tool_name')}")
-                
+            for tool_result in self.working_memory.recent_tool_results[-2:]:
                 result_data = tool_result.get("result", {})
-                logger.info(f"🔍 [MemoryManager]       Result data type: {type(result_data)}")
                 
-                # ✅ CRITICAL: Check results_structured first!
                 if isinstance(result_data, dict):
                     structured = result_data.get("results_structured", [])
                     
                     if isinstance(structured, list) and len(structured) > 0:
-                        logger.info(f"🔍 [MemoryManager]       Using results_structured: {len(structured)} items")
-                        
-                        for item_idx, item in enumerate(structured[:10], 1):
+                        for item in structured[:10]:
                             if isinstance(item, dict):
                                 entity = item.get("path") or item.get("name")
                                 if entity:
                                     recent_entities.add(entity)
-                                    logger.info(f"🔍 [MemoryManager]       Extracted entity {item_idx}: {entity}")
-                                else:
-                                    logger.info(f"🔍 [MemoryManager]       Item {item_idx} has no path/name: {list(item.keys())}")
-                            else:
-                                logger.info(f"🔍 [MemoryManager]       Item {item_idx} is not dict: {type(item)}")
-                    else:
-                        logger.info(f"🔍 [MemoryManager]       No results_structured available")
-        
-        logger.info(f"🔍 [MemoryManager]   Extracted {len(recent_entities)} entities from recent tool results")
-        if recent_entities:
-            logger.info(f"🔍 [MemoryManager]   Sample extracted entities:")
-            for i, entity in enumerate(list(recent_entities)[:3], 1):
-                logger.info(f"🔍 [MemoryManager]     {i}. {entity}")
         
         # Combine strategies: focus_entities + recent_entities
         all_entities = set(self.working_memory.focus_entities) | recent_entities
-        logger.info(f"🔍 [MemoryManager]   Combined entities to check: {len(all_entities)}")
         
         # Retrieve knowledge for these entities
         entity_context_parts = []
-        logger.info(f"🔍 [MemoryManager]   Checking entity knowledge:")
         
         for entity in list(all_entities)[:10]:
-            logger.info(f"🔍 [MemoryManager]     Checking entity: {entity}")
-            logger.info(f"🔍 [MemoryManager]       In semantic memory? {entity in self.semantic_memory.entity_knowledge}")
-            
             if entity in self.semantic_memory.entity_knowledge:
                 knowledge = self.semantic_memory.entity_knowledge[entity]
-                logger.info(f"🔍 [MemoryManager]       Knowledge found: {knowledge}")
-                
                 entity_name = entity.split("/")[-1] if "/" in entity else entity
                 details = []
                 
                 if "size" in knowledge:
                     details.append(f"size: {knowledge['size']} bytes")
-                    logger.info(f"🔍 [MemoryManager]       Added size: {knowledge['size']} bytes")
                 
                 if "type" in knowledge:
                     details.append(f"type: {knowledge['type']}")
-                    logger.info(f"🔍 [MemoryManager]       Added type: {knowledge['type']}")
                 
                 if "access_count" in knowledge and knowledge["access_count"] > 0:
                     details.append(f"accessed {knowledge['access_count']} times")
-                    logger.info(f"🔍 [MemoryManager]       Added access_count: {knowledge['access_count']}")
                 
                 if details:
                     formatted = f"- **{entity_name}**: {', '.join(details)}"
                     entity_context_parts.append(formatted)
-                    logger.info(f"🔍 [MemoryManager]       ✅ Added to context: {formatted}")
-                else:
-                    logger.info(f"🔍 [MemoryManager]       ⚠️ No details found for entity")
-            else:
-                logger.info(f"🔍 [MemoryManager]       ❌ Not found in semantic memory")
         
         if entity_context_parts:
             entity_section = f"## Known Entities\n" + "\n".join(entity_context_parts)
             context_parts.append(entity_section)
-            logger.info(f"✅ [MemoryManager]   Added entity knowledge section with {len(entity_context_parts)} entities")
-            logger.info(f"✅ [MemoryManager]   Entity section preview: {entity_section[:200]}")
-        else:
-            logger.info(f"⚠️ [MemoryManager]   No entity knowledge added to context")
         
-        logger.info(f"🔍 [MemoryManager] === END ENTITY KNOWLEDGE RETRIEVAL ===")
-        
-        # ✅ TOPIC KNOWLEDGE RETRIEVAL (with debug logging)
-        logger.info(f"🔍 [MemoryManager] === TOPIC KNOWLEDGE RETRIEVAL ===")
-        logger.info(f"🔍 [MemoryManager]   Total topics in semantic memory: {len(self.semantic_memory.topic_knowledge)}")
-        
-        if len(self.semantic_memory.topic_knowledge) > 0:
-            logger.info(f"🔍 [MemoryManager]   Topics in memory:")
-            for i, (topic, knowledge) in enumerate(list(self.semantic_memory.topic_knowledge.items())[:5], 1):
-                logger.info(f"🔍 [MemoryManager]     {i}. {topic}: {knowledge}")
-        
-        # Check if we have any basis for retrieving topics
+        # ✅ TOPIC KNOWLEDGE RETRIEVAL
         has_intent = bool(self.working_memory.user_intent)
         has_tool_results = len(self.working_memory.recent_tool_results) > 0
         has_focus_topics = len(self.working_memory.focus_topics) > 0
         
-        logger.info(f"🔍 [MemoryManager]   Retrieval conditions:")
-        logger.info(f"🔍 [MemoryManager]     Has user_intent: {has_intent} ('{self.working_memory.user_intent[:50] if has_intent else ''}')")
-        logger.info(f"🔍 [MemoryManager]     Has tool_results: {has_tool_results}")
-        logger.info(f"🔍 [MemoryManager]     Has focus_topics: {has_focus_topics} ({self.working_memory.focus_topics if has_focus_topics else []})")
-        
         topic_context_parts = []
         
         if has_intent or has_tool_results or has_focus_topics:
-            logger.info(f"🔍 [MemoryManager]   Retrieving topic knowledge:")
-            
             for topic, knowledge in list(self.semantic_memory.topic_knowledge.items())[:5]:
-                logger.info(f"🔍 [MemoryManager]     Processing topic: {topic}")
-                logger.info(f"🔍 [MemoryManager]       Knowledge: {knowledge}")
-                
                 details = []
                 
                 if "query_count" in knowledge and knowledge["query_count"] > 0:
                     details.append(f"queried {knowledge['query_count']} times")
-                    logger.info(f"🔍 [MemoryManager]       Added query_count: {knowledge['query_count']}")
                 
                 if "tool_used" in knowledge:
                     details.append(f"via {knowledge['tool_used']}")
-                    logger.info(f"🔍 [MemoryManager]       Added tool_used: {knowledge['tool_used']}")
                 
                 if "success" in knowledge:
                     success_str = "successful" if knowledge["success"] else "failed"
                     details.append(success_str)
-                    logger.info(f"🔍 [MemoryManager]       Added success: {success_str}")
                 
                 if details:
                     formatted = f"- **{topic}**: {', '.join(details)}"
                     topic_context_parts.append(formatted)
-                    logger.info(f"🔍 [MemoryManager]       ✅ Added to context: {formatted}")
-                else:
-                    logger.info(f"🔍 [MemoryManager]       ⚠️ No details found for topic")
             
             if topic_context_parts:
                 topic_section = f"## Relevant Topics\n" + "\n".join(topic_context_parts)
                 context_parts.append(topic_section)
-                logger.info(f"✅ [MemoryManager]   Added topic knowledge section with {len(topic_context_parts)} topics")
-                logger.info(f"✅ [MemoryManager]   Topic section preview: {topic_section[:200]}")
-            else:
-                logger.info(f"⚠️ [MemoryManager]   No topic knowledge added to context")
-        else:
-            logger.info(f"⚠️ [MemoryManager]   No basis for topic retrieval (no intent, tool results, or focus)")
-        
-        logger.info(f"🔍 [MemoryManager] === END TOPIC KNOWLEDGE RETRIEVAL ===")
         
         # Similar past episodes
         if include_episodes and self.working_memory.focus_entities:
@@ -919,8 +705,6 @@ class MemoryManager:
                 context_parts.append(episode_text)
         
         final_context = "\n\n".join(context_parts) if context_parts else ""
-        logger.info(f"🧠 [MemoryManager] Generated context length: {len(final_context)} chars")
-        logger.info(f"🧠 [MemoryManager] Context preview: {final_context[:200]}")
         
         return final_context
     

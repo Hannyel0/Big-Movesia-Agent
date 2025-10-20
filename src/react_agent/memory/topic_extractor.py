@@ -233,13 +233,10 @@ def find_matching_topics(text: str) -> List[str]:
     text_lower = text.lower()
     matched_topics = set()
     
-    logger.debug(f"🔍 [TopicMatcher] Analyzing text: '{text[:100]}'")
-    
     # Strategy 1: Check for exact topic matches
     for topic in SEED_TOPICS:
         if topic in text_lower:
             matched_topics.add(topic)
-            logger.debug(f"  ✅ Exact match: '{topic}'")
     
     # Strategy 2: Check normalized words
     words = text_lower.split()
@@ -247,19 +244,15 @@ def find_matching_topics(text: str) -> List[str]:
         normalized = normalize_word(word)
         if normalized in SEED_TOPICS and normalized not in matched_topics:
             matched_topics.add(normalized)
-            logger.debug(f"  ✅ Normalized match: '{word}' -> '{normalized}'")
     
     # Strategy 3: Check synonyms
     for canonical_topic, synonyms in TOPIC_SYNONYMS.items():
         for synonym in synonyms:
             if synonym in text_lower:
                 matched_topics.add(canonical_topic)
-                logger.debug(f"  ✅ Synonym match: '{synonym}' -> '{canonical_topic}'")
                 break  # Don't keep checking synonyms once we found one
     
     result = list(matched_topics)[:3]  # Limit to 3 topics
-    
-    logger.info(f"✅ [TopicMatcher] Found {len(result)} topics: {result}")
     return result
 
 
@@ -285,23 +278,11 @@ def extract_topics_simple(
     Returns:
         List of 1-3 relevant topics
     """
-    logger.info(f"🔍 [TopicExtractor] Starting extraction")
-    logger.info(f"  Tool: {tool_name}")
-    logger.info(f"  Query: '{query[:80]}'")
-    logger.info(f"  Summary: '{result_summary[:60]}'")
-    
     # Combine query and summary for matching
     text_to_match = f"{query} {result_summary}".lower()
-    logger.debug(f"  Combined text ({len(text_to_match)} chars): '{text_to_match[:100]}'")
     
     # Find matching topics using smart matching
     matched_topics = find_matching_topics(text_to_match)
-    
-    if matched_topics:
-        logger.info(f"✅ [TopicExtractor] Extraction successful!")
-        logger.info(f"  Found {len(matched_topics)} topics: {matched_topics}")
-    else:
-        logger.warning(f"⚠️ [TopicExtractor] No topics matched")
     
     return matched_topics
 

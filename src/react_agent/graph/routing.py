@@ -13,34 +13,19 @@ logger = logging.getLogger(__name__)
 
 def route_after_assess(state: State) -> Literal["advance_step", "increment_retry", "micro_retry", "error_recovery", "finish"]:
     """Enhanced routing with micro-retry support and absolute completion priority."""
-    logger.info(f"🔀 [ROUTER] ===== ROUTING AFTER ASSESS =====")
-    
-    # Log current state
-    if state.current_assessment:
-        logger.info(f"🔀 [ROUTER] Assessment: {state.current_assessment.outcome}")
-        logger.info(f"🔀 [ROUTER] Confidence: {state.current_assessment.confidence}")
-    else:
-        logger.info(f"🔀 [ROUTER] Assessment: None")
-    
-    if state.plan and state.plan.steps:
-        logger.info(f"🔀 [ROUTER] Step: {state.step_index + 1}/{len(state.plan.steps)}")
-        logger.info(f"🔀 [ROUTER] Retry count: {state.retry_count}/{state.max_retries_per_step}")
     
     # Safety checks
     if not state.current_assessment:
-        logger.info("🔀 [ROUTER] Decision: FINISH")
-        logger.info("🔀 [ROUTER] Reason: No assessment available")
+        logger.info("🔀 [Router] ASSESS → FINISH (no assessment)")
         return "finish"
     
     if not state.plan or not state.plan.steps:
-        logger.info("🔀 [ROUTER] Decision: FINISH")
-        logger.info("🔀 [ROUTER] Reason: No plan or steps available")
+        logger.info("🔀 [Router] ASSESS → FINISH (no plan)")
         return "finish"
     
     # NEW: Check for micro-retry flag first (highest priority for transient errors)
     if getattr(state, "should_micro_retry", False):
-        logger.info("🔀 [ROUTER] Decision: MICRO_RETRY")
-        logger.info("🔀 [ROUTER] Reason: Transient error detected, attempting immediate retry")
+        logger.info("🔀 [Router] ASSESS → MICRO_RETRY (transient error)")
         return "micro_retry"
     
     # ABSOLUTE PRIORITY: Check if we're on or past the last step
@@ -49,26 +34,22 @@ def route_after_assess(state: State) -> Literal["advance_step", "increment_retry
     
     # If we're on the last step AND it succeeded, ALWAYS finish
     if is_on_or_past_last_step and state.current_assessment.outcome == "success":
-        logger.info("🔀 [ROUTER] Decision: FINISH")
-        logger.info(f"🔀 [ROUTER] Reason: Last step (step {state.step_index + 1}/{len(state.plan.steps)}) completed successfully")
+        logger.info(f"🔀 [Router] ASSESS → FINISH (last step {state.step_index + 1}/{len(state.plan.steps)} success)")
         return "finish"
     
     # If we somehow went past the last step, force finish
     if state.step_index >= len(state.plan.steps):
-        logger.info("🔀 [ROUTER] Decision: FINISH")
-        logger.info(f"🔀 [ROUTER] Reason: Step index ({state.step_index + 1}) exceeds plan length ({len(state.plan.steps)})")
+        logger.info(f"🔀 [Router] ASSESS → FINISH (step {state.step_index + 1} exceeds plan)")
         return "finish"
     
     # Check for error recovery need (only if not completing)
     if getattr(state, "needs_error_recovery", False) or state.runtime_metadata.get("needs_error_recovery"):
-        logger.info("🔀 [ROUTER] Decision: ERROR_RECOVERY")
-        logger.info("🔀 [ROUTER] Reason: Error recovery explicitly requested by assessment")
+        logger.info("🔀 [Router] ASSESS → ERROR_RECOVERY")
         return "error_recovery"
     
     # Handle success on non-final steps
     if state.current_assessment.outcome == "success":
-        logger.info("🔀 [ROUTER] Decision: ADVANCE_STEP")
-        logger.info(f"🔀 [ROUTER] Reason: Step {state.step_index + 1}/{len(state.plan.steps)} succeeded, advancing to next step")
+        logger.info(f"🔀 [Router] ASSESS → ADVANCE_STEP (step {state.step_index + 1} success)")
         return "advance_step"
     
     # Handle retry logic
@@ -82,32 +63,23 @@ def route_after_assess(state: State) -> Literal["advance_step", "increment_retry
             for pattern in relevant_patterns:
                 success_rate = pattern.get("success_rate", 1.0)
                 if success_rate < 0.3:  # Less than 30% success rate
-                    logger.info("🔀 [ROUTER] Decision: ERROR_RECOVERY")
-                    logger.info(f"🔀 [ROUTER] Reason: Memory shows low success rate ({success_rate:.0%}) for this pattern")
-                    logger.info(f"🔀 [ROUTER] Pattern: {pattern.get('context', 'unknown')[:60]}")
-                    print(f"🧠 [Router] Memory shows low success rate ({success_rate:.0%}) for this pattern")
-                    print(f"   Pattern: {pattern.get('context', 'unknown')}")
-                    print(f"   Skipping retry, routing to error_recovery")
+                    logger.info(f"🔀 [Router] ASSESS → ERROR_RECOVERY (low success rate {success_rate:.0%})")
                     return "error_recovery"
         
         if state.retry_count >= state.max_retries_per_step:
-            logger.info("🔀 [ROUTER] Decision: ERROR_RECOVERY")
-            logger.info(f"🔀 [ROUTER] Reason: Max retries reached ({state.retry_count}/{state.max_retries_per_step})")
+            logger.info(f"🔀 [Router] ASSESS → ERROR_RECOVERY (max retries {state.retry_count})")
             return "error_recovery"
         
-        logger.info("🔀 [ROUTER] Decision: INCREMENT_RETRY")
-        logger.info(f"🔀 [ROUTER] Reason: Assessment suggests retry (attempt {state.retry_count + 1}/{state.max_retries_per_step})")
+        logger.info(f"🔀 [Router] ASSESS → INCREMENT_RETRY (attempt {state.retry_count + 1})")
         return "increment_retry"
     
     # Handle blocked steps
     if state.current_assessment.outcome == "blocked":
-        logger.info("🔀 [ROUTER] Decision: ERROR_RECOVERY")
-        logger.info("🔀 [ROUTER] Reason: Step is blocked and cannot proceed")
+        logger.info("🔀 [Router] ASSESS → ERROR_RECOVERY (blocked)")
         return "error_recovery"
     
     # Fallback to finish
-    logger.info("🔀 [ROUTER] Decision: FINISH")
-    logger.info(f"🔀 [ROUTER] Reason: Fallback - unhandled outcome ({state.current_assessment.outcome})")
+    logger.info(f"🔀 [Router] ASSESS → FINISH (fallback: {state.current_assessment.outcome})")
     return "finish"
 
 
@@ -187,7 +159,6 @@ def route_after_tools(state: State) -> Literal["check_file_approval", "assess"]:
     Route after tool execution to check if approval is needed.
     Also captures tool results in memory for context.
     """
-    logger.info("🔀 [ROUTER] ===== ROUTING AFTER TOOLS =====")
     
     # ✅ CRITICAL: Capture tool result in memory FIRST
     last_tool_message = None
@@ -197,20 +168,13 @@ def route_after_tools(state: State) -> Literal["check_file_approval", "assess"]:
             break
     
     if not last_tool_message:
-        logger.warning("🔀 [ROUTER] No tool message found")
         return "assess"
-    
-    logger.info(f"🔀 [ROUTER] Found tool message from: {last_tool_message.name}")
     
     # ✅ CRITICAL: Store tool result in memory
     if state.memory:
         try:
             result = json.loads(last_tool_message.content)
             tool_name = last_tool_message.name or "unknown"
-            
-            logger.info(f"🧠 [ROUTER] Storing tool result in memory")
-            logger.info(f"🧠 [ROUTER]   Tool: {tool_name}")
-            logger.info(f"🧠 [ROUTER]   Success: {result.get('success', 'N/A')}")
             
             # Extract query from the preceding AIMessage
             query = ""
@@ -237,9 +201,6 @@ def route_after_tools(state: State) -> Literal["check_file_approval", "assess"]:
                     if query:
                         break
             
-            logger.info(f"🧠 [ROUTER]   Query: {query[:80]}")
-            logger.info(f"🧠 [ROUTER]   Args keys: {list(args.keys())}")
-            
             # Store in memory (using sync wrapper for non-async routing context)
             # ✅ FIX: Pass full args dict, not just {"query": query}
             # Note: add_tool_call_sync now handles entity extraction and focus updates automatically
@@ -248,61 +209,26 @@ def route_after_tools(state: State) -> Literal["check_file_approval", "assess"]:
             # ✅ FIX: Persist immediately to survive interrupts
             if state.memory and state.memory.auto_persist:
                 try:
-                    # Get entity count from semantic memory
                     entity_count = len(state.memory.semantic_memory.entity_knowledge)
                     if entity_count > 0:
                         state.memory._persist_to_database_sync()
-                        logger.info(f"🧠 [ROUTER]   ✅ Persisted {entity_count} entities to database")
                 except Exception as e:
-                    logger.warning(f"🧠 [ROUTER]   ⚠️ Failed to persist entities: {e}")
+                    logger.warning(f"⚠️ [ROUTER] Failed to persist: {e}")
             
-            # ✅ VERIFY STORAGE
-            if hasattr(state.memory, 'working_memory'):
-                recent_tools = state.memory.working_memory.recent_tool_results
-                logger.info(f"✅ [ROUTER] Memory verification:")
-                logger.info(f"   Total stored: {len(recent_tools)} tool results")
-                
-                if recent_tools:
-                    # Show last 3 tool results
-                    for i, tool in enumerate(recent_tools[-3:], 1):
-                        logger.info(f"   {i}. {tool['tool_name']}: {tool['summary'][:60]}")
-                    
-                    # Print to console for visibility
-                    print(f"\n✅ [ROUTER] Tool result stored in memory:")
-                    print(f"   Tool: {tool_name}")
-                    print(f"   Total in memory: {len(recent_tools)}")
-                    print(f"   Latest: {recent_tools[-1]['summary']}")
-                else:
-                    logger.warning(f"⚠️ [ROUTER] Tool result was stored but recent_tool_results is empty!")
-                    print(f"⚠️ [ROUTER] WARNING: Tool result stored but recent_tool_results is empty!")
-            else:
-                logger.warning(f"⚠️ [ROUTER] state.memory has no working_memory attribute!")
-                print(f"⚠️ [ROUTER] WARNING: state.memory has no working_memory attribute!")
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"❌ [ROUTER] Failed to parse tool result as JSON: {e}")
-            print(f"❌ [ROUTER] ERROR: Failed to parse tool result as JSON: {e}")
         except Exception as e:
-            logger.error(f"❌ [ROUTER] Failed to store tool result: {e}", exc_info=True)
-            print(f"❌ [ROUTER] ERROR: Failed to store tool result: {e}")
-    else:
-        logger.warning(f"⚠️ [ROUTER] No memory available to store tool result")
-        print(f"⚠️ [ROUTER] WARNING: No memory available to store tool result")
+            logger.error(f"❌ [ROUTER] Failed to store tool result: {e}")
     
     # Check for file approval needs
     try:
         result = json.loads(last_tool_message.content)
         
         if result.get("needs_approval"):
-            logger.info(f"🔀 [ROUTER] Decision: CHECK_FILE_APPROVAL")
-            logger.info(f"🔀 [ROUTER]   Tool: {last_tool_message.name}")
-            logger.info(f"🔀 [ROUTER]   Operation: {result.get('approval_data', {}).get('operation')}")
+            logger.info(f"🔀 [Router] TOOLS → CHECK_FILE_APPROVAL ({last_tool_message.name})")
             return "check_file_approval"
-    except (json.JSONDecodeError, AttributeError) as e:
-        logger.warning(f"🔀 [ROUTER] Could not check approval needs: {e}")
+    except (json.JSONDecodeError, AttributeError):
+        pass
     
-    logger.info("🔀 [ROUTER] Decision: ASSESS")
-    logger.info(f"🔀 [ROUTER] ===== ROUTING COMPLETE =====")
+    logger.info("🔀 [Router] TOOLS → ASSESS")
     return "assess"
 
 

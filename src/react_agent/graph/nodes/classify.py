@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Literal, Optional
+import logging
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -20,6 +21,7 @@ from react_agent.memory import (
     inject_memory_into_prompt
 )
 
+logger = logging.getLogger(__name__)
 
 
 class ComplexityAssessment(BaseModel):
@@ -108,19 +110,10 @@ async def classify(
 ) -> Dict[str, Any]:
     """Classify request complexity with continuation awareness."""
     
-    print(f"\n{'='*60}")
-    print(f" [CLASSIFY] ===== STARTING CLASSIFICATION =====")
-    print(f"{'='*60}")
-    
     # Memory initialization
     memory_updates = {}
     if not state.memory:
-        print(f" [Classify] No memory found - initializing...")
         memory_updates = await initialize_memory_system(state, config)
-        if memory_updates.get("memory"):
-            print(f" [Classify] Memory system initialized successfully")
-    else:
-        print(f" [Classify] Memory system already initialized")
     
     # Extract project context
     configurable = config.get("configurable", {})
@@ -130,14 +123,6 @@ async def classify(
     unity_version = configurable.get("unity_version", "")
     sqlite_path = configurable.get("sqlite_path", "")
     submitted_at = configurable.get("submitted_at", "")
-    
-    print(f"\n [Classify] Project Context:")
-    print(f"   Project: {project_name} (ID: {project_id})")
-    print(f"   Unity: {unity_version}")
-    print(f"   Root: {project_root}")
-    
-    if not project_id or not project_root:
-        print(f" [Classify] WARNING: Missing critical project context!")
     
     context = runtime.context
     model = get_model(context.model)
@@ -150,7 +135,6 @@ async def classify(
             break
     
     if not user_request:
-        print(f" [Classify] No user request found - using fallback")
         return {
             "runtime_metadata": {
                 **state.runtime_metadata,
@@ -164,10 +148,6 @@ async def classify(
             **memory_updates
         }
     
-    print(f"\n [Classify] User Request:")
-    print(f"   \"{user_request}\"")
-    print(f"   Length: {len(user_request)} chars, {len(user_request.split())} words")
-    
     # Get memory reference
     memory_to_use = memory_updates.get("memory") or state.memory
     
@@ -176,7 +156,6 @@ async def classify(
     if memory_to_use and hasattr(memory_to_use, 'working_memory'):
         wm = memory_to_use.working_memory
         if len(wm.recent_tool_results) == 0 and memory_to_use.db_path and memory_to_use.db_path.exists():
-            print(f" [Classify] Preloading working memory for continuation detection...")
             try:
                 # Manually reload using the same logic from get_memory_context()
                 import asyncio
@@ -205,8 +184,8 @@ async def classify(
                                 "timestamp": row[4]
                             }
                             tools.append(tool_result)
-                        except Exception as e:
-                            print(f" [Classify] Failed to reload tool result: {e}")
+                        except Exception:
+                            pass
                     
                     conn.close()
                     return tools
@@ -214,21 +193,13 @@ async def classify(
                 loaded_tools = await asyncio.to_thread(_reload_tools)
                 for tool in loaded_tools:
                     wm.recent_tool_results.append(tool)
-                
-                if len(loaded_tools) > 0:
-                    print(f" [Classify] Preloaded {len(loaded_tools)} tool results for continuation detection")
-                    
-            except Exception as e:
-                print(f" [Classify] Could not preload tools: {e}")
+            except Exception:
+                pass
     
     # Detect continuation context AFTER ensuring memory is loaded
     continuation_context = None
     if memory_to_use:
         continuation_context = _detect_continuation_context(state)
-        if continuation_context:
-            print(f"\n [Classify] CONTINUATION DETECTED!")
-            print(f"   Previous tool: {continuation_context['tool_result']['tool_name']}")
-            print(f"   Summary: {continuation_context['tool_result']['summary'][:80]}")
     
     # Base classification prompt
     base_classification_prompt = """You are a Unity/Unreal Engine development complexity assessor with access to production tools.
@@ -394,24 +365,14 @@ Provide your complexity classification with reasoning."""
             "config_received_at": submitted_at,
         }
         
-        print(f"\n📊 [Classify] Routing Decision:")
-        print(f"   Will route to: {assessment.complexity_level}")
-        print(f"   Is continuation: {continuation_context is not None}")
+        logger.info(f"📊 [Classify] Classified as: {assessment.complexity_level}")
         
         # Update memory focus
         if memory_to_use and user_request:
-            print(f"\n🧠 [Classify] Updating memory focus...")
             entities = extract_entities_from_request(user_request)
             topics = extract_topics_from_request(user_request)
-            
             await memory_to_use.update_focus(entities, topics)
             memory_to_use.add_message("user", user_request)
-            
-            print(f"✅ [Classify] Memory focus updated")
-        
-        print(f"\n{'='*60}")
-        print(f"🎯 [CLASSIFY] ===== CLASSIFICATION COMPLETE =====")
-        print(f"{'='*60}\n")
         
         return {
             "runtime_metadata": updated_metadata,
@@ -420,10 +381,7 @@ Provide your complexity classification with reasoning."""
         }
         
     except Exception as e:
-        print(f"\n❌ [Classify] ERROR during classification:")
-        print(f"   Error type: {type(e).__name__}")
-        print(f"   Error message: {str(e)}")
-        print(f"   Using fallback classification...")
+        logger.error(f"❌ [Classify] Classification error: {e}")
         
         # Enhanced fallback with continuation awareness
         if continuation_context:
@@ -441,20 +399,12 @@ Provide your complexity classification with reasoning."""
                 fallback_level = "complex_plan"
                 fallback_reason = "Complex request - full planning"
         
-        print(f"   Fallback level: {fallback_level}")
-        print(f"   Fallback reason: {fallback_reason}")
-        
         # Update memory even in fallback
         if memory_to_use and user_request:
             entities = extract_entities_from_request(user_request)
             topics = extract_topics_from_request(user_request)
             await memory_to_use.update_focus(entities, topics)
             memory_to_use.add_message("user", user_request)
-            print(f"✅ [Classify] Memory updated despite error")
-        
-        print(f"\n{'='*60}")
-        print(f"🎯 [CLASSIFY] ===== CLASSIFICATION COMPLETE (FALLBACK) =====")
-        print(f"{'='*60}\n")
         
         return {
             "runtime_metadata": {
