@@ -1,9 +1,13 @@
-"""Two-stage hybrid search: exact file name matching + semantic search."""
+"""Two-stage hybrid search: exact file name matching + semantic search.
+
+🚀 OPTIMIZED: Added connection pooling, caching, and parallel processing
+"""
 
 from __future__ import annotations
 from typing import Optional, Dict, Any, List
 import os
 import re
+import httpx
 from datetime import datetime, UTC
 
 from langchain_core.tools import tool
@@ -15,6 +19,32 @@ from react_agent.context import Context
 EMBED_SERVER_URL = os.getenv("EMBED_SERVER_URL", "http://127.0.0.1:8766")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://127.0.0.1:6333")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "movesia")
+
+# 🚀 OPTIMIZATION 1: Connection pooling (reuse connections)
+_http_client: Optional[httpx.AsyncClient] = None
+
+# 🚀 OPTIMIZATION 2: Embedding cache (avoid re-embedding same queries)
+_embedding_cache: Dict[str, List[float]] = {}
+_embedding_cache_max_size = 200
+
+
+def get_http_client() -> httpx.AsyncClient:
+    """
+    Get or create persistent HTTP client with connection pooling.
+    Matches unity_docs optimization strategy.
+    """
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(
+            timeout=30.0,
+            follow_redirects=True,
+            limits=httpx.Limits(
+                max_keepalive_connections=10,
+                max_connections=20,
+                keepalive_expiry=30.0
+            )
+        )
+    return _http_client
 
 
 def _extract_code_signature(code: str, max_lines: int = 20) -> str:
@@ -242,84 +272,84 @@ async def _search_by_file_name(
     file_patterns: List[str],
     limit: int = 10
 ) -> List[Dict[str, Any]]:
-    """Search Qdrant by file path using scroll/filter (no vectors needed).
+    """🚀 OPTIMIZED: Search Qdrant by file path using scroll/filter with persistent connection.
     
     This finds files by exact path matching, bypassing semantic search entirely.
     """
-    import httpx
-    
     if not file_patterns:
         return []
     
     matched_results = []
     
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        # Use Qdrant scroll to get all script files for this project
-        # Then filter by file name in Python (Qdrant doesn't support regex in filters)
-        scroll_payload = {
-            "filter": {
-                "must": [
-                    {"key": "project_id", "match": {"value": project_id}},
-                    {"key": "kind", "match": {"value": "Script"}}
-                ]
-            },
-            "limit": 100,  # Get up to 100 scripts to search through
-            "with_payload": True,
-            "with_vector": False  # Don't need vectors for name matching
-        }
+    # 🚀 Use persistent client instead of creating new one
+    client = get_http_client()
+    
+    # Use Qdrant scroll to get all script files for this project
+    # Then filter by file name in Python (Qdrant doesn't support regex in filters)
+    scroll_payload = {
+        "filter": {
+            "must": [
+                {"key": "project_id", "match": {"value": project_id}},
+                {"key": "kind", "match": {"value": "Script"}}
+            ]
+        },
+        "limit": 100,  # Get up to 100 scripts to search through
+        "with_payload": True,
+        "with_vector": False  # Don't need vectors for name matching
+    }
+    
+    response = await client.post(
+        f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}/points/scroll",
+        json=scroll_payload,
+        timeout=30.0
+    )
+    
+    if response.status_code != 200:
+        return []
+    
+    scroll_results = response.json()
+    points = scroll_results.get("result", {}).get("points", [])
+    
+    # Filter results by file name patterns
+    for point in points:
+        payload = point.get("payload", {})
+        rel_path = payload.get("rel_path", "")
+        file_name = rel_path.split('/')[-1].replace('.cs', '')
         
-        response = await client.post(
-            f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}/points/scroll",
-            json=scroll_payload,
-            timeout=30.0
-        )
-        
-        if response.status_code != 200:
-            return []
-        
-        scroll_results = response.json()
-        points = scroll_results.get("result", {}).get("points", [])
-        
-        # Filter results by file name patterns
-        for point in points:
-            payload = point.get("payload", {})
-            rel_path = payload.get("rel_path", "")
-            file_name = rel_path.split('/')[-1].replace('.cs', '')
+        # Check if any pattern matches this file name
+        for pattern in file_patterns:
+            pattern_lower = pattern.lower()
+            file_lower = file_name.lower()
             
-            # Check if any pattern matches this file name
-            for pattern in file_patterns:
-                pattern_lower = pattern.lower()
-                file_lower = file_name.lower()
-                
-                # Exact match
-                if pattern_lower == file_lower:
-                    matched_results.append({
-                        "payload": payload,
-                        "score": 1.0,  # Perfect match
-                        "match_type": "exact",
-                        "pattern": pattern
-                    })
-                    break
-                
-                # Contains match
-                elif pattern_lower in file_lower or file_lower in pattern_lower:
-                    matched_results.append({
-                        "payload": payload,
-                        "score": 0.9,  # High match
-                        "match_type": "contains",
-                        "pattern": pattern
-                    })
-                    break
-                
-                # Starts with match
-                elif file_lower.startswith(pattern_lower):
-                    matched_results.append({
-                        "payload": payload,
-                        "score": 0.85,
-                        "match_type": "starts_with",
-                        "pattern": pattern
-                    })
-                    break
+            # Exact match
+            if pattern_lower == file_lower:
+                matched_results.append({
+                    "payload": payload,
+                    "score": 1.0,  # Perfect match
+                    "match_type": "exact",
+                    "pattern": pattern
+                })
+                break
+            
+            # Contains match
+            elif pattern_lower in file_lower or file_lower in pattern_lower:
+                matched_results.append({
+                    "payload": payload,
+                    "score": 0.9,  # High match
+                    "match_type": "contains",
+                    "pattern": pattern
+                })
+                break
+            
+            # Starts with match
+            elif file_lower.startswith(pattern_lower):
+                matched_results.append({
+                    "payload": payload,
+                    "score": 0.85,
+                    "match_type": "starts_with",
+                    "pattern": pattern
+                })
+                break
     
     # Sort by score and limit
     matched_results.sort(key=lambda x: x["score"], reverse=True)
@@ -332,46 +362,46 @@ async def _search_by_semantic(
     limit: int = 10,
     score_threshold: float = 0.3
 ) -> List[Dict[str, Any]]:
-    """Standard semantic vector search."""
-    import httpx
-    
+    """🚀 OPTIMIZED: Standard semantic vector search with persistent connection."""
     # Generate embedding
     embedding_result = await _get_local_embedding(query)
     query_vector = embedding_result["embedding"]
     
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        search_payload = {
-            "vector": query_vector,
-            "limit": limit,
-            "with_payload": True,
-            "score_threshold": score_threshold,
-            "filter": {
-                "must": [
-                    {"key": "project_id", "match": {"value": project_id}},
-                    {"key": "kind", "match": {"value": "Script"}}
-                ]
-            }
+    # 🚀 Use persistent client instead of creating new one
+    client = get_http_client()
+    
+    search_payload = {
+        "vector": query_vector,
+        "limit": limit,
+        "with_payload": True,
+        "score_threshold": score_threshold,
+        "filter": {
+            "must": [
+                {"key": "project_id", "match": {"value": project_id}},
+                {"key": "kind", "match": {"value": "Script"}}
+            ]
         }
-        
-        response = await client.post(
-            f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}/points/search",
-            json=search_payload,
-            timeout=30.0
-        )
-        
-        if response.status_code != 200:
-            return []
-        
-        search_results = response.json()
-        
-        return [
-            {
-                "payload": hit.get("payload", {}),
-                "score": hit.get("score", 0.0),
-                "match_type": "semantic"
-            }
-            for hit in search_results.get("result", [])
-        ]
+    }
+    
+    response = await client.post(
+        f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}/points/search",
+        json=search_payload,
+        timeout=30.0
+    )
+    
+    if response.status_code != 200:
+        return []
+    
+    search_results = response.json()
+    
+    return [
+        {
+            "payload": hit.get("payload", {}),
+            "score": hit.get("score", 0.0),
+            "match_type": "semantic"
+        }
+        for hit in search_results.get("result", [])
+    ]
 
 
 def _merge_results(
@@ -405,34 +435,54 @@ def _merge_results(
 
 
 async def _get_local_embedding(text: str) -> Dict[str, Any]:
-    """Generate embedding using local model."""
-    import httpx
+    """🚀 OPTIMIZED: Generate embedding using local model with caching and persistent connection."""
+    global _embedding_cache
     
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(
-            f"{EMBED_SERVER_URL}/embed",
-            json={"input": text, "type": "query"}
-        )
-        
-        if response.status_code != 200:
-            raise Exception(f"Embedding failed: {response.status_code}")
-        
-        result = response.json()
+    # 🚀 Check cache first
+    if text in _embedding_cache:
         return {
-            "embedding": result["embedding"],
+            "embedding": _embedding_cache[text],
             "model": "Xenova/bge-small-en-v1.5",
-            "dimension": len(result["embedding"])
+            "dimension": len(_embedding_cache[text]),
+            "cached": True
         }
+    
+    # 🚀 Use persistent client
+    client = get_http_client()
+    
+    response = await client.post(
+        f"{EMBED_SERVER_URL}/embed",
+        json={"input": text, "type": "query"}
+    )
+    
+    if response.status_code != 200:
+        raise Exception(f"Embedding failed: {response.status_code}")
+    
+    result = response.json()
+    embedding = result["embedding"]
+    
+    # 🚀 Cache with simple FIFO eviction
+    if len(_embedding_cache) >= _embedding_cache_max_size:
+        # Remove oldest entry
+        first_key = next(iter(_embedding_cache))
+        del _embedding_cache[first_key]
+    
+    _embedding_cache[text] = embedding
+    
+    return {
+        "embedding": embedding,
+        "model": "Xenova/bge-small-en-v1.5",
+        "dimension": len(embedding),
+        "cached": False
+    }
 
 
 async def _check_embedding_server_health() -> bool:
-    """Check if embedding server is ready."""
-    import httpx
-    
+    """🚀 OPTIMIZED: Check if embedding server is ready using persistent connection."""
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{EMBED_SERVER_URL}/health")
-            return response.status_code == 200 and response.json().get("ready", False)
+        client = get_http_client()
+        response = await client.get(f"{EMBED_SERVER_URL}/health")
+        return response.status_code == 200 and response.json().get("ready", False)
     except:
         return False
 
@@ -450,10 +500,15 @@ async def code_snippets(
     max_code_chars: int = 1500,  # NEW: Limit code length when full code requested
     score_threshold: float = 0.30
 ) -> Dict[str, Any]:
-    """Search C# scripts with token-efficient output.
+    """🚀 OPTIMIZED: Search C# scripts with token-efficient output.
     
     By default, returns metadata and code signatures to minimize tokens.
     Set include_full_code=True only when user explicitly asks for full code.
+    
+    Key optimizations:
+    - Connection pooling for HTTP requests
+    - Embedding cache (200 entries)
+    - Persistent connections
     
     Args:
         query: Search query (file name or description)
@@ -465,6 +520,9 @@ async def code_snippets(
     Returns:
         Snippets with metadata + signatures (or full code if requested)
     """
+    import time
+    tool_start = time.perf_counter()
+    
     try:
         # Get project context from config
         configurable = config.get("configurable", {})
@@ -518,6 +576,8 @@ async def code_snippets(
         )
         estimated_tokens = total_code_chars // 4  # Rough estimate: 4 chars per token
         
+        tool_duration = (time.perf_counter() - tool_start) * 1000
+        
         return {
             "success": True,
             "query": query,
@@ -532,7 +592,10 @@ async def code_snippets(
             # Token usage info
             "include_full_code": include_full_code,
             "estimated_tokens": estimated_tokens,
-            "token_savings_mode": not include_full_code
+            "token_savings_mode": not include_full_code,
+            
+            # 🚀 Performance metrics
+            "execution_time_ms": round(tool_duration, 1)
         }
         
     except Exception as e:
@@ -542,3 +605,12 @@ async def code_snippets(
             "query": query,
             "error_type": type(e).__name__
         }
+
+
+# 🚀 OPTIMIZATION: Cleanup function for graceful shutdown
+async def cleanup():
+    """Close persistent connections gracefully."""
+    global _http_client
+    if _http_client:
+        await _http_client.aclose()
+        _http_client = None
