@@ -218,6 +218,11 @@ def route_after_tools(state: State) -> Literal["check_file_approval", "assess"]:
             add_tool_duration = (time.perf_counter() - add_tool_start) * 1000
             logger.info(f"⏱️  [ROUTER]   add_tool_call_sync: {add_tool_duration:.1f}ms")
 
+            # ✅ OPTIMIZATION: Mark that we just persisted to avoid redundant writes in FINISH node
+            import time as time_module
+            state.runtime_metadata["last_memory_persist"] = time_module.time()
+            logger.info(f"⏱️  [ROUTER]   Set last_memory_persist timestamp to avoid redundant DB writes")
+
             memory_duration = (time.perf_counter() - memory_start) * 1000
             logger.info(f"⏱️  [ROUTER]   Total memory storage: {memory_duration:.1f}ms")
 

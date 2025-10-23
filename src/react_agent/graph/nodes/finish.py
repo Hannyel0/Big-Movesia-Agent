@@ -330,17 +330,31 @@ async def finish(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
         # - Simple plans (1-3 steps, like search queries)
         # Clear memory only for:
         # - Complex plans (4+ steps, like multi-file operations)
-        is_complex_plan = (state.plan is not None and 
-                          len(state.plan.steps) > 3 and 
+        is_complex_plan = (state.plan is not None and
+                          len(state.plan.steps) > 3 and
                           not is_direct_action)
         clear_working = is_complex_plan
-        
-        # End episode
-        await state.memory.end_task(
-            success=success,
-            outcome_summary=outcome_summary,
-            clear_working_memory=clear_working  # ✅ PRESERVE for direct actions
-        )
+
+        # ✅ OPTIMIZATION: Skip persistence if routing already did it recently
+        import time
+        last_persist = state.runtime_metadata.get("last_memory_persist", 0)
+        time_since_persist = time.time() - last_persist
+
+        if time_since_persist < 1.0:  # Within last second
+            logger.info(f"🧠 [FINISH] Skipping persistence (already done in routing {time_since_persist:.3f}s ago)")
+            # End episode WITHOUT triggering persistence
+            state.memory.episodic_memory.end_episode(success, outcome_summary)
+            # Clear working memory if needed
+            if clear_working:
+                state.memory.working_memory.clear()
+        else:
+            # Normal path: end_task with persistence
+            logger.info(f"🧠 [FINISH] Performing persistence (last persist was {time_since_persist:.3f}s ago)")
+            await state.memory.end_task(
+                success=success,
+                outcome_summary=outcome_summary,
+                clear_working_memory=clear_working  # ✅ PRESERVE for direct actions
+            )
         
         logger.info(f"🧠 [FINISH] Episode ended: {'✅ success' if success else '❌ incomplete'}")
         logger.info(f"🧠 [FINISH]   Outcome: {outcome_summary}")
