@@ -25,7 +25,8 @@ ToolName = Literal[
     "modify_file",       # Modify existing files (with approval)
     "delete_file",       # Delete files (with approval)
     "move_file",         # Move files (with approval)
-    "web_search"         # External web search
+    "web_search",        # External web search
+    "unity_docs"         # Unity documentation search
 ]
 
 

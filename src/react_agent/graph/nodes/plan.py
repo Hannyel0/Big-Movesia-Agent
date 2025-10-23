@@ -48,6 +48,8 @@ def _build_comprehensive_tools_description() -> str:
             tool_info += "   - Example uses: Find assets by name, query GameObject hierarchy, check component usage\n"
         elif tool.name == "code_snippets":
             tool_info += "   - Example uses: Find movement code by functionality, locate UI patterns, discover physics implementations\n"
+        elif tool.name == "unity_docs":
+            tool_info += "   - Example uses: Unity API reference, Collider2D documentation, particle system features\n"
         elif tool.name in ["read_file", "write_file", "modify_file", "delete_file", "move_file"]:
             if tool.name == "read_file":
                 tool_info += "   - Example uses: Read existing scripts, inspect file contents\n"
@@ -214,6 +216,11 @@ TOOL USAGE CLARIFICATION:
 - Use to discover implementations and patterns in the project
 - Use when you need to understand how something is already coded
 
+**unity_docs**: Search local Unity documentation with semantic RAG
+- Use for Unity API references and feature documentation
+- Use to learn about Unity classes, methods, and components
+- Best for: API lookup, scripting examples, Unity feature documentation
+
 **read_file**: Read file contents safely
 - Use to read existing scripts and understand current implementations
 - Use to inspect file contents before making changes
@@ -247,15 +254,17 @@ TOOL USAGE CLARIFICATION:
 INTELLIGENT PLANNING PRINCIPLES:
 - **To understand existing project**: search_project → discover assets and structure
 - **To find existing code**: code_snippets → locate relevant implementations
-- **To learn new approaches**: web_search → research implementation methods  
+- **To learn Unity API/features**: unity_docs → get official Unity documentation
+- **To learn new approaches**: web_search → research implementation methods
 - **To build on existing code**: code_snippets → read_file → modify_file
-- **To create new features**: web_search → write_file
+- **To create new features**: unity_docs OR web_search → write_file
 
 PLANNING EXAMPLES:
 - "Fix player movement" → code_snippets → find movement code → modify_file
-- "Add grass physics" → web_search → research approaches → write_file
+- "Add grass physics" → unity_docs → learn physics API → write_file
 - "Improve existing UI" → search_project → find UI assets → code_snippets → modify_file
-- "Create AI enemy" → web_search → learn AI patterns → write_file
+- "Create AI enemy" → unity_docs → learn AI components → write_file
+- "How do Collider2D work?" → unity_docs → get API reference
 
 CREATE PLANS BASED ON WHETHER YOU NEED TO READ EXISTING CODE OR RESEARCH NEW SOLUTIONS.
 

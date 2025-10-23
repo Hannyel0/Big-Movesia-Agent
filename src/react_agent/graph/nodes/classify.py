@@ -207,6 +207,7 @@ async def classify(
 **Available Production Tools:**
 - **search_project**: Query indexed project database
 - **code_snippets**: Semantic search through C# scripts
+- **unity_docs**: Search local Unity documentation with semantic RAG
 - **file_operation**: Safe file I/O with validation
 - **web_search**: Research Unity documentation and tutorials
 

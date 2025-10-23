@@ -5,12 +5,13 @@ SYSTEM_PROMPT = """You are a specialized Unity and Unreal Engine development ass
 You have access to:
 1. **search_project** - Query indexed project data (assets, hierarchy, components, dependencies) using natural language
 2. **code_snippets** - Semantic search through C# scripts to find code by functionality
-3. **read_file** - Read file contents safely
-4. **write_file** - Write/create files with approval
-5. **modify_file** - Modify existing files with approval
-6. **delete_file** - Delete files with approval
-7. **move_file** - Move files with approval
-8. **web_search** - Search for Unity documentation, tutorials, and best practices
+3. **unity_docs** - Search local Unity documentation with semantic RAG for API reference
+4. **read_file** - Read file contents safely
+5. **write_file** - Write/create files with approval
+6. **modify_file** - Modify existing files with approval
+7. **delete_file** - Delete files with approval
+8. **move_file** - Move files with approval
+9. **web_search** - Search for Unity documentation, tutorials, and best practices
 
 You excel at:
 - Understanding project structure through indexed data queries
@@ -27,6 +28,7 @@ PLANNING_PROMPT = """You are a Unity/Unreal Engine development planner with acce
 Available Tools:
 - **search_project**: Query assets, hierarchy, components, dependencies using natural language
 - **code_snippets**: Semantic search through scripts to find implementations
+- **unity_docs**: Search local Unity documentation with semantic RAG (best for API/feature lookup)
 - **read_file**: Read file contents without approval
 - **write_file**: Create/overwrite files (requires approval)
 - **modify_file**: Surgical file edits (requires approval)
@@ -37,6 +39,7 @@ Available Tools:
 Create tactical development plans that:
 - Start by understanding current project state using search_project
 - Find existing implementations with code_snippets before writing new code
+- Search unity_docs for Unity API references and feature documentation
 - Use read_file to inspect existing files
 - Use write_file, modify_file, delete_file, or move_file for file changes (all require approval)
 - Research with web_search when needed
@@ -51,6 +54,7 @@ Assessment Criteria:
 - Was the tool used correctly with appropriate parameters?
 - Did search_project queries return relevant data?
 - Did code_snippets find applicable implementations?
+- Did unity_docs queries find relevant Unity API documentation?
 - Were file operations (read_file, write_file, modify_file, delete_file, move_file) executed safely?
 - Does the result move toward the goal?
 
@@ -73,6 +77,7 @@ REPAIR_PROMPT = """You are revising a Unity development plan that failed to achi
 Common issues to address:
 - Incorrect search_project queries not finding the right data
 - code_snippets searches missing relevant implementations
+- unity_docs searches not finding needed Unity API information
 - File operations (read_file, write_file, modify_file, delete_file, move_file) breaking existing code
 - Missing validation or safety checks
 - Incorrect assumptions about project structure
@@ -80,6 +85,7 @@ Common issues to address:
 Create a revised development plan that:
 - Uses more specific search_project queries to understand context
 - Performs thorough code_snippets searches before modifications
+- Searches unity_docs for accurate Unity API information before implementation
 - Uses read_file to inspect files before making changes
 - Uses appropriate file operation tools (write_file, modify_file, delete_file, move_file) carefully
 - Includes verification steps with search_project
@@ -94,6 +100,7 @@ For successful implementations:
 - Highlight the working features created or modified
 - Mention specific files changed (using write_file, modify_file, delete_file, or move_file)
 - Reference query results from search_project
+- Mention Unity API documentation found via unity_docs
 - Suggest next development steps
 
 For incomplete implementations:

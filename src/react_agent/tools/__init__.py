@@ -3,11 +3,12 @@
 from typing import List
 from react_agent.tools.search_project import search_project, get_cache_stats, clear_query_cache
 from react_agent.tools.code_snippets import code_snippets
+from react_agent.tools.unity_docs import unity_docs
 from react_agent.tools.file_operation import read_file, write_file, modify_file, delete_file, move_file
 from react_agent.tools.web_search import web_search
 
-# Export all tools (now 8 tools total: 1 search + 1 code + 5 file + 1 web)
-TOOLS = [search_project, code_snippets, read_file, write_file, modify_file, delete_file, move_file, web_search]
+# Export all tools (now 9 tools total: 1 search + 1 code + 1 unity_docs + 5 file + 1 web)
+TOOLS = [search_project, code_snippets, unity_docs, read_file, write_file, modify_file, delete_file, move_file, web_search]
 
 # Tool metadata for planning and optimization
 TOOL_METADATA = {
@@ -24,6 +25,13 @@ TOOL_METADATA = {
         "reliability": "high",
         "best_for": ["finding code by functionality", "semantic code search", "discovering implementations"],
         "description": "Semantic search through C# scripts using vector embeddings"
+    },
+    "unity_docs": {
+        "category": "documentation_search",
+        "cost": "low",
+        "reliability": "very_high",
+        "best_for": ["Unity API reference", "feature documentation", "scripting examples", "Unity concepts"],
+        "description": "Semantic search through local Unity documentation with RAG"
     },
     "read_file": {
         "category": "file_management",
@@ -77,7 +85,8 @@ def get_available_tool_names() -> List[str]:
 
 __all__ = [
     "search_project",
-    "code_snippets", 
+    "code_snippets",
+    "unity_docs",
     "read_file",
     "write_file",
     "modify_file",

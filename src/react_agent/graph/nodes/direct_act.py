@@ -284,6 +284,7 @@ Do NOT provide guidance on how to do it themselves - they want YOU to execute th
 Available tools:
 - search_project: For querying project data, assets, hierarchy, components
 - code_snippets: For semantic search through C# scripts by functionality
+- unity_docs: For searching local Unity documentation with semantic RAG
 - read_file: For reading file contents
 - write_file: For creating new files (requires approval)
 - modify_file: For modifying existing files (requires approval)
@@ -382,7 +383,7 @@ Give practical guidance, explanations, or instructions based on your knowledge. 
 def _determine_tool_from_request(user_request: str, analysis_text: str) -> str:
     """Determine the most appropriate production tool based on request content."""
     request_lower = user_request.lower()
-    
+
     # PRIORITY 1: Project data patterns - check these FIRST
     project_data_patterns = {
         "search_project": [
@@ -397,6 +398,10 @@ def _determine_tool_from_request(user_request: str, analysis_text: str) -> str:
         "code_snippets": [
             "my scripts", "what scripts", "list scripts", "show scripts",
             "all scripts", "all the scripts", "scripts in my project"
+        ],
+        "unity_docs": [
+            "unity api", "unity documentation", "unity reference",
+            "collider2d", "rigidbody", "how does unity", "unity feature"
         ]
     }
     
@@ -415,6 +420,10 @@ def _determine_tool_from_request(user_request: str, analysis_text: str) -> str:
             "example code", "sample script", "find code", "existing code",
             "how is this implemented", "code that does", "full code",
             "complete code", "source code"
+        ],
+        "unity_docs": [
+            "unity class", "unity method", "unity component",
+            "scriptreference", "manual", "api documentation"
         ],
         "read_file": [
             "read file", "show me", "display", "view file", "check file",

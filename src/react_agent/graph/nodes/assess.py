@@ -685,6 +685,9 @@ async def _generate_completion_summary(state: State, model, context: Context) ->
                     elif tool_name == "web_search":
                         count = len(result.get('results', []))
                         recent_tool_results.append(f"Found {count} web resources")
+                    elif tool_name == "unity_docs":
+                        count = len(result.get('results', []))
+                        recent_tool_results.append(f"Found {count} Unity documentation pages")
                     else:
                         recent_tool_results.append(f"{tool_name}: {result.get('message', 'completed successfully')}")
             except:

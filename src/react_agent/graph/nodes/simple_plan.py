@@ -135,12 +135,13 @@ EFFICIENCY PRINCIPLES:
 
 Create a smart, streamlined plan that efficiently solves this specific request."""
 
-    # CORRECTED ADAPTIVE SYSTEM CONTENT for simple planning  
+    # CORRECTED ADAPTIVE SYSTEM CONTENT for simple planning
     base_adaptive_system_content = """You are creating efficient, intelligent plans for straightforward Unity/Unreal development tasks.
 
 TOOL PURPOSE CLARIFICATION:
 **search_project**: Query indexed Unity project database using natural language
 **code_snippets**: Semantic search through C# scripts by functionality
+**unity_docs**: Search local Unity documentation with semantic RAG (best for API/feature lookup)
 **read_file**: Read file contents safely (no approval)
 **write_file**: Create/write files (requires approval)
 **modify_file**: Modify existing files (requires approval)
@@ -148,27 +149,29 @@ TOOL PURPOSE CLARIFICATION:
 **move_file**: Move/rename files (requires approval)
 **web_search**: Research external Unity documentation and tutorials
 
-VALID TOOLS: search_project, code_snippets, read_file, write_file, modify_file, delete_file, move_file, web_search
+VALID TOOLS: search_project, code_snippets, unity_docs, read_file, write_file, modify_file, delete_file, move_file, web_search
 
 INTELLIGENT EFFICIENCY:
-- **Information requests**: web_search
+- **Unity API/feature questions**: unity_docs (fast, local, semantic)
+- **Information requests**: web_search (for general Unity concepts)
 - **Understanding existing code**: code_snippets → read_file
 - **Modifying existing features**: code_snippets → modify_file
-- **Creating new features**: web_search → write_file
+- **Creating new features**: unity_docs → write_file
 - **Project inspection**: search_project
 - **Asset discovery**: search_project
 - **File cleanup**: delete_file
 - **File reorganization**: move_file
 
 DECISION FLOWCHART:
-1. Need to find existing code by functionality? → code_snippets
-2. Need to learn new Unity concepts? → web_search
-3. Need project structure/asset info? → search_project
-4. Need to read files? → read_file
-5. Need to create files? → write_file
-6. Need to modify files? → modify_file
-7. Need to delete files? → delete_file
-8. Need to move/rename files? → move_file
+1. Need Unity API reference or feature docs? → unity_docs
+2. Need to find existing code by functionality? → code_snippets
+3. Need to learn new Unity concepts? → unity_docs OR web_search
+4. Need project structure/asset info? → search_project
+5. Need to read files? → read_file
+6. Need to create files? → write_file
+7. Need to modify files? → modify_file
+8. Need to delete files? → delete_file
+9. Need to move/rename files? → move_file
 
 Create plans that use production tools for real Unity project integration."""
 

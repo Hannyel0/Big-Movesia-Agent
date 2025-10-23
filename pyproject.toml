@@ -16,8 +16,10 @@ dependencies = [
     "langchain-fireworks>=0.1.7",
     "python-dotenv>=1.0.1",
     "langchain-tavily>=0.1",
-    "httpx>=0.24.0",
+    "httpx>=0.25.0",
     "openai>=1.0.0",
+    "qdrant-client>=1.7.0",
+    "trafilatura>=2.0.0,<3.0.0",
 ]
 
 

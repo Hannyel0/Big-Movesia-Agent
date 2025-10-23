@@ -192,13 +192,34 @@ class WorkingMemory:
         elif tool_name == "web_search":
             results = result.get("results", [])
             result_count = result.get("result_count", len(results))
-            
+
             if result_count > 0 or results:
                 count = result_count if result_count > 0 else len(results)
                 return f"Found {count} web resources"
             else:
                 return "No web resources found"
-        
+
+        elif tool_name == "unity_docs":
+            # ✅ ADD THIS CASE
+            results = result.get("results", [])
+            result_count = result.get("result_count", len(results))
+
+            if result_count > 0:
+                # Get titles of top results
+                titles = []
+                for doc in results[:3]:
+                    if isinstance(doc, dict):
+                        title = doc.get("title", "")
+                        if title:
+                            titles.append(title)
+
+                if titles:
+                    return f"Found {result_count} Unity docs: {', '.join(titles[:3])}"
+                else:
+                    return f"Found {result_count} Unity documentation pages"
+            else:
+                return "No Unity docs found"
+
         # Generic fallback
         return f"{tool_name} completed successfully"
     

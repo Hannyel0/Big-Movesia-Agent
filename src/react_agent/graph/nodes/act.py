@@ -679,6 +679,7 @@ def _create_rich_pre_step_narration(
     base_narrations = {
         "search_project": f"Querying indexed project data for: {current_step.description}",
         "code_snippets": f"Searching scripts semantically for: {current_step.description}",
+        "unity_docs": f"Searching Unity documentation for: {current_step.description}",
         "web_search": f"Searching Unity/Unreal resources and tutorials for: {current_step.description}",
     }
 
