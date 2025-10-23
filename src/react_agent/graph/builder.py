@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Callable, Any, Dict
 from functools import wraps
 
@@ -41,15 +42,19 @@ logger = logging.getLogger(__name__)
 
 
 def log_node_execution(node_name: str):
-    """Decorator to log node execution with state changes."""
+    """Decorator to log node execution with state changes and timing."""
     def decorator(func: Callable):
         @wraps(func)
         async def wrapper(*args, **kwargs):
+            node_start = time.perf_counter()
             logger.info(f"🔷 [{node_name}] ===== STARTING =====")
+            logger.info(f"⏱️  [{node_name}] Start timestamp: {node_start:.6f}")
             try:
                 result = await func(*args, **kwargs)
+                node_duration = (time.perf_counter() - node_start) * 1000
                 logger.info(f"🔷 [{node_name}] ===== COMPLETED =====")
-                
+                logger.info(f"⏱️  [{node_name}] Node execution took {node_duration:.1f}ms")
+
                 # Log important state changes
                 if isinstance(result, dict):
                     if "plan" in result and result["plan"]:
@@ -107,17 +112,81 @@ micro_retry = log_node_execution("MICRO_RETRY")(_micro_retry)
 check_file_approval = log_node_execution("CHECK_FILE_APPROVAL")(_check_file_approval)
 
 
+# Custom ToolNode wrapper with timing instrumentation
+class TimedToolNode:
+    """Wrapper around ToolNode to add timing instrumentation."""
+
+    def __init__(self, tools):
+        self.tool_node = ToolNode(tools)
+        self.logger = logging.getLogger(__name__)
+
+    async def __call__(self, state: State, **kwargs):
+        """Execute tools with comprehensive timing logs."""
+        tool_node_start = time.perf_counter()
+        self.logger.info(f"🔷 [TOOLS] ===== STARTING =====")
+        self.logger.info(f"⏱️  [TOOLS] Start timestamp: {tool_node_start:.6f}")
+
+        try:
+            # Phase 1: Pre-execution
+            pre_exec_start = time.perf_counter()
+            self.logger.info(f"⏱️  [TOOLS] Phase 1: Pre-execution preparation")
+
+            # Get tool calls from last message
+            if state.messages and hasattr(state.messages[-1], 'tool_calls'):
+                tool_calls = state.messages[-1].tool_calls
+                if tool_calls:
+                    self.logger.info(f"🔧 [TOOLS] Executing {len(tool_calls)} tool call(s)")
+                    for tc in tool_calls:
+                        self.logger.info(f"🔧 [TOOLS]   - {tc.get('name', 'unknown')}")
+
+            pre_exec_duration = (time.perf_counter() - pre_exec_start) * 1000
+            self.logger.info(f"⏱️  [TOOLS] Pre-execution: {pre_exec_duration:.1f}ms")
+
+            # Phase 2: Tool execution
+            exec_start = time.perf_counter()
+            self.logger.info(f"⏱️  [TOOLS] Phase 2: Actual tool execution starting...")
+
+            # Invoke the ToolNode properly using ainvoke
+            result = await self.tool_node.ainvoke(state, **kwargs)
+
+            exec_duration = (time.perf_counter() - exec_start) * 1000
+            self.logger.info(f"⏱️  [TOOLS] Tool execution completed: {exec_duration:.1f}ms")
+
+            # Phase 3: Post-execution (state serialization, memory persistence, etc.)
+            post_exec_start = time.perf_counter()
+            self.logger.info(f"⏱️  [TOOLS] Phase 3: Post-execution processing")
+
+            # Memory persistence happens here via routing function
+            # We'll log when routing function calls memory.add_tool_call_sync()
+
+            post_exec_duration = (time.perf_counter() - post_exec_start) * 1000
+            self.logger.info(f"⏱️  [TOOLS] Post-execution: {post_exec_duration:.1f}ms")
+
+            # Total timing
+            tool_node_duration = (time.perf_counter() - tool_node_start) * 1000
+            self.logger.info(f"🔷 [TOOLS] ===== COMPLETED =====")
+            self.logger.info(f"⏱️  [TOOLS] Total TOOLS node execution: {tool_node_duration:.1f}ms")
+            self.logger.info(f"⏱️  [TOOLS] End timestamp: {time.perf_counter():.6f}")
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"🔷 [TOOLS] ===== FAILED =====")
+            self.logger.error(f"🔷 [TOOLS] Error: {str(e)}", exc_info=True)
+            raise
+
+
 def create_graph() -> StateGraph:
     """Construct the ReAct agent graph with file operation approval."""
     builder = StateGraph(State, input_schema=InputState, context_schema=Context)
-    
+
     # Add all nodes
     builder.add_node("classify", classify)
     builder.add_node("direct_act", direct_act)
     builder.add_node("simple_plan", simple_plan)
     builder.add_node("plan", plan)
     builder.add_node("act", act)
-    builder.add_node("tools", ToolNode(TOOLS))
+    builder.add_node("tools", TimedToolNode(TOOLS))  # Use instrumented ToolNode
     builder.add_node("check_file_approval", check_file_approval)  # NEW NODE
     builder.add_node("assess", assess)
     builder.add_node("error_recovery", execute_error_recovery)

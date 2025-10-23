@@ -159,22 +159,31 @@ def route_after_tools(state: State) -> Literal["check_file_approval", "assess"]:
     Route after tool execution to check if approval is needed.
     Also captures tool results in memory for context.
     """
-    
+    import time
+    routing_start = time.perf_counter()
+    logger.info(f"⏱️  [ROUTER] route_after_tools() started")
+
     # ✅ CRITICAL: Capture tool result in memory FIRST
+    extract_start = time.perf_counter()
     last_tool_message = None
     for msg in reversed(state.messages):
         if isinstance(msg, ToolMessage):
             last_tool_message = msg
             break
-    
+
     if not last_tool_message:
         return "assess"
-    
+
+    extract_duration = (time.perf_counter() - extract_start) * 1000
+    logger.info(f"⏱️  [ROUTER]   Extract tool message: {extract_duration:.1f}ms")
+
     # ✅ CRITICAL: Store tool result in memory
     if state.memory:
         try:
+            memory_start = time.perf_counter()
             result = json.loads(last_tool_message.content)
             tool_name = last_tool_message.name or "unknown"
+            logger.info(f"⏱️  [ROUTER]   Storing {tool_name} result in memory...")
             
             # Extract query from the preceding AIMessage
             query = ""
@@ -203,31 +212,34 @@ def route_after_tools(state: State) -> Literal["check_file_approval", "assess"]:
             
             # Store in memory (using sync wrapper for non-async routing context)
             # ✅ FIX: Pass full args dict, not just {"query": query}
-            # Note: add_tool_call_sync now handles entity extraction and focus updates automatically
+            # Note: add_tool_call_sync now handles persistence internally when auto_persist is enabled
+            add_tool_start = time.perf_counter()
             state.memory.add_tool_call_sync(tool_name, args, result)
-            
-            # ✅ FIX: Persist immediately to survive interrupts
-            if state.memory and state.memory.auto_persist:
-                try:
-                    entity_count = len(state.memory.semantic_memory.entity_knowledge)
-                    if entity_count > 0:
-                        state.memory._persist_to_database_sync()
-                except Exception as e:
-                    logger.warning(f"⚠️ [ROUTER] Failed to persist: {e}")
-            
+            add_tool_duration = (time.perf_counter() - add_tool_start) * 1000
+            logger.info(f"⏱️  [ROUTER]   add_tool_call_sync: {add_tool_duration:.1f}ms")
+
+            memory_duration = (time.perf_counter() - memory_start) * 1000
+            logger.info(f"⏱️  [ROUTER]   Total memory storage: {memory_duration:.1f}ms")
+
         except Exception as e:
             logger.error(f"❌ [ROUTER] Failed to store tool result: {e}")
-    
+
     # Check for file approval needs
+    approval_check_start = time.perf_counter()
     try:
         result = json.loads(last_tool_message.content)
-        
+
         if result.get("needs_approval"):
             logger.info(f"🔀 [Router] TOOLS → CHECK_FILE_APPROVAL ({last_tool_message.name})")
             return "check_file_approval"
     except (json.JSONDecodeError, AttributeError):
         pass
-    
+
+    approval_check_duration = (time.perf_counter() - approval_check_start) * 1000
+    logger.info(f"⏱️  [ROUTER]   Approval check: {approval_check_duration:.1f}ms")
+
+    routing_duration = (time.perf_counter() - routing_start) * 1000
+    logger.info(f"⏱️  [ROUTER] route_after_tools() completed in {routing_duration:.1f}ms")
     logger.info("🔀 [Router] TOOLS → ASSESS")
     return "assess"
 

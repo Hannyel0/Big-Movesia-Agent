@@ -170,12 +170,19 @@ class MemoryManager:
     async def add_tool_call(self, tool_name: str, args: Dict[str, Any], result: Any):
         """
         Add tool call to episodic and working memory, then persist.
-        
+
         ✅ FIXED: Now async
         ✅ FIXED: Extracts and stores entity/topic knowledge for semantic memory
         """
+        import time
+        add_tool_start = time.perf_counter()
+        logger.info(f"⏱️  [MemoryManager] add_tool_call() started for {tool_name}")
+
         # Add to episodic memory
+        episodic_start = time.perf_counter()
         self.episodic_memory.add_tool_call(tool_name, args, result)
+        episodic_duration = (time.perf_counter() - episodic_start) * 1000
+        logger.info(f"⏱️  [MemoryManager]   Episodic add: {episodic_duration:.1f}ms")
         
         # Add to working memory
         # ✅ FIX: Better context for file operations
@@ -198,8 +205,9 @@ class MemoryManager:
                 args.get("description", "") or
                 args.get("sql_query", "")
             )
-        
+
         # ✅ EXTRACT ENTITIES: Use smart extractor with tool results
+        entity_extract_start = time.perf_counter()
         from react_agent.memory.entity_extractor import extract_entities_simple
 
         entity_count = 0
@@ -208,6 +216,8 @@ class MemoryManager:
             tool_name=tool_name,
             tool_result=result
         )
+        entity_extract_duration = (time.perf_counter() - entity_extract_start) * 1000
+        logger.info(f"⏱️  [MemoryManager]   Entity extraction: {entity_extract_duration:.1f}ms")
 
         for entity in entities_found:
             # Entity already normalized by extractor
@@ -236,8 +246,9 @@ class MemoryManager:
             self.update_focus_sync(entities_found, [])
         
         # ✅ SIMPLE: Extract topics using synchronous keyword matching
+        topic_extract_start = time.perf_counter()
         from react_agent.memory.topic_extractor import extract_topics_simple
-        
+
         if query_text:
             try:
                 # Simple synchronous extraction (works in async context too)
@@ -247,6 +258,8 @@ class MemoryManager:
                     tool_name=tool_name,
                     result_summary=result_summary
                 )
+                topic_extract_duration = (time.perf_counter() - topic_extract_start) * 1000
+                logger.info(f"⏱️  [MemoryManager]   Topic extraction: {topic_extract_duration:.1f}ms")
                 
                 # Store extracted topics
                 for topic in topics_found:
@@ -266,7 +279,14 @@ class MemoryManager:
         
         # ✅ FIXED: Async persistence
         if self.auto_persist and self.db_path:
+            persist_start = time.perf_counter()
+            logger.info(f"⏱️  [MemoryManager]   Starting async persistence...")
             await self._persist_working_memory()
+            persist_duration = (time.perf_counter() - persist_start) * 1000
+            logger.info(f"⏱️  [MemoryManager]   Async persistence: {persist_duration:.1f}ms")
+
+        add_tool_duration = (time.perf_counter() - add_tool_start) * 1000
+        logger.info(f"⏱️  [MemoryManager] add_tool_call() completed in {add_tool_duration:.1f}ms")
     
     def add_tool_call_sync(self, tool_name: str, args: Dict[str, Any], result: Any):
         """
