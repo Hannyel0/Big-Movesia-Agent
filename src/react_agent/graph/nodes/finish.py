@@ -12,7 +12,8 @@ from langgraph.runtime import Runtime
 from react_agent.context import Context
 from react_agent.state import State
 from react_agent.narration import NarrationEngine, StreamingNarrator
-from react_agent.utils import get_message_text, get_model
+from react_agent.utils import get_message_text, get_model, is_anthropic_model
+from react_agent.prompts import get_cacheable_final_summary_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +21,9 @@ logger = logging.getLogger(__name__)
 narration_engine = NarrationEngine()
 
 
-async def _generate_direct_action_response(state: State, model) -> str:
+async def _generate_direct_action_response(state: State, model, cache_enabled: bool = True) -> str:
     """Generate a response for direct actions that don't have plans."""
-    
+
     # Extract the most recent user question
     user_question = None
     for msg in reversed(state.messages):
@@ -102,28 +103,14 @@ Want me to dive into any specific ones?
 Generate your markdown-formatted response now:"""
     
     try:
+        # ✅ CACHING: Use cacheable system prompt
+        system_content_structured = get_cacheable_final_summary_prompt(cache_enabled=cache_enabled)
+
         messages = [
-            {"role": "system", "content": """## Unity Development Assistant
-
-You are a helpful Unity development assistant.
-
-### Response Guidelines:
-- Provide **informative, contextual answers**
-- Go beyond facts - add **insights**
-- Group information **logically** with headers
-- Be conversational like a **knowledgeable teammate**
-
-### MARKDOWN REQUIREMENTS:
-- Use **## ###** for headers
-- Use **bold** for key terms
-- Add **blank lines** before/after sections
-- Use relevant emojis: 💡 🎯 ✅ 📚
-- Structure with clear hierarchy
-
-**You will be penalized for plain text responses.**"""},
+            {"role": "system", "content": system_content_structured},
             {"role": "user", "content": response_prompt}
         ]
-        
+
         response = await model.ainvoke(messages)
         answer = get_message_text(response).strip()
         
@@ -364,35 +351,17 @@ Your **`PlayerController.cs`** is now error-free and ready to use:
 **GENERATE YOUR PROPERLY FORMATTED SUMMARY NOW** (following the structure above with blank lines, headers, and emojis):"""
 
     try:
+        # ✅ CACHING: Use cacheable final summary prompt (only adds cache_control for Anthropic)
+        cache_enabled = getattr(context, 'enable_prompt_cache', True)
+        using_anthropic = is_anthropic_model(context.model)
+        system_content_structured = get_cacheable_final_summary_prompt(cache_enabled=cache_enabled and using_anthropic)
+
         # Generate AI completion summary
         completion_messages = [
-            {"role": "system", "content": """## Session Summary Mode
-
-You are providing a professional completion summary for a Unity development session.
-
-### Requirements:
-- Be **specific** and **confident**
-- Focus on **concrete deliverables**
-- Keep it **concise** but **comprehensive**
-
-### MARKDOWN FORMAT:
-Use this structure:
-
-## ✅ Session Complete
-
-Successfully accomplished:
-- **Feature**: Description
-- **Files Changed**: List with tool names
-- **Integration**: How it fits
-
-### 🎯 Next Steps
-1. First recommendation
-2. Second recommendation
-
-**You will be penalized for plain text without markdown formatting.**"""},
+            {"role": "system", "content": system_content_structured},
             {"role": "user", "content": completion_prompt}
         ]
-        
+
         completion_response = await model.ainvoke(completion_messages)
         ai_summary = get_message_text(completion_response).strip()
         
@@ -525,7 +494,9 @@ async def finish(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
     if state.plan is None or len(state.plan.steps) == 0:
         # DIRECT ACTION PATH - no plan exists
         try:
-            direct_response = await _generate_direct_action_response(state, model)
+            cache_enabled = getattr(context, 'enable_prompt_cache', True)
+            using_anthropic = is_anthropic_model(context.model)
+            direct_response = await _generate_direct_action_response(state, model, cache_enabled=cache_enabled and using_anthropic)
             return {"messages": [AIMessage(content=direct_response)]}
         except Exception as e:
             # Fallback for direct actions

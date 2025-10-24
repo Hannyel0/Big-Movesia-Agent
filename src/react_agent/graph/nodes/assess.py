@@ -19,7 +19,7 @@ from react_agent.state import (
     PlanStep,
 )
 from react_agent.narration import NarrationEngine, StreamingNarrator
-from react_agent.utils import get_message_text, get_model
+from react_agent.utils import get_message_text, get_model, is_anthropic_model
 from react_agent.memory import get_memory_insights
 
 # Set up logging
@@ -659,12 +659,12 @@ def _should_trigger_error_recovery(tool_result: dict, error_message: str, detail
 
 async def _generate_completion_summary(state: State, model, context: Context) -> str:
     """Generate a completion summary using the LLM based on what was actually accomplished."""
-    
+
     completed_steps_summary = []
     for i, step in enumerate(state.plan.steps):
         if i <= state.step_index:
             completed_steps_summary.append(f"Step {i+1}: {step.description} (using {step.tool_name})")
-    
+
     recent_tool_results = []
     for msg in reversed(state.messages[-10:]):
         if isinstance(msg, ToolMessage):
@@ -692,7 +692,7 @@ async def _generate_completion_summary(state: State, model, context: Context) ->
                         recent_tool_results.append(f"{tool_name}: {result.get('message', 'completed successfully')}")
             except:
                 recent_tool_results.append(f"{msg.name}: completed")
-    
+
     completion_prompt = f"""You have just completed all steps for the goal: "{state.plan.goal}"
 Completed Steps:
 {chr(10).join(completed_steps_summary)}
@@ -703,18 +703,37 @@ Key Results:
 Generate a brief, professional completion message (1-2 sentences) that starts with "Perfect!" and summarizes what was accomplished."""
 
     try:
+        # ✅ CACHING: Check if caching is enabled AND using Anthropic
+        cache_enabled = getattr(context, 'enable_prompt_cache', True)
+        using_anthropic = is_anthropic_model(context.assessment_model or context.model)
+
+        # Create system content with optional caching (Anthropic only)
+        system_content = "You are providing a brief, professional completion summary for a Unity development task. Be concise, specific, and confident."
+
+        if cache_enabled and using_anthropic:
+            # Use structured content format with cache control
+            system_content_structured = [
+                {
+                    "type": "text",
+                    "text": system_content,
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ]
+        else:
+            system_content_structured = system_content
+
         completion_messages = [
-            {"role": "system", "content": "You are providing a brief, professional completion summary for a Unity development task. Be concise, specific, and confident."},
+            {"role": "system", "content": system_content_structured},
             {"role": "user", "content": completion_prompt}
         ]
-        
+
         completion_response = await model.ainvoke(completion_messages)
         completion_summary = get_message_text(completion_response).strip()
-        
+
         if len(completion_summary) < 20 or not completion_summary.lower().startswith(('perfect', 'excellent', 'great', 'done', 'completed', 'success')):
             return f"Perfect! I've successfully completed your request: {state.plan.goal}"
-        
+
         return completion_summary
-        
+
     except Exception as e:
         return f"Perfect! I've successfully completed all steps for: {state.plan.goal}"

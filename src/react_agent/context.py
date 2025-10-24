@@ -224,6 +224,26 @@ class Context:
         },
     )
 
+    # Prompt caching configuration
+    enable_prompt_cache: bool = field(
+        default=True,
+        metadata={
+            "description": "Enable prompt caching for supported models. "
+            "- OpenAI (gpt-4o, gpt-4-turbo, gpt-3.5-turbo): Automatic prefix matching, no code changes needed "
+            "- Anthropic (Claude): Explicit cache_control markers, ~90% cost reduction for repeated prompts "
+            "This flag only affects Anthropic models (OpenAI caching is always automatic)."
+        },
+    )
+
+    prompt_cache_ttl_seconds: int = field(
+        default=300,  # 5 minutes (Anthropic's ephemeral cache TTL)
+        metadata={
+            "description": "Time-to-live for cached prompts in seconds. "
+            "Only applies to Anthropic models (5 min ephemeral cache). "
+            "OpenAI models use automatic 5-10 min TTL (not configurable)."
+        },
+    )
+
     def __post_init__(self) -> None:
         """Post-initialization setup and validation."""
         # Fetch env vars for attributes that were not passed as args

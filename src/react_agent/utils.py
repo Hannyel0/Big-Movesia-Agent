@@ -2,6 +2,7 @@
 
 
 import hashlib
+import logging
 from typing import TYPE_CHECKING, Any
 
 from langchain.chat_models import init_chat_model
@@ -10,6 +11,9 @@ from langchain_core.messages import BaseMessage
 
 if TYPE_CHECKING:
     from react_agent.state import PlanStep
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 
 def get_message_text(msg: BaseMessage) -> str:
@@ -61,6 +65,64 @@ def get_model(fully_specified_name: str) -> BaseChatModel:
         This ensures proper token usage display in the UI.
     """
     return load_chat_model(fully_specified_name)
+
+
+def is_anthropic_model(model_name: str) -> bool:
+    """Check if a model string refers to an Anthropic/Claude model."""
+    model_lower = model_name.lower()
+    return "anthropic" in model_lower or "claude" in model_lower
+
+
+def is_openai_model(model_name: str) -> bool:
+    """Check if a model string refers to an OpenAI model."""
+    model_lower = model_name.lower()
+    return "openai" in model_lower or "gpt" in model_lower
+
+
+def get_model_with_cache(fully_specified_name: str, cache_enabled: bool = True) -> BaseChatModel:
+    """
+    Load a chat model with provider-appropriate prompt caching.
+
+    Args:
+        fully_specified_name: String in format 'provider:model' or 'provider/model'
+        cache_enabled: Whether to enable explicit caching (Anthropic only; OpenAI is always automatic)
+
+    Returns:
+        BaseChatModel with appropriate caching configuration
+
+    Caching Behavior by Provider:
+        - **OpenAI** (gpt-4o, gpt-4-turbo, gpt-3.5-turbo):
+          * Automatic prefix matching - no code changes needed
+          * Caches longest common prefix of prompts automatically
+          * 5-10 minute TTL (not configurable)
+          * Works out-of-the-box, cache_enabled flag has no effect
+
+        - **Anthropic** (Claude 3.5 Sonnet, Claude 3 Opus, etc.):
+          * Requires explicit cache_control markers in message content
+          * ~90% cost reduction for cached prompt portions
+          * 5 minute TTL (ephemeral cache)
+          * Controlled by cache_enabled flag
+
+    Note:
+        For Anthropic, cache markers are added in the prompt content blocks
+        (see get_cacheable_*_prompt() functions in prompts.py).
+        This function logs the caching status for debugging.
+    """
+    model = load_chat_model(fully_specified_name)
+
+    # Check provider type
+    if is_openai_model(fully_specified_name):
+        logger.info(f"✅ OpenAI model {fully_specified_name} - automatic prompt caching active")
+        logger.info("💡 OpenAI caches common prompt prefixes automatically (5-10 min TTL)")
+    elif is_anthropic_model(fully_specified_name) and cache_enabled:
+        logger.info(f"✅ Anthropic prompt caching enabled for {fully_specified_name}")
+        logger.info("💡 Using explicit cache_control markers from get_cacheable_*_prompt() functions")
+    elif is_anthropic_model(fully_specified_name) and not cache_enabled:
+        logger.info(f"⚠️ Anthropic prompt caching disabled for {fully_specified_name}")
+    else:
+        logger.info(f"ℹ️ Model {fully_specified_name} - caching status unknown")
+
+    return model
 
 def format_plan_visualization(plan: Any) -> str:
     """Create a visual representation of the execution plan.

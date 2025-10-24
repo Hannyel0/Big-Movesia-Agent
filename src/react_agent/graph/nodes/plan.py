@@ -15,6 +15,9 @@ from pydantic import BaseModel, Field
 from langgraph.runtime import Runtime
 
 from react_agent.context import Context
+# Note: We don't use get_cacheable_planning_prompt() here because plan.py builds
+# a custom dynamic prompt with tool metadata, project context, and memory injection.
+# Instead, we manually apply cache control to the custom prompt below.
 from react_agent.prompts import PLANNING_PROMPT
 from react_agent.state import (
     ExecutionPlan,
@@ -27,7 +30,7 @@ from react_agent.state import (
 )
 from react_agent.tools import TOOLS, TOOL_METADATA
 from react_agent.narration import NarrationEngine
-from react_agent.utils import get_message_text, get_model
+from react_agent.utils import get_message_text, get_model, is_anthropic_model
 from react_agent.memory import inject_memory_into_prompt
 
 
@@ -278,9 +281,27 @@ Remember: Every step must specify a concrete tool to use. No generic steps allow
         include_episodes=True
     )
 
+    # ✅ CACHING: Convert to cacheable format if enabled AND using Anthropic
+    # OpenAI models cache automatically, no explicit markers needed
+    cache_enabled = getattr(context, 'enable_prompt_cache', True)
+    using_anthropic = is_anthropic_model(context.planning_model or context.model)
+
+    if cache_enabled and using_anthropic:
+        # Use structured content format with cache control for Anthropic models only
+        system_content_structured = [
+            {
+                "type": "text",
+                "text": intelligent_system_content,
+                "cache_control": {"type": "ephemeral"}
+            }
+        ]
+    else:
+        # Use simple string format for OpenAI (automatic caching) or when cache disabled
+        system_content_structured = intelligent_system_content
+
     # Structure messages for intelligent planning
     messages = [
-        {"role": "system", "content": intelligent_system_content},
+        {"role": "system", "content": system_content_structured},
         {"role": "user", "content": intelligent_planning_request}
     ]
     

@@ -14,7 +14,7 @@ from react_agent.context import Context
 from react_agent.state import ExecutionPlan, PlanStep, State, StepStatus
 from react_agent.tools import TOOLS
 from react_agent.narration import NarrationEngine
-from react_agent.utils import get_message_text, get_model
+from react_agent.utils import get_message_text, get_model, is_anthropic_model
 from react_agent.memory import inject_memory_into_prompt
 
 
@@ -84,9 +84,25 @@ This is retry attempt #{attempt_num} due to transient error.
 Use the {current_step.tool_name} tool with robust parameters.
 Focus on completing: {current_step.success_criteria}"""
 
+        # ✅ CACHING: Cache the retry system prompt for Anthropic models only
+        cache_enabled = getattr(runtime.context, 'enable_prompt_cache', True)
+        using_anthropic = is_anthropic_model(runtime.context.model)
+        retry_system_content = "You are retrying a tool call due to transient error. Use the same tool with slightly adjusted parameters for robustness."
+
+        if cache_enabled and using_anthropic:
+            retry_system_structured = [
+                {
+                    "type": "text",
+                    "text": retry_system_content,
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ]
+        else:
+            retry_system_structured = retry_system_content
+
         retry_response = await model_with_tools.ainvoke(
             [
-                {"role": "system", "content": "You are retrying a tool call due to transient error. Use the same tool with slightly adjusted parameters for robustness."},
+                {"role": "system", "content": retry_system_structured},
                 {"role": "user", "content": retry_prompt}
             ],
             tool_choice={
@@ -456,10 +472,26 @@ async def act_with_narration_guard(state: State, runtime: Runtime[Context]) -> D
             current_step, step_context, state.retry_count, state.current_assessment
         )
 
+        # ✅ CACHING: Cache narration system prompt for Anthropic models only
+        cache_enabled = getattr(runtime.context, 'enable_prompt_cache', True)
+        using_anthropic = is_anthropic_model(runtime.context.model)
+        narration_system_content = "You are providing live development commentary. Generate a brief (1-2 sentences), engaging message about what you're about to do. Be specific about the Unity/Unreal tool you'll use and show awareness of the conversation context."
+
+        if cache_enabled and using_anthropic:
+            narration_system_structured = [
+                {
+                    "type": "text",
+                    "text": narration_system_content,
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ]
+        else:
+            narration_system_structured = narration_system_content
+
         narration_messages = [
             {
                 "role": "system",
-                "content": "You are providing live development commentary. Generate a brief (1-2 sentences), engaging message about what you're about to do. Be specific about the Unity/Unreal tool you'll use and show awareness of the conversation context.",
+                "content": narration_system_structured,
             },
             *conversation_context,
             {"role": "user", "content": narration_prompt},
@@ -536,9 +568,26 @@ You are executing a Unity/Unreal Engine development step. Focus on calling the r
         include_episodes=False  # Keep it light for tool execution
     )
 
+    # ✅ CACHING: Check if caching is enabled AND using Anthropic
+    cache_enabled = getattr(runtime.context, 'enable_prompt_cache', True)
+    using_anthropic = is_anthropic_model(runtime.context.model)
+
+    # Create cacheable system content for the static part (Anthropic only)
+    if cache_enabled and using_anthropic:
+        # Use structured content format with cache control for the static system prompt
+        enhanced_system_structured = [
+            {
+                "type": "text",
+                "text": enhanced_system_content,
+                "cache_control": {"type": "ephemeral"}
+            }
+        ]
+    else:
+        enhanced_system_structured = enhanced_system_content
+
     tool_messages = [
-        {"role": "system", "content": enhanced_system_content},  # ✅ Now includes learned patterns
-        {"role": "system", "content": dynamic_context_message},
+        {"role": "system", "content": enhanced_system_structured},  # ✅ Now includes learned patterns + caching
+        {"role": "system", "content": dynamic_context_message},  # Dynamic content not cached
         *conversation_messages,
         {"role": "user", "content": tool_call_prompt},
     ]
