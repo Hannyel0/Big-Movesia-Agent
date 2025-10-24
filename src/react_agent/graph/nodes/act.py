@@ -481,15 +481,20 @@ async def act_with_narration_guard(state: State, runtime: Runtime[Context]) -> D
     # Phase 2: Generate tool call with execution context
     tool_call_prompt = _create_tool_execution_prompt(current_step, step_context)
 
-    static_system_content = """You are executing a Unity/Unreal Engine development step. Focus on calling the required tool with appropriate parameters.
+    static_system_content = """## Tool Execution Mode
 
-EXECUTION GUIDELINES:
-1. Call the exact tool specified in the step requirements  
-2. Use appropriate parameters based on the step description and success criteria
-3. Focus on creating working game development deliverables
-4. Follow Unity/Unreal best practices in your tool usage
+You are executing a Unity/Unreal Engine development step. Focus on calling the required tool with appropriate parameters.
 
-You MUST call the specified tool to complete this development step."""
+### EXECUTION GUIDELINES:
+
+1. **Call the exact tool** specified in the step requirements
+2. **Use appropriate parameters** based on the step description and success criteria
+3. **Focus on creating working** game development deliverables
+4. **Follow Unity/Unreal best practices** in your tool usage
+
+⚠️ **CRITICAL**: You MUST call the specified tool to complete this development step.
+
+### MARKDOWN FORMATTING REQUIRED WHEN GENERATING NARRATION OR EXPLANATION"""
 
     # Prepare minimal conversation context for tool usage
     conversation_messages = []

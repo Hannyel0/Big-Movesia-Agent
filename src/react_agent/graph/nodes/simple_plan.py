@@ -136,44 +136,78 @@ EFFICIENCY PRINCIPLES:
 Create a smart, streamlined plan that efficiently solves this specific request."""
 
     # CORRECTED ADAPTIVE SYSTEM CONTENT for simple planning
-    base_adaptive_system_content = """You are creating efficient, intelligent plans for straightforward Unity/Unreal development tasks.
+    base_adaptive_system_content = """## MANDATORY MARKDOWN FORMATTING
 
-TOOL PURPOSE CLARIFICATION:
-**search_project**: Query indexed Unity project database using natural language
-**code_snippets**: Semantic search through C# scripts by functionality
-**unity_docs**: Search local Unity documentation with semantic RAG (best for API/feature lookup)
-**read_file**: Read file contents safely (no approval)
-**write_file**: Create/write files (requires approval)
-**modify_file**: Modify existing files (requires approval)
-**delete_file**: Delete files (requires approval)
-**move_file**: Move/rename files (requires approval)
-**web_search**: Research external Unity documentation and tutorials
+You MUST format all plan outputs using proper markdown. You will be penalized for plain text responses.
 
-VALID TOOLS: search_project, code_snippets, unity_docs, read_file, write_file, modify_file, delete_file, move_file, web_search
+### Required Markdown Elements:
+- **Headers**: Use ## ### for structure
+- **Bold**: Use **text** for tool names and key terms
+- **Emojis**: 🎯 ✅ 🔍 📁 💡 for clarity
+- **Lists**: Numbered lists for steps with proper formatting
+- **Spacing**: Blank lines before/after headers and lists
 
-INTELLIGENT EFFICIENCY:
-- **Unity API/feature questions**: unity_docs (fast, local, semantic)
-- **Information requests**: web_search (for general Unity concepts)
-- **Understanding existing code**: code_snippets → read_file
-- **Modifying existing features**: code_snippets → modify_file
-- **Creating new features**: unity_docs → write_file
-- **Project inspection**: search_project
-- **Asset discovery**: search_project
-- **File cleanup**: delete_file
-- **File reorganization**: move_file
+### Plan Output Structure:
+```markdown
+## 🎯 Plan Title
 
-DECISION FLOWCHART:
-1. Need Unity API reference or feature docs? → unity_docs
-2. Need to find existing code by functionality? → code_snippets
-3. Need to learn new Unity concepts? → unity_docs OR web_search
-4. Need project structure/asset info? → search_project
-5. Need to read files? → read_file
-6. Need to create files? → write_file
-7. Need to modify files? → modify_file
-8. Need to delete files? → delete_file
-9. Need to move/rename files? → move_file
+Brief explanation with **bold emphasis** on key points.
 
-Create plans that use production tools for real Unity project integration."""
+1. 🔍 **tool_name**: Step description
+2. ✏️ **tool_name**: Step description
+
+### ✅ Next Steps
+
+What happens next...
+```
+
+---
+
+## Simple Planning Mode
+
+You are creating efficient, intelligent plans for straightforward Unity/Unreal development tasks.
+
+### TOOL PURPOSE CLARIFICATION:
+
+- **search_project**: Query indexed Unity project database using natural language
+- **code_snippets**: Semantic search through C# scripts by functionality  
+- **unity_docs**: Search local Unity documentation with semantic RAG (best for API/feature lookup)
+- **read_file**: Read file contents safely (no approval)
+- **write_file**: Create/write files (requires approval)
+- **modify_file**: Modify existing files (requires approval)
+- **delete_file**: Delete files (requires approval)
+- **move_file**: Move/rename files (requires approval)
+- **web_search**: Research external Unity documentation and tutorials
+
+**VALID TOOLS**: search_project, code_snippets, unity_docs, read_file, write_file, modify_file, delete_file, move_file, web_search
+
+### INTELLIGENT EFFICIENCY MATRIX:
+
+| Use Case | Best Tool | Workflow |
+|----------|-----------|----------|
+| Unity API/feature questions | unity_docs | Fast, local, semantic |
+| Information requests | web_search | General Unity concepts |
+| Understanding existing code | code_snippets | → read_file |
+| Modifying existing features | code_snippets | → modify_file |
+| Creating new features | unity_docs | → write_file |
+| Project inspection | search_project | Direct query |
+| Asset discovery | search_project | Direct query |
+| File cleanup | delete_file | With approval |
+| File reorganization | move_file | With approval |
+
+### DECISION FLOWCHART:
+
+1. Need Unity API reference or feature docs? → **unity_docs**
+2. Need to find existing code by functionality? → **code_snippets**
+3. Need to learn new Unity concepts? → **unity_docs** OR **web_search**
+4. Need project structure/asset info? → **search_project**
+5. Need to read files? → **read_file**
+6. Need to create files? → **write_file**
+7. Need to modify files? → **modify_file**
+8. Need to delete files? → **delete_file**
+9. Need to move/rename files? → **move_file**
+
+**CRITICAL**: Create plans that use production tools for real Unity project integration."""
 
     # ✅ MEMORY: Inject memory context into planning prompt
     adaptive_system_content = await inject_memory_into_prompt(
@@ -236,10 +270,24 @@ Create plans that use production tools for real Unity project integration."""
             "context_then_implement": "context-aware approach"
         }.get(request_analysis["suggested_approach"], "focused approach")
         
-        narration = f"I'll handle this with a {approach_description} in {step_count} step{'s' if step_count != 1 else ''}:"
+        narration = f"## 🎯 Plan Created\n\nI'll handle this with a **{approach_description}** in {step_count} step{'s' if step_count != 1 else ''}:\n\n"
         
         for i, step in enumerate(steps, 1):
-            narration += f"\n{i}. {step.description}"
+            tool_emoji = {
+                "search_project": "🔍",
+                "code_snippets": "📝",
+                "unity_docs": "📚",
+                "read_file": "📖",
+                "write_file": "✏️",
+                "modify_file": "🔧",
+                "delete_file": "🗑️",
+                "move_file": "📦",
+                "web_search": "🌐"
+            }.get(step.tool_name, "🛠️")
+            
+            narration += f"{i}. {tool_emoji} **{step.tool_name}**: {step.description}\n"
+        
+        narration += "\n### ✅ Next Steps\n\nI'll begin executing the plan now.\n"
         
         return {
             "plan": plan,

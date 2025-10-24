@@ -57,23 +57,70 @@ async def _generate_direct_action_response(state: State, model) -> str:
 Tool Result:
 {json.dumps(latest_result['result'], indent=2)}
 
-Generate a helpful, informative response that:
-1. Answers their question with useful context
-2. Groups or categorizes information when it makes sense (e.g., "You have 5 player scripts and 3 UI scripts")
-3. Points out interesting patterns or insights (e.g., "most are Editor scripts", "all located in the Scripts folder")
-4. Offers to dive deeper if relevant (e.g., "Want me to show you what's in any of these?")
-5. Be conversational but informative - not just a data dump
+Generate a helpful, informative response using **proper markdown formatting**.
 
-Think: "What would a helpful teammate say?" not "What's the minimum valid answer?"
+### MARKDOWN FORMATTING REQUIREMENTS:
 
-For example, if they asked "what scripts do I have?" and found 8 scripts, don't just say "You have 8 scripts." 
-Instead say: "You have **8 C# scripts** in your project! They're mostly in the Scripts folder - I see player controllers, UI managers, and some utility scripts. Want me to dive into any specific ones?"
+**YOU WILL BE PENALIZED** for plain text responses. You MUST use:
 
-Generate your response now:"""
+- **## Headers** for main sections
+- **Bold** for key terms, numbers, file names
+- **Bullet points** with `-` (not •)
+- **Blank lines** before/after headers and lists
+- **Emojis** for visual clarity: 📁 🔍 ✅ 💡 🎯
+
+### Response Structure Example:
+```markdown
+## 📁 Project Scripts
+
+You have **8 C# scripts** in your project!
+
+### Breakdown:
+- **Player controllers** (3 scripts)
+- **UI managers** (2 scripts)  
+- **Utility scripts** (3 scripts)
+
+### 💡 Insights:
+Most are located in the **Scripts/** folder. I noticed several editor scripts for workflow automation.
+
+### 🎯 Next Steps:
+Want me to dive into any specific ones?
+```
+
+### Your Response Guidelines:
+1. **Answer their question** with useful context
+2. **Group or categorize** information when it makes sense
+3. **Point out interesting patterns** or insights
+4. **Offer to dive deeper** if relevant
+5. **Be conversational** but informative - not just a data dump
+
+**Think**: "What would a helpful teammate say?" not "What's the minimum valid answer?"
+
+**BAD** (plain text): "You have 8 scripts."
+**GOOD** (markdown): "## 📁 Your Scripts\\n\\nYou have **8 C# scripts** in your project! They're mostly in the **Scripts/** folder..."
+
+Generate your markdown-formatted response now:"""
     
     try:
         messages = [
-            {"role": "system", "content": "You are a helpful Unity development assistant. Provide informative, contextual answers that go beyond just stating facts. Add insights, group information logically, and be conversational like a knowledgeable teammate would be."},
+            {"role": "system", "content": """## Unity Development Assistant
+
+You are a helpful Unity development assistant.
+
+### Response Guidelines:
+- Provide **informative, contextual answers**
+- Go beyond facts - add **insights**
+- Group information **logically** with headers
+- Be conversational like a **knowledgeable teammate**
+
+### MARKDOWN REQUIREMENTS:
+- Use **## ###** for headers
+- Use **bold** for key terms
+- Add **blank lines** before/after sections
+- Use relevant emojis: 💡 🎯 ✅ 📚
+- Structure with clear hierarchy
+
+**You will be penalized for plain text responses.**"""},
             {"role": "user", "content": response_prompt}
         ]
         
@@ -192,65 +239,157 @@ async def _generate_comprehensive_completion_summary(state: State, model, contex
             print(f"⚠️ [Finish] Could not get memory context: {e}")
     
     # Create comprehensive prompt for AI summary with dynamic, contextual formatting
-    completion_prompt = f"""You have just completed a Unity/game development session. Generate a contextual, well-formatted completion summary that dynamically adapts to what was actually accomplished.
+    completion_prompt = f"""## COMPLETION SUMMARY GENERATION
 
-**Session Context:**
-- Original Goal: "{state.plan.goal}"
-- Planned Steps: {len(state.plan.steps)}
-- Completed Steps: {len(state.completed_steps)} ({execution_context['completion_percentage']:.1f}%)
-- Total Tool Calls: {state.total_tool_calls}
-- Plan Revisions: {state.plan_revision_count}
+You have just completed a Unity/game development session. Generate a contextual, well-formatted completion summary using **proper markdown**.
 
-**Work Completed:**
+### ⚠️ CRITICAL MARKDOWN REQUIREMENT:
+
+**YOU WILL BE HEAVILY PENALIZED FOR PLAIN TEXT RESPONSES.**
+
+You MUST use:
+- **## Headers** for main sections (with blank lines before/after)
+- **### Subheaders** for subsections
+- **Bold** for file names, key concepts, status indicators
+- **Blank lines** before/after all headers and lists
+- **Bullet points** with `-` (not •)
+- **Emojis** for visual organization: ✅ ❌ 🔧 💡 🎯 📁 ⚠️
+
+---
+
+### Session Context:
+
+**Original Goal:** "{state.plan.goal}"
+**Planned Steps:** {len(state.plan.steps)}
+**Completed Steps:** {len(state.completed_steps)} ({execution_context['completion_percentage']:.1f}%)
+**Total Tool Calls:** {state.total_tool_calls}
+**Plan Revisions:** {state.plan_revision_count}
+
+### Work Completed:
 {chr(10).join(completed_steps_summary)}
 
-**Concrete Deliverables:**
+### Concrete Deliverables:
 {chr(10).join(files_created + assets_built + concrete_results) if (files_created + assets_built + concrete_results) else "Development work completed successfully"}
 
-{f"**What We Learned:**\n{memory_section}\n" if memory_section else ""}
+{f"### What We Learned:\n{memory_section}\n" if memory_section else ""}
 
-Generate a completion summary that:
+---
 
-1. **Uses dynamic structure** - Organize sections based on what actually happened (e.g., "Error Found and Fixed", "Implementation Complete", "Asset Created", etc.)
+### MANDATORY SUMMARY STRUCTURE:
+```markdown
+## ✅ [Dynamic Title Based on What Happened]
 
-2. **Contextual formatting** - Use markdown formatting naturally:
-   - **Bold** for key concepts, file names, and important status indicators
-   - Bullet points or numbered lists where they make sense
-   - Code formatting with backticks for file names, methods, or technical terms
-   - Checkmarks (✅) or other symbols organically where appropriate
+Brief overview with **bold emphasis**.
 
-3. **Tell the story** of what happened:
-   - If errors were fixed, explain what the problem was and how it was solved
-   - If features were implemented, describe what they do and how they work
-   - If assets were created, explain their purpose and integration
-   - If configurations were changed, explain why and what impact it has
+### 🎯 What Was Accomplished
 
-4. **Technical specificity** - Include actual details like:
-   - File names and paths that were created/modified
-   - Specific Unity concepts, components, or systems involved
-   - Compilation results, error counts, warnings
-   - Methods, classes, or technical implementations used
+- **Deliverable 1**: Description with specifics
+- **Deliverable 2**: Description with specifics
 
-5. **Actionable next steps** - Provide concrete instructions for what the developer should do next to use or test what was built
+### 🔧 Technical Details
 
-6. **Natural tone** - Write as if explaining to a fellow developer what you accomplished and why it matters for their project
+**File:** `filename.cs` 
+**Changes:** What was modified/created
+**Integration:** How it fits with project
 
-INSPIRATION EXAMPLE (adapt this style, don't copy the structure):
-**Error Found and Fixed**
-**Issue: Input System Import Conflict**
+### 💡 Key Insights
+
+Important patterns or learnings discovered.
+
+### ⚡ Next Steps
+
+1. First action with **clear instruction**
+2. Second action with details
+```
+
+### Summary Requirements:
+
+1. **Dynamic structure** - Organize sections based on what **actually happened**:
+   - "## ✅ Error Fixed" for bug fixes
+   - "## ✅ Feature Implemented" for new features
+   - "## ✅ Asset Created" for asset work
+   - "## ⚠️ Partial Progress" for incomplete work
+
+2. **STRICT markdown formatting**:
+   - **Bold** all file names, key concepts, and status indicators
+   - Use **blank lines before AND after** every header
+   - Use **blank lines before** every list
+   - Use `-` for bullet points (never •)
+   - Use emojis **naturally** for section headers
+
+3. **Tell the story** with context:
+   - **Errors fixed**: What broke → Why → How we fixed it
+   - **Features implemented**: What it does → How it works → Why it matters
+   - **Assets created**: Purpose → Integration → Usage
+
+4. **Technical specificity**:
+   - **File names**: Always in `backticks` and **bold**: **`PlayerController.cs`**
+   - **Methods/Classes**: Use backticks: `Update()`, `PlayerController` 
+   - **Unity components**: Bold: **Rigidbody2D**, **Input Manager**
+   - **Concrete numbers**: Errors fixed, lines added, etc.
+
+5. **Actionable next steps** with numbered list
+
+6. **Natural tone** - Fellow developer explaining what was accomplished
+
+### EXAMPLE (ADAPT, DON'T COPY):
+```markdown
+## ✅ Input System Error Fixed
+
+Found and resolved a namespace conflict in **`PlayerController.cs`**.
+
+### ⚠️ The Issue
+
 The script was importing `UnityEngine.InputSystem` but using legacy `Input` class methods like `Input.GetAxis("Horizontal")`. This creates a namespace conflict in Unity 6.
-**Solution Applied**
-I removed the unnecessary import since the script uses the legacy Input Manager, which works perfectly for character controllers.
-**Current Status**
-Your `PlayerController.cs` script is now error-free and ready to use! The script:
-✅ **Fixed compilation errors** ✅ **Uses legacy Input system** ✅ **Includes all movement features**
 
-Generate your contextual summary based on what actually happened in this session:"""
+### 🔧 Solution Applied
+
+Removed the unnecessary import since the script uses the **legacy Input Manager**, which works perfectly for character controllers.
+
+### ✅ Current Status
+
+Your **`PlayerController.cs`** is now error-free and ready to use:
+
+- ✅ Fixed compilation errors
+- ✅ Uses legacy Input system
+- ✅ Includes all movement features
+
+### ⚡ Next Steps
+
+1. **Test the controller** in Play Mode
+2. **Assign** the script to your player GameObject
+3. **Configure** input axes in Edit → Project Settings → Input Manager
+```
+
+**GENERATE YOUR PROPERLY FORMATTED SUMMARY NOW** (following the structure above with blank lines, headers, and emojis):"""
 
     try:
         # Generate AI completion summary
         completion_messages = [
-            {"role": "system", "content": "You are providing a professional completion summary for a Unity development session. Be specific, confident, and focus on concrete deliverables. Keep it concise but comprehensive."},
+            {"role": "system", "content": """## Session Summary Mode
+
+You are providing a professional completion summary for a Unity development session.
+
+### Requirements:
+- Be **specific** and **confident**
+- Focus on **concrete deliverables**
+- Keep it **concise** but **comprehensive**
+
+### MARKDOWN FORMAT:
+Use this structure:
+
+## ✅ Session Complete
+
+Successfully accomplished:
+- **Feature**: Description
+- **Files Changed**: List with tool names
+- **Integration**: How it fits
+
+### 🎯 Next Steps
+1. First recommendation
+2. Second recommendation
+
+**You will be penalized for plain text without markdown formatting.**"""},
             {"role": "user", "content": completion_prompt}
         ]
         

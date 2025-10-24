@@ -353,43 +353,57 @@ Remember: Every step must specify a concrete tool to use. No generic steps allow
 
 
 def _create_intelligent_planning_narration(plan: ExecutionPlan, user_message: str, context: str) -> str:
-    """Create contextual planning narration that explains the intelligent reasoning."""
+    """Create contextual planning narration with proper markdown formatting."""
     
-    narration = f"I'll help you with **{user_message}** using a tailored approach.\n\n"
+    narration = f"## 🎯 Development Plan\n\nI'll help you with **{user_message}** using a tailored approach.\n\n"
     
     # Explain the reasoning based on plan characteristics
     step_count = len(plan.steps)
     
     if step_count == 1:
-        narration += "This looks like a straightforward request that I can handle directly:\n"
+        narration += "### Approach\n\nThis looks like a straightforward request that I can handle directly:\n\n"
     elif step_count == 2:
-        narration += "I'll take a focused two-step approach:\n"
+        narration += "### Approach\n\nI'll take a focused two-step approach:\n\n"
     elif step_count <= 4:
-        narration += f"I've designed a {step_count}-step plan that balances efficiency with thoroughness:\n"
+        narration += f"### Approach\n\nI've designed a **{step_count}-step plan** that balances efficiency with thoroughness:\n\n"
     else:
-        narration += f"This requires a comprehensive {step_count}-step approach to ensure quality:\n"
+        narration += f"### Approach\n\nThis requires a comprehensive **{step_count}-step approach** to ensure quality:\n\n"
     
-    # List the steps with reasoning
+    # List the steps with proper markdown formatting
     for i, step in enumerate(plan.steps, 1):
-        narration += f"\n{i}. **{step.description}**"
+        tool_emoji = {
+            "search_project": "🔍",
+            "code_snippets": "📝",
+            "unity_docs": "📚",
+            "read_file": "📖",
+            "write_file": "✏️",
+            "modify_file": "🔧",
+            "delete_file": "🗑️",
+            "move_file": "📦",
+            "web_search": "🌐"
+        }.get(step.tool_name, "🛠️")
+        
+        narration += f"{i}. {tool_emoji} **{step.tool_name}**: {step.description}\n"
         
         # Add contextual reasoning for why this step makes sense
         if step.tool_name == "web_search" and i > 1:
-            narration += " (research needed for this specific implementation)"
+            narration += "   *Research needed for this specific implementation*\n"
         elif step.tool_name == "search_project" and i > 2:
-            narration += " (checking your project setup for compatibility)"
+            narration += "   *Checking your project setup for compatibility*\n"
         elif step.tool_name == "code_snippets" and "web_search" not in [s.tool_name for s in plan.steps[:i-1]]:
-            narration += " (I have the code patterns you need)"
+            narration += "   *I have the code patterns you need*\n"
         elif step.tool_name in ["write_file", "modify_file", "delete_file", "move_file"] and step_count > 3:
-            narration += " (ensuring everything integrates properly)"
+            narration += "   *Ensuring everything integrates properly*\n"
     
-    # Add context-aware conclusion
+    narration += "\n"
+    
+    # Add context-aware conclusion with proper markdown
     if "beginner" in context.lower():
-        narration += "\n\nI'll provide detailed explanations since you're learning."
+        narration += "### 💡 Note\n\nI'll provide detailed explanations since you're learning.\n"
     elif "experienced" in context.lower():
-        narration += "\n\nI'll focus on efficient implementation given your experience."
+        narration += "### ⚡ Note\n\nI'll focus on efficient implementation given your experience.\n"
     elif "troubleshooting" in context.lower():
-        narration += "\n\nI'll prioritize identifying and fixing the issue quickly."
+        narration += "### 🔧 Note\n\nI'll prioritize identifying and fixing the issue quickly.\n"
     
     return narration
 
