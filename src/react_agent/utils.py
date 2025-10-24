@@ -2,7 +2,7 @@
 
 
 import hashlib
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
@@ -26,25 +26,39 @@ def get_message_text(msg: BaseMessage) -> str:
 
 def load_chat_model(fully_specified_name: str) -> BaseChatModel:
     """Load a chat model from a fully specified name.
-    
+
     Args:
-        fully_specified_name (str): String in the format 'provider/model'.
-        
+        fully_specified_name (str): String in the format 'provider:model' or 'provider/model'.
+
     Returns:
         BaseChatModel: Initialized chat model instance.
     """
-    provider, model = fully_specified_name.split("/", maxsplit=1)
-    return init_chat_model(model, model_provider=provider)
+    # Support both colon and slash formats for compatibility
+    if ":" in fully_specified_name:
+        provider, model = fully_specified_name.split(":", maxsplit=1)
+    else:
+        provider, model = fully_specified_name.split("/", maxsplit=1)
+
+    # Enable stream_usage for proper token tracking in LangGraph Studio
+    return init_chat_model(
+        model,
+        model_provider=provider,
+        stream_usage=True
+    )
 
 
 def get_model(fully_specified_name: str) -> BaseChatModel:
     """Alias for load_chat_model for consistency with graph code.
-    
+
     Args:
-        fully_specified_name (str): String in the format 'provider/model'.
-        
+        fully_specified_name (str): String in the format 'provider:model' or 'provider/model'.
+
     Returns:
-        BaseChatModel: Initialized chat model instance.
+        BaseChatModel: Initialized chat model instance with token tracking enabled.
+
+    Note:
+        Token tracking is automatically enabled via stream_usage=True for LangGraph Studio.
+        This ensures proper token usage display in the UI.
     """
     return load_chat_model(fully_specified_name)
 
@@ -101,7 +115,6 @@ def format_plan_visualization(plan: Any) -> str:
 
 def create_dynamic_step_message(step: 'PlanStep', step_num: int, total_steps: int, goal: str) -> str:
     """Create varied, contextual step messages that feel more natural and agentic."""
-    
     # Create deterministic but varied selection based on step content
     seed = f"{step.tool_name}_{step_num}_{step.description[:20]}"
     hash_val = int(hashlib.md5(seed.encode()).hexdigest(), 16) % 1000
@@ -234,7 +247,6 @@ def create_dynamic_step_message(step: 'PlanStep', step_num: int, total_steps: in
 
 def create_varied_post_tool_message(tool_name: str, result: dict, step_num: int) -> str:
     """Create varied post-tool messages instead of the repetitive ones."""
-    
     # Create some variation based on step number and tool
     seed = f"{tool_name}_{step_num}_{str(result.get('success', True))}"
     hash_val = int(hashlib.md5(seed.encode()).hexdigest(), 16) % 100

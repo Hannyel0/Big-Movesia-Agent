@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field, fields
-from typing import Annotated, Optional, Dict, Any
+from typing import Annotated, Any, Dict, Optional
 
 from react_agent import prompts
 
@@ -23,10 +23,10 @@ class Context:
     )
 
     model: Annotated[str, {"__template_metadata__": {"kind": "llm"}}] = field(
-        default="openai/gpt-4.1-mini-2025-04-14",
+        default="openai:gpt-4.1-mini-2025-04-14",
         metadata={
             "description": "The name of the language model to use for the agent's main interactions. "
-            "Should be in the form: provider/model-name."
+            "Should be in the form: provider:model-name (colon format for better compatibility)."
         },
     )
     
