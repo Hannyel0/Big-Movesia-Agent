@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: movesia-searxng
+    restart: unless-stopped
+    ports:
+      - "8888:8080"  # Access SearXNG at http://localhost:8888
+    networks:
+      - searxng-network
+    volumes:
+      - ./searxng-data:/etc/searxng:rw
+      - ./searxng-settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - BASE_URL=http://localhost:8888/
+      - INSTANCE_NAME=Movesia Search
+      # Optional: Redis for better caching
+      # - REDIS_URL=redis://redis:6379/0
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Redis for improved caching
+  # Uncomment to enable
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: movesia-redis
+  #   restart: unless-stopped
+  #   networks:
+  #     - searxng-network
+  #   volumes:
+  #     - redis-data:/data
+  #   command: redis-server --appendonly yes
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 30s
+  #     timeout: 5s
+  #     retries: 3
+
+networks:
+  searxng-network:
+    driver: bridge
+
+volumes:
+  searxng-data:
+  # redis-data:

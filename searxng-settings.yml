@@ -1,0 +1,217 @@
+# SearXNG Configuration for Movesia
+# Optimized for game development, Unity, and programming searches
+# Fixed to only include engines that exist in current SearXNG
+
+use_default_settings: false
+
+general:
+  debug: false
+  instance_name: "Movesia Search"
+  privacypolicy_url: false
+  donation_url: false
+  contact_url: false
+  enable_metrics: true
+
+brand:
+  new_issue_url: ""
+  docs_url: ""
+  public_instances: ""
+  wiki_url: ""
+  issue_url: ""
+
+search:
+  safe_search: 0  # 0=off, 1=moderate, 2=strict
+  autocomplete: "google"
+  default_lang: "en"
+  
+  # Enable JSON format for API access (CRITICAL)
+  formats:
+    - html
+    - json
+  
+  ban_time_on_fail: 5
+  max_ban_time_on_fail: 120
+  
+  # Suspend engines after failures
+  suspended_times:
+    SearxEngineAccessDenied: 86400
+    SearxEngineCaptcha: 86400
+    SearxEngineTooManyRequests: 3600
+
+server:
+  port: 8080
+  bind_address: "0.0.0.0"
+  
+  # IMPORTANT: Generate a secure secret key!
+  secret_key: "28f15dd8f5b06313bacb3dd64bf8f1aabecca9f825afaa12ee0b5e6e7ff95740"
+  
+  limiter: false  # Disable rate limiting for local API use
+  image_proxy: true
+  
+  http_protocol_version: "1.1"
+  method: "POST"
+
+ui:
+  static_use_hash: true
+  default_locale: "en"
+  query_in_title: false
+  infinite_scroll: false
+  center_alignment: false
+  
+  # Themes
+  default_theme: "simple"
+  theme_args:
+    simple_style: "auto"
+
+# Outgoing request configuration
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 15.0
+  pool_connections: 100
+  pool_maxsize: 20
+  keepalive_expiry: 5.0
+  
+  # Enable for better performance
+  enable_http2: true
+  
+  # Retry configuration
+  retries: 2
+  retry_on_http_error: [403, 429, 500, 502, 503, 504]
+
+# Categories - define before engines
+categories_as_tabs:
+  general:
+    - general
+  images:
+    - images
+  videos:
+    - videos
+  news:
+    - news
+  it:
+    - it
+  science:
+    - science
+
+# Search engine configuration
+# Only engines that exist in current SearXNG versions
+engines:
+  # ============================================================================
+  # PRIMARY SEARCH ENGINES - Fast and reliable
+  # ============================================================================
+  
+  - name: google
+    engine: google
+    shortcut: go
+    categories: [general, images, news]
+    timeout: 10.0
+    disabled: false
+    
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    categories: [general, images, news]
+    timeout: 10.0
+    disabled: false
+    
+  - name: brave
+    engine: brave
+    shortcut: br
+    categories: [general, images, news, videos]
+    timeout: 10.0
+    disabled: false
+    time_range_support: true
+  
+  - name: bing
+    engine: bing
+    shortcut: bi
+    categories: [general, images, news]
+    timeout: 10.0
+    disabled: false
+  
+  # ============================================================================
+  # DEVELOPER RESOURCES
+  # ============================================================================
+  
+  - name: github
+    engine: github
+    shortcut: gh
+    categories: [it]
+    timeout: 10.0
+    disabled: false
+    
+  - name: gitlab
+    engine: gitlab
+    shortcut: gl
+    categories: [it]
+    timeout: 10.0
+    disabled: false
+  
+  # ============================================================================
+  # DOCUMENTATION & LEARNING
+  # ============================================================================
+  
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    categories: [general]
+    timeout: 10.0
+    disabled: false
+    
+  - name: reddit
+    engine: reddit
+    shortcut: re
+    categories: [general, news]
+    timeout: 10.0
+    disabled: false
+  
+  # ============================================================================
+  # VIDEO TUTORIALS
+  # ============================================================================
+  
+  - name: youtube
+    engine: youtube_noapi
+    shortcut: yt
+    categories: [videos]
+    timeout: 10.0
+    disabled: false
+  
+  # ============================================================================
+  # PACKAGE MANAGERS
+  # ============================================================================
+  
+  - name: pypi
+    engine: pypi
+    shortcut: pypi
+    categories: [it, science]
+    timeout: 10.0
+    disabled: false
+  
+  # ============================================================================
+  # ARXIV - Research papers
+  # ============================================================================
+  
+  - name: arXiv
+    engine: arxiv
+    shortcut: arx
+    categories: [science]
+    timeout: 10.0
+    disabled: false
+
+# Plugins configuration
+enabled_plugins:
+  - 'Hash plugin'
+  - 'Self Information'
+  - 'Tracker URL remover'
+
+# Locales configuration
+locales:
+  en: English
+
+# DOI resolvers - CRITICAL: Must have default_doi_resolver set
+default_doi_resolver: 'oadoi.org'
+doi_resolvers:
+  oadoi.org: 'https://oadoi.org/'
+  doi.org: 'https://doi.org/'
+  doai.io: 'https://doai.io/'
+  sci-hub.se: 'https://sci-hub.se/'
