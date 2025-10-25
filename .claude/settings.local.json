@@ -8,7 +8,9 @@
       "Bash(dir /s /b)",
       "Bash(findstr \"ChatMessage\")",
       "Bash(ruff format src/react_agent/ui_messages.py src/react_agent/graph/routing.py)",
-      "Bash(ruff format src/react_agent/state.py src/react_agent/graph/routing.py)"
+      "Bash(ruff format src/react_agent/state.py src/react_agent/graph/routing.py)",
+      "Bash(ruff format src/react_agent/graph/nodes/plan.py src/react_agent/graph/nodes/simple_plan.py)",
+      "Bash(ruff format src/react_agent/ui_messages.py)"
     ],
     "deny": [],
     "ask": []

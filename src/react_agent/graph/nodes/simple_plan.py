@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any, Dict
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -20,6 +21,7 @@ from react_agent.memory import (
     extract_entities_from_request,
     extract_topics_from_request,
 )
+from react_agent.ui_messages import create_plan_ui_message
 
 
 def _analyze_request_nature(user_request: str) -> Dict[str, Any]:
@@ -83,13 +85,13 @@ async def simple_plan(state: State, runtime: Runtime[Context]) -> Dict[str, Any]
     if not user_request:
         return {"messages": [AIMessage(content="I need a clear request to create a plan.")]}
     
-    # ✅ MEMORY: Update focus for this request
+    # MEMORY: Update focus for this request
     if state.memory:
         entities = extract_entities_from_request(user_request)
         topics = extract_topics_from_request(user_request)
         if entities or topics:
             await state.memory.update_focus(entities, topics)
-            print(f"🧠 [SimplePlan] Updated focus - Entities: {entities[:3]}, Topics: {topics[:3]}")
+            print(f"[SimplePlan] Updated focus - Entities: {entities[:3]}, Topics: {topics[:3]}")
     
     # Analyze the request intelligently
     request_analysis = _analyze_request_nature(user_request)
@@ -135,37 +137,13 @@ EFFICIENCY PRINCIPLES:
 
 Create a smart, streamlined plan that efficiently solves this specific request."""
 
-    # CORRECTED ADAPTIVE SYSTEM CONTENT for simple planning
-    base_adaptive_system_content = """## MANDATORY MARKDOWN FORMATTING
-
-You MUST format all plan outputs using proper markdown. You will be penalized for plain text responses.
-
-### Required Markdown Elements:
-- **Headers**: Use ## ### for structure
-- **Bold**: Use **text** for tool names and key terms
-- **Emojis**: 🎯 ✅ 🔍 📁 💡 for clarity
-- **Lists**: Numbered lists for steps with proper formatting
-- **Spacing**: Blank lines before/after headers and lists
-
-### Plan Output Structure:
-```markdown
-## 🎯 Plan Title
-
-Brief explanation with **bold emphasis** on key points.
-
-1. 🔍 **tool_name**: Step description
-2. ✏️ **tool_name**: Step description
-
-### ✅ Next Steps
-
-What happens next...
-```
-
----
-
-## Simple Planning Mode
+    # OPTIMIZED SYSTEM CONTENT for intelligent simple planning (structured output only)
+    base_adaptive_system_content = """## Simple Planning Mode
 
 You are creating efficient, intelligent plans for straightforward Unity/Unreal development tasks.
+
+Your output will be a STRUCTURED PLAN (StructuredExecutionPlan), not narrative text.
+Focus purely on creating optimal step sequences, not on formatting or narration.
 
 ### TOOL PURPOSE CLARIFICATION:
 
@@ -209,7 +187,7 @@ You are creating efficient, intelligent plans for straightforward Unity/Unreal d
 
 **CRITICAL**: Create plans that use production tools for real Unity project integration."""
 
-    # ✅ MEMORY: Inject memory context into planning prompt
+    # MEMORY: Inject memory context into planning prompt
     adaptive_system_content = await inject_memory_into_prompt(
         base_prompt=base_adaptive_system_content,
         state=state,
@@ -253,47 +231,33 @@ You are creating efficient, intelligent plans for straightforward Unity/Unreal d
             }
         )
         
-        # ✅ MEMORY: Store plan in memory
+        # MEMORY: Store plan in memory
         if state.memory:
             state.memory.add_plan({
                 "goal": plan.goal,
                 "steps": [{"description": s.description, "tool": s.tool_name} for s in steps]
             })
-            print(f"🧠 [SimplePlan] Plan stored in memory: {len(steps)} steps")
+            print(f"[SimplePlan] Plan stored in memory: {len(steps)} steps")
         
-        # Create adaptive narration
+        # Create concise narration (detailed plan shown in UI component)
         step_count = len(steps)
-        approach_description = {
-            "research_first": "research-focused approach",
-            "direct_implementation": "direct implementation approach", 
-            "diagnose_then_solve": "diagnostic approach",
-            "context_then_implement": "context-aware approach"
-        }.get(request_analysis["suggested_approach"], "focused approach")
+        narration = f"I've created a {step_count}-step plan to help you. Beginning execution now."
         
-        narration = f"## 🎯 Plan Created\n\nI'll handle this with a **{approach_description}** in {step_count} step{'s' if step_count != 1 else ''}:\n\n"
+        # Create stable message ID first
+        msg_id = str(uuid.uuid4())
         
-        for i, step in enumerate(steps, 1):
-            tool_emoji = {
-                "search_project": "🔍",
-                "code_snippets": "📝",
-                "unity_docs": "📚",
-                "read_file": "📖",
-                "write_file": "✏️",
-                "modify_file": "🔧",
-                "delete_file": "🗑️",
-                "move_file": "📦",
-                "web_search": "🌐"
-            }.get(step.tool_name, "🛠️")
-            
-            narration += f"{i}. {tool_emoji} **{step.tool_name}**: {step.description}\n"
+        # Create AI message with explicit ID
+        msg = AIMessage(content=narration, id=msg_id)
         
-        narration += "\n### ✅ Next Steps\n\nI'll begin executing the plan now.\n"
+        # Emit UIMessage for plan visualization with the same stable ID
+        plan_ui_msg = create_plan_ui_message(plan, msg_id)
         
         return {
             "plan": plan,
             "step_index": 0,
             "retry_count": 0,
-            "messages": [AIMessage(content=narration)]
+            "messages": [msg],
+            "ui": [plan_ui_msg],  
         }
         
     except Exception as e:
@@ -305,13 +269,23 @@ You are creating efficient, intelligent plans for straightforward Unity/Unreal d
             metadata={"planning_mode": "intelligent_simple_fallback"}
         )
         
-        fallback_narration = f"I'll take an adaptive approach based on your {request_analysis['request_type']} request."
+        fallback_narration = f"I've created a plan to help you. Beginning execution now."
+        
+        # Create stable message ID first
+        fallback_msg_id = str(uuid.uuid4())
+        
+        # Create AI message with explicit ID
+        fallback_msg = AIMessage(content=fallback_narration, id=fallback_msg_id)
+        
+        # Emit UIMessage for fallback plan visualization
+        fallback_plan_ui_msg = create_plan_ui_message(fallback_plan, fallback_msg_id)
         
         return {
             "plan": fallback_plan,
             "step_index": 0,
             "retry_count": 0,
-            "messages": [AIMessage(content=fallback_narration)]
+            "messages": [fallback_msg],
+            "ui": [fallback_plan_ui_msg],  
         }
 
 
