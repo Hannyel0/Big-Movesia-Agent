@@ -7,6 +7,7 @@ passed via config and stored in runtime_metadata by the classify node.
 from __future__ import annotations
 
 import uuid
+import logging
 from datetime import datetime, UTC
 from typing import Any, Dict, List
 
@@ -26,6 +27,10 @@ from react_agent.narration import NarrationEngine
 from react_agent.utils import get_message_text, get_model, is_anthropic_model
 from react_agent.memory import inject_memory_into_prompt
 from react_agent.ui_messages import create_plan_ui_message
+
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 
 # Build tools description once at module level for caching
@@ -377,15 +382,21 @@ Remember: Every step must specify a concrete tool to use. No generic steps allow
         msg = AIMessage(content=planning_narration, id=msg_id)
 
         # Emit UIMessage for plan visualization with the same stable ID
-        plan_ui_msg = create_plan_ui_message(plan, msg_id)
+        # Reuse existing plan_ui_message_id if replanning, otherwise create new
+        plan_ui_msg = create_plan_ui_message(
+            plan, msg_id, ui_message_id=state.plan_ui_message_id
+        )
 
-        return {
+        result = {
             "plan": plan,
+            "plan_ui_message_id": plan_ui_msg.id,  # ✅ CRITICAL: Store the ID
             "step_index": 0,
             "retry_count": 0,
             "messages": [msg],
             "ui": [plan_ui_msg],
         }
+
+        return result
 
     except Exception:
         # Fallback to minimal intelligent planning
@@ -407,15 +418,21 @@ Remember: Every step must specify a concrete tool to use. No generic steps allow
         fallback_msg = AIMessage(content=fallback_narration, id=fallback_msg_id)
 
         # Emit UIMessage for fallback plan visualization
-        fallback_plan_ui_msg = create_plan_ui_message(fallback_plan, fallback_msg_id)
+        # Reuse existing plan_ui_message_id if replanning, otherwise create new
+        fallback_plan_ui_msg = create_plan_ui_message(
+            fallback_plan, fallback_msg_id, ui_message_id=state.plan_ui_message_id
+        )
 
-        return {
+        result = {
             "plan": fallback_plan,
+            "plan_ui_message_id": fallback_plan_ui_msg.id,  # ✅ CRITICAL: Store the ID
             "step_index": 0,
             "retry_count": 0,
             "messages": [fallback_msg],
             "ui": [fallback_plan_ui_msg],
         }
+
+        return result
 
 
 def _create_minimal_intelligent_plan(user_message: str, context: str) -> List[PlanStep]:

@@ -15,6 +15,50 @@ from typing_extensions import Annotated
 
 from react_agent.memory import MemoryManager
 
+
+# Custom reducer for UI messages to enable in-place updates
+def merge_ui_messages(
+    existing: Sequence[AnyMessage], new: Sequence[AnyMessage]
+) -> Sequence[AnyMessage]:
+    """Custom reducer that replaces UI messages with matching IDs instead of appending.
+
+    This enables in-place updates for plan UI messages - when a plan update is emitted
+    with the same message ID, it replaces the existing plan UI rather than duplicating it.
+    """
+    existing_list = list(existing)
+
+    for new_msg in new:
+        # Check if this is a plan UI message
+        is_plan_ui = (
+            hasattr(new_msg, "additional_kwargs")
+            and new_msg.additional_kwargs.get("ui_type") == "execution_plan"
+        )
+
+        if is_plan_ui:
+            # Find and replace existing plan UI message with same ID
+            replaced = False
+            for i, existing_msg in enumerate(existing_list):
+                if (
+                    hasattr(existing_msg, "additional_kwargs")
+                    and existing_msg.additional_kwargs.get("ui_type")
+                    == "execution_plan"
+                    and hasattr(existing_msg, "id")
+                    and hasattr(new_msg, "id")
+                    and existing_msg.id == new_msg.id
+                ):
+                    existing_list[i] = new_msg  # Replace in-place
+                    replaced = True
+                    break
+
+            if not replaced:
+                existing_list.append(new_msg)
+        else:
+            # For non-plan UI messages, just append
+            existing_list.append(new_msg)
+
+    return existing_list
+
+
 # Type-constrained tool names for production tools
 ToolName = Literal[
     "search_project",  # Natural language SQL queries
@@ -111,14 +155,15 @@ class State(InputState):
     """Complete state of the enhanced ReAct agent with plan tracking."""
 
     # UI Messages (separate from regular messages to avoid filtering by nodes)
-    ui: Annotated[Sequence[AnyMessage], add_messages] = field(
-        default_factory=list
-    )
+    ui: Annotated[Sequence[AnyMessage], merge_ui_messages] = field(default_factory=list)
     """UI-only messages for frontend components (e.g., web search results)."""
 
     # Plan management
     plan: Optional[ExecutionPlan] = field(default=None)
     """Current execution plan with structured steps."""
+
+    plan_ui_message_id: Optional[str] = field(default=None)
+    """Persistent ID for the plan UI message to enable in-place updates."""
 
     step_index: int = field(default=0)
     """Current step being executed (0-based index)."""

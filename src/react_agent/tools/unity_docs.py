@@ -51,13 +51,11 @@ def get_http_client() -> httpx.AsyncClient:
             timeout=30.0,
             follow_redirects=True,
             limits=httpx.Limits(
-                max_keepalive_connections=10,
-                max_connections=20,
-                keepalive_expiry=30.0
+                max_keepalive_connections=10, max_connections=20, keepalive_expiry=30.0
             ),
             headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            },
         )
     return _http_client
 
@@ -74,10 +72,10 @@ def _extract_content_sync(html: str) -> Optional[str]:
     try:
         config = use_config()
         config.set("DEFAULT", "EXTRACTION_TIMEOUT", "0")
-        
+
         extracted = trafilatura.extract(
             html,
-            output_format='txt',
+            output_format="txt",
             include_comments=False,
             include_tables=True,
             include_images=False,
@@ -85,22 +83,22 @@ def _extract_content_sync(html: str) -> Optional[str]:
             no_fallback=False,
             favor_precision=False,
             favor_recall=True,
-            config=config
+            config=config,
         )
-        
+
         if not extracted or len(extracted.strip()) < 100:
             # Try fallback
             extracted = trafilatura.extract(
                 html,
-                output_format='txt',
+                output_format="txt",
                 include_comments=False,
                 include_tables=True,
                 no_fallback=True,
                 favor_precision=False,
                 favor_recall=True,
-                config=config
+                config=config,
             )
-        
+
         return extracted
     except Exception as e:
         logger.error(f"❌ [Extraction] Failed: {e}")
@@ -124,26 +122,30 @@ async def _fetch_url_content(url: str) -> Optional[str]:
         logger.info(f"📡 [UnityDocs._fetch_url_content] Fetching URL: {url}")
         response = await client.get(url)
         response.raise_for_status()
-        logger.info(f"✅ [UnityDocs._fetch_url_content] HTTP {response.status_code} - Downloaded {len(response.text)} chars")
+        logger.info(
+            f"✅ [UnityDocs._fetch_url_content] HTTP {response.status_code} - Downloaded {len(response.text)} chars"
+        )
 
         # 🚀 Run CPU-intensive extraction in thread pool
-        logger.info(f"🔧 [UnityDocs._fetch_url_content] Starting content extraction (thread pool)")
+        logger.info(
+            f"🔧 [UnityDocs._fetch_url_content] Starting content extraction (thread pool)"
+        )
         loop = asyncio.get_event_loop()
         extracted = await loop.run_in_executor(
-            _extraction_executor,
-            _extract_content_sync,
-            response.text
+            _extraction_executor, _extract_content_sync, response.text
         )
 
         if not extracted:
-            logger.error(f"❌ [UnityDocs._fetch_url_content] Failed to extract content from {url}")
+            logger.error(
+                f"❌ [UnityDocs._fetch_url_content] Failed to extract content from {url}"
+            )
             return None
 
         # Clean up the extracted text
         clean_text = extracted.strip()
-        
+
         # Remove excessive blank lines
-        lines = clean_text.split('\n')
+        lines = clean_text.split("\n")
         cleaned_lines = []
         blank_count = 0
         for line in lines:
@@ -155,19 +157,26 @@ async def _fetch_url_content(url: str) -> Optional[str]:
                 if blank_count <= 2:
                     cleaned_lines.append(line)
 
-        clean_text = '\n'.join(cleaned_lines)
+        clean_text = "\n".join(cleaned_lines)
 
         # Smart truncation
         max_chars = 8000
         if len(clean_text) > max_chars:
-            logger.info(f"✂️ [UnityDocs._fetch_url_content] Truncating from {len(clean_text)} to {max_chars} chars")
-            truncate_point = clean_text.rfind('\n\n', 0, max_chars)
+            logger.info(
+                f"✂️ [UnityDocs._fetch_url_content] Truncating from {len(clean_text)} to {max_chars} chars"
+            )
+            truncate_point = clean_text.rfind("\n\n", 0, max_chars)
             if truncate_point > max_chars * 0.8:
-                clean_text = clean_text[:truncate_point] + "\n\n[Content truncated at natural paragraph break...]"
+                clean_text = (
+                    clean_text[:truncate_point]
+                    + "\n\n[Content truncated at natural paragraph break...]"
+                )
             else:
-                truncate_point = clean_text.rfind('. ', 0, max_chars)
+                truncate_point = clean_text.rfind(". ", 0, max_chars)
                 if truncate_point > max_chars * 0.9:
-                    clean_text = clean_text[:truncate_point + 1] + "\n\n[Content truncated...]"
+                    clean_text = (
+                        clean_text[: truncate_point + 1] + "\n\n[Content truncated...]"
+                    )
                 else:
                     clean_text = clean_text[:max_chars] + "\n\n[Content truncated...]"
 
@@ -177,7 +186,9 @@ async def _fetch_url_content(url: str) -> Optional[str]:
             del _url_cache[first_key]
 
         _url_cache[url] = clean_text
-        logger.info(f"✅ [UnityDocs._fetch_url_content] Cached - URL: {url}, Size: {len(clean_text)} chars")
+        logger.info(
+            f"✅ [UnityDocs._fetch_url_content] Cached - URL: {url}, Size: {len(clean_text)} chars"
+        )
 
         return clean_text
 
@@ -191,20 +202,32 @@ async def _fetch_url_content(url: str) -> Optional[str]:
 
 class UnityDocsInput(BaseModel):
     """Input schema for Unity docs search."""
-    query: str = Field(description="Natural language query about Unity functionality, API, or concepts")
-    version: Optional[str] = Field(default=None, description="Unity version filter (e.g., '6000.2')")
-    category: Optional[str] = Field(default=None, description="Category filter: 'ScriptReference', 'Manual', etc.")
-    top_k: int = Field(default=5, ge=1, le=20, description="Number of results to return (1-20)")
-    fetch_full_content: bool = Field(default=True, description="Whether to fetch full page content from URLs")
-    score_threshold: float = Field(default=0.6, ge=0.0, le=1.0, description="Minimum relevance threshold")
+
+    query: str = Field(
+        description="Natural language query about Unity functionality, API, or concepts"
+    )
+    version: Optional[str] = Field(
+        default=None, description="Unity version filter (e.g., '6000.2')"
+    )
+    category: Optional[str] = Field(
+        default=None, description="Category filter: 'ScriptReference', 'Manual', etc."
+    )
+    top_k: int = Field(
+        default=5, ge=1, le=20, description="Number of results to return (1-20)"
+    )
+    fetch_full_content: bool = Field(
+        default=True, description="Whether to fetch full page content from URLs"
+    )
+    score_threshold: float = Field(
+        default=0.6, ge=0.0, le=1.0, description="Minimum relevance threshold"
+    )
 
 
 async def _get_local_embedding(text: str) -> Dict[str, Any]:
     """Generate embedding using local embedding server with connection pooling."""
     client = get_http_client()
     response = await client.post(
-        f"{EMBED_SERVER_URL}/embed",
-        json={"input": text, "type": "query"}
+        f"{EMBED_SERVER_URL}/embed", json={"input": text, "type": "query"}
     )
 
     if response.status_code != 200:
@@ -214,7 +237,7 @@ async def _get_local_embedding(text: str) -> Dict[str, Any]:
     return {
         "embedding": result["embedding"],
         "model": "Xenova/bge-small-en-v1.5",
-        "dimension": len(result["embedding"])
+        "dimension": len(result["embedding"]),
     }
 
 
@@ -223,26 +246,22 @@ async def _search_unity_docs_semantic(
     version: Optional[str] = None,
     category: Optional[str] = None,
     limit: int = 5,
-    score_threshold: float = 0.6
+    score_threshold: float = 0.6,
 ) -> List[Dict[str, Any]]:
     """
     Perform semantic search against Unity docs collection.
     """
-    logger.info(f"🔍 [UnityDocs._search_unity_docs_semantic] Starting search - Query: '{query}', Limit: {limit}")
+    logger.info(
+        f"🔍 [UnityDocs._search_unity_docs_semantic] Starting search - Query: '{query}', Limit: {limit}"
+    )
 
     try:
         # Build filter conditions
         filter_conditions = []
         if version:
-            filter_conditions.append({
-                "key": "version",
-                "match": {"value": version}
-            })
+            filter_conditions.append({"key": "version", "match": {"value": version}})
         if category:
-            filter_conditions.append({
-                "key": "category",
-                "match": {"value": category}
-            })
+            filter_conditions.append({"key": "category", "match": {"value": category}})
 
         # Generate embedding
         logger.info(f"🔧 [UnityDocs._search_unity_docs_semantic] Generating embedding")
@@ -254,7 +273,7 @@ async def _search_unity_docs_semantic(
             "vector": query_vector,
             "limit": limit * 2,  # Fetch 2x for filtering
             "with_payload": True,
-            "score_threshold": score_threshold
+            "score_threshold": score_threshold,
         }
 
         if filter_conditions:
@@ -262,16 +281,16 @@ async def _search_unity_docs_semantic(
 
         # 🚀 Use persistent connection pool
         client = get_http_client()
-        qdrant_endpoint = f"{QDRANT_URL}/collections/{UNITY_DOCS_COLLECTION}/points/search"
-        logger.info(f"📡 [UnityDocs._search_unity_docs_semantic] Querying Qdrant")
-        
-        response = await client.post(
-            qdrant_endpoint,
-            json=search_payload,
-            timeout=30.0
+        qdrant_endpoint = (
+            f"{QDRANT_URL}/collections/{UNITY_DOCS_COLLECTION}/points/search"
         )
+        logger.info(f"📡 [UnityDocs._search_unity_docs_semantic] Querying Qdrant")
 
-        logger.info(f"📨 [UnityDocs._search_unity_docs_semantic] Qdrant response: {response.status_code}")
+        response = await client.post(qdrant_endpoint, json=search_payload, timeout=30.0)
+
+        logger.info(
+            f"📨 [UnityDocs._search_unity_docs_semantic] Qdrant response: {response.status_code}"
+        )
 
         if response.status_code != 200:
             logger.error(f"❌ Qdrant search failed: {response.status_code}")
@@ -279,7 +298,9 @@ async def _search_unity_docs_semantic(
 
         search_results = response.json()
         raw_hits = search_results.get("result", [])
-        logger.info(f"📊 [UnityDocs._search_unity_docs_semantic] Qdrant returned {len(raw_hits)} results")
+        logger.info(
+            f"📊 [UnityDocs._search_unity_docs_semantic] Qdrant returned {len(raw_hits)} results"
+        )
 
         results = []
         for idx, hit in enumerate(raw_hits):
@@ -293,25 +314,31 @@ async def _search_unity_docs_semantic(
             if query_lower in title_lower:
                 score *= 1.2
 
-            results.append({
-                "payload": payload,
-                "score": score
-            })
+            results.append({"payload": payload, "score": score})
 
-        logger.info(f"✅ [UnityDocs._search_unity_docs_semantic] Processed {len(results)} results")
+        logger.info(
+            f"✅ [UnityDocs._search_unity_docs_semantic] Processed {len(results)} results"
+        )
 
         # Re-sort and apply limit
         results.sort(key=lambda x: x["score"], reverse=True)
         final_results = results[:limit]
 
         if final_results:
-            top_titles = [r["payload"].get("title", "Unknown")[:50] for r in final_results[:3]]
-            logger.info(f"🏆 [UnityDocs._search_unity_docs_semantic] Top results: {', '.join(top_titles)}")
+            top_titles = [
+                r["payload"].get("title", "Unknown")[:50] for r in final_results[:3]
+            ]
+            logger.info(
+                f"🏆 [UnityDocs._search_unity_docs_semantic] Top results: {', '.join(top_titles)}"
+            )
 
         return final_results
 
     except Exception as e:
-        logger.error(f"❌ [UnityDocs._search_unity_docs_semantic] Search failed: {e}", exc_info=True)
+        logger.error(
+            f"❌ [UnityDocs._search_unity_docs_semantic] Search failed: {e}",
+            exc_info=True,
+        )
         return []
 
 
@@ -322,7 +349,7 @@ async def unity_docs(
     category: Optional[str] = None,
     top_k: int = 5,
     fetch_full_content: bool = True,
-    score_threshold: float = 0.6
+    score_threshold: float = 0.6,
 ) -> Dict[str, Any]:
     """
     🚀 OPTIMIZED: Search Unity documentation with parallel content fetching.
@@ -333,30 +360,27 @@ async def unity_docs(
     - Thread pool for CPU-intensive content extraction
     - Larger cache (500 entries)
     """
-    import time
-    tool_start = time.perf_counter()
-
-    logger.info(f"{'='*80}")
+    logger.info(f"{'=' * 80}")
     logger.info(f"🚀 [UnityDocs] TOOL INVOKED (OPTIMIZED)")
     logger.info(f"📝 [UnityDocs] Query: '{query}'")
-    logger.info(f"🔧 [UnityDocs] Parameters: top_k={top_k}, fetch_content={fetch_full_content}")
-    logger.info(f"⏱️  [UnityDocs] TIMING: Tool entry at {tool_start:.6f}")
-    logger.info(f"{'='*80}")
+    logger.info(
+        f"🔧 [UnityDocs] Parameters: top_k={top_k}, fetch_content={fetch_full_content}"
+    )
+    logger.info(f"{'=' * 80}")
 
     try:
         # Step 1: Semantic search
-        search_start = time.perf_counter()
         logger.info(f"🔍 [UnityDocs] Step 1: Performing semantic search")
         search_results = await _search_unity_docs_semantic(
             query=query,
             version=version,
             category=category,
             limit=top_k,
-            score_threshold=score_threshold
+            score_threshold=score_threshold,
         )
-        search_duration = (time.perf_counter() - search_start) * 1000
-        logger.info(f"📊 [UnityDocs] Semantic search returned {len(search_results)} results")
-        logger.info(f"⏱️  [UnityDocs] TIMING: Semantic search took {search_duration:.0f}ms")
+        logger.info(
+            f"📊 [UnityDocs] Semantic search returned {len(search_results)} results"
+        )
 
         if not search_results:
             return {
@@ -364,11 +388,10 @@ async def unity_docs(
                 "results": [],
                 "result_count": 0,
                 "message": f"No Unity docs found matching query with score >= {score_threshold}",
-                "query": query
+                "query": query,
             }
 
         # Step 2: Structure results and prepare for parallel fetching
-        structure_start = time.perf_counter()
         logger.info(f"🔨 [UnityDocs] Step 2: Structuring {len(search_results)} results")
         structured_results = []
         urls_to_fetch = []
@@ -380,31 +403,27 @@ async def unity_docs(
                 "url": payload.get("url", ""),
                 "version": payload.get("version", ""),
                 "relevance_score": round(result["score"], 3),
-                "index": idx  # Track original index
+                "index": idx,  # Track original index
             }
             structured_results.append(doc_entry)
 
             if fetch_full_content and doc_entry["url"]:
                 urls_to_fetch.append(doc_entry["url"])
 
-        structure_duration = (time.perf_counter() - structure_start) * 1000
-        logger.info(f"⏱️  [UnityDocs] TIMING: Structuring took {structure_duration:.0f}ms")
-
         # 🚀 🚀 🚀 OPTIMIZATION 4: PARALLEL URL FETCHING! 🚀 🚀 🚀
         if urls_to_fetch:
-            logger.info(f"🚀 [UnityDocs] Step 3: Fetching {len(urls_to_fetch)} URLs IN PARALLEL")
-            
+            logger.info(
+                f"🚀 [UnityDocs] Step 3: Fetching {len(urls_to_fetch)} URLs IN PARALLEL"
+            )
+
             # Fetch all URLs concurrently!
-            fetch_start = asyncio.get_event_loop().time()
             contents = await asyncio.gather(
                 *[_fetch_url_content(url) for url in urls_to_fetch],
-                return_exceptions=True
+                return_exceptions=True,
             )
-            fetch_duration = asyncio.get_event_loop().time() - fetch_start
-            
-            logger.info(f"✅ [UnityDocs] Parallel fetch completed in {fetch_duration*1000:.0f}ms")
-            logger.info(f"📊 [UnityDocs] Average: {(fetch_duration*1000)/len(urls_to_fetch):.0f}ms per URL")
-            
+
+            logger.info(f"✅ [UnityDocs] Parallel fetch completed")
+
             # Attach fetched content to results
             for doc_entry, content in zip(structured_results, contents):
                 if isinstance(content, Exception):
@@ -413,14 +432,17 @@ async def unity_docs(
                 elif content:
                     doc_entry["full_content"] = content
                     doc_entry["content_fetched"] = True
-                    logger.debug(f"✅ Attached content to '{doc_entry['title']}' ({len(content)} chars)")
+                    logger.debug(
+                        f"✅ Attached content to '{doc_entry['title']}' ({len(content)} chars)"
+                    )
                 else:
                     doc_entry["content_fetched"] = False
 
-        logger.info(f"✅ [UnityDocs] Successfully processed all {len(structured_results)} results")
+        logger.info(
+            f"✅ [UnityDocs] Successfully processed all {len(structured_results)} results"
+        )
 
         # Step 4: Build response dictionary
-        response_build_start = time.perf_counter()
         logger.info(f"📦 [UnityDocs] Step 4: Building response dictionary")
 
         response = {
@@ -432,34 +454,18 @@ async def unity_docs(
             "filters_applied": {
                 "version": version,
                 "category": category,
-                "min_score": score_threshold
+                "min_score": score_threshold,
             },
-            "timestamp": datetime.now(UTC).isoformat()
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
-        response_build_duration = (time.perf_counter() - response_build_start) * 1000
-        logger.info(f"⏱️  [UnityDocs] TIMING: Response build took {response_build_duration:.0f}ms")
-
-        # Step 5: JSON serialization test
-        serialization_start = time.perf_counter()
-        logger.info(f"🔄 [UnityDocs] Step 5: Testing JSON serialization")
-        try:
-            import json
-            serialized = json.dumps(response)
-            serialization_duration = (time.perf_counter() - serialization_start) * 1000
-            logger.info(f"⏱️  [UnityDocs] TIMING: JSON serialization took {serialization_duration:.0f}ms")
-            logger.info(f"📏 [UnityDocs] Serialized size: {len(serialized)} bytes ({len(serialized)/1024:.1f} KB)")
-        except Exception as e:
-            logger.error(f"❌ [UnityDocs] Serialization test failed: {e}")
-
-        tool_duration = (time.perf_counter() - tool_start) * 1000
-        logger.info(f"{'='*80}")
+        logger.info(f"{'=' * 80}")
         logger.info(f"✅ [UnityDocs] TOOL COMPLETED SUCCESSFULLY")
         logger.info(f"📊 [UnityDocs] Results: {len(structured_results)} docs")
-        logger.info(f"📝 [UnityDocs] Top result: {structured_results[0]['title'] if structured_results else 'N/A'}")
-        logger.info(f"⏱️  [UnityDocs] TIMING: Total tool execution took {tool_duration:.0f}ms")
-        logger.info(f"⏱️  [UnityDocs] TIMING: Tool function returning at {time.perf_counter():.6f}")
-        logger.info(f"{'='*80}")
+        logger.info(
+            f"📝 [UnityDocs] Top result: {structured_results[0]['title'] if structured_results else 'N/A'}"
+        )
+        logger.info(f"{'=' * 80}")
 
         return response
 
@@ -471,7 +477,7 @@ async def unity_docs(
             "results": [],
             "result_count": 0,
             "query": query,
-            "error_type": type(e).__name__
+            "error_type": type(e).__name__,
         }
 
 

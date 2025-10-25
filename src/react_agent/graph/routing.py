@@ -183,13 +183,7 @@ def route_after_tools(state: State) -> Literal["check_file_approval", "assess"]:
 
     Also captures tool results in memory for context.
     """
-    import time
-
-    routing_start = time.perf_counter()
-    logger.info("⏱️  [ROUTER] route_after_tools() started")
-
     # ✅ CRITICAL: Capture tool result in memory FIRST
-    extract_start = time.perf_counter()
     last_tool_message = None
     for msg in reversed(state.messages):
         if isinstance(msg, ToolMessage):
@@ -199,16 +193,11 @@ def route_after_tools(state: State) -> Literal["check_file_approval", "assess"]:
     if not last_tool_message:
         return "assess"
 
-    extract_duration = (time.perf_counter() - extract_start) * 1000
-    logger.info(f"⏱️  [ROUTER]   Extract tool message: {extract_duration:.1f}ms")
-
     # ✅ CRITICAL: Store tool result in memory
     if state.memory:
         try:
-            memory_start = time.perf_counter()
             result = json.loads(last_tool_message.content)
             tool_name = last_tool_message.name or "unknown"
-            logger.info(f"⏱️  [ROUTER]   Storing {tool_name} result in memory...")
 
             # Extract query from the preceding AIMessage
             query = ""
@@ -244,21 +233,12 @@ def route_after_tools(state: State) -> Literal["check_file_approval", "assess"]:
             # Store in memory (using sync wrapper for non-async routing context)
             # ✅ FIX: Pass full args dict, not just {"query": query}
             # Note: add_tool_call_sync now handles persistence internally when auto_persist is enabled
-            add_tool_start = time.perf_counter()
             state.memory.add_tool_call_sync(tool_name, args, result)
-            add_tool_duration = (time.perf_counter() - add_tool_start) * 1000
-            logger.info(f"⏱️  [ROUTER]   add_tool_call_sync: {add_tool_duration:.1f}ms")
 
             # ✅ OPTIMIZATION: Mark that we just persisted to avoid redundant writes in FINISH node
             import time as time_module
 
             state.runtime_metadata["last_memory_persist"] = time_module.time()
-            logger.info(
-                "⏱️  [ROUTER]   Set last_memory_persist timestamp to avoid redundant DB writes"
-            )
-
-            memory_duration = (time.perf_counter() - memory_start) * 1000
-            logger.info(f"⏱️  [ROUTER]   Total memory storage: {memory_duration:.1f}ms")
 
         except Exception as e:
             logger.error(f"❌ [ROUTER] Failed to store tool result: {e}")
@@ -296,7 +276,6 @@ def route_after_tools(state: State) -> Literal["check_file_approval", "assess"]:
         logger.error(f"❌ [ROUTER] Failed to emit web search UIMessage: {e}")
 
     # Check for file approval needs
-    approval_check_start = time.perf_counter()
     try:
         result = json.loads(last_tool_message.content)
 
@@ -308,13 +287,6 @@ def route_after_tools(state: State) -> Literal["check_file_approval", "assess"]:
     except (json.JSONDecodeError, AttributeError):
         pass
 
-    approval_check_duration = (time.perf_counter() - approval_check_start) * 1000
-    logger.info(f"⏱️  [ROUTER]   Approval check: {approval_check_duration:.1f}ms")
-
-    routing_duration = (time.perf_counter() - routing_start) * 1000
-    logger.info(
-        f"⏱️  [ROUTER] route_after_tools() completed in {routing_duration:.1f}ms"
-    )
     logger.info("🔀 [Router] TOOLS → ASSESS")
     return "assess"
 

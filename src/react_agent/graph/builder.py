@@ -21,10 +21,17 @@ from react_agent.graph.nodes.plan import plan as _plan
 from react_agent.graph.nodes.act import act as _act
 from react_agent.graph.nodes.assess import assess as _assess
 from react_agent.graph.nodes.finish import finish as _finish
-from react_agent.graph.nodes.progress import advance_step as _advance_step, increment_retry as _increment_retry
-from react_agent.graph.nodes.error_recovery import execute_error_recovery as _execute_error_recovery
+from react_agent.graph.nodes.progress import (
+    advance_step as _advance_step,
+    increment_retry as _increment_retry,
+)
+from react_agent.graph.nodes.error_recovery import (
+    execute_error_recovery as _execute_error_recovery,
+)
 from react_agent.graph.nodes.micro_retry import micro_retry as _micro_retry
-from react_agent.graph.nodes.file_approval import check_file_approval as _check_file_approval
+from react_agent.graph.nodes.file_approval import (
+    check_file_approval as _check_file_approval,
+)
 from react_agent.graph.routing import (
     should_continue,
     route_after_classify,
@@ -42,47 +49,56 @@ logger = logging.getLogger(__name__)
 
 
 def log_node_execution(node_name: str):
-    """Decorator to log node execution with state changes and timing."""
+    """Decorator to log node execution with state changes."""
+
     def decorator(func: Callable):
         @wraps(func)
         async def wrapper(*args, **kwargs):
-            node_start = time.perf_counter()
             logger.info(f"🔷 [{node_name}] ===== STARTING =====")
-            logger.info(f"⏱️  [{node_name}] Start timestamp: {node_start:.6f}")
             try:
                 result = await func(*args, **kwargs)
-                node_duration = (time.perf_counter() - node_start) * 1000
                 logger.info(f"🔷 [{node_name}] ===== COMPLETED =====")
-                logger.info(f"⏱️  [{node_name}] Node execution took {node_duration:.1f}ms")
 
                 # Log important state changes
                 if isinstance(result, dict):
                     if "plan" in result and result["plan"]:
                         plan = result["plan"]
                         if hasattr(plan, "steps"):
-                            logger.info(f"🔷 [{node_name}]   Updated plan: {len(plan.steps)} steps")
+                            logger.info(
+                                f"🔷 [{node_name}]   Updated plan: {len(plan.steps)} steps"
+                            )
                         else:
                             logger.info(f"🔷 [{node_name}]   Updated plan")
-                    
+
                     if "messages" in result and result["messages"]:
-                        logger.info(f"🔷 [{node_name}]   Added {len(result['messages'])} message(s)")
-                    
+                        logger.info(
+                            f"🔷 [{node_name}]   Added {len(result['messages'])} message(s)"
+                        )
+
                     if "current_assessment" in result and result["current_assessment"]:
                         assessment = result["current_assessment"]
                         if hasattr(assessment, "outcome"):
-                            logger.info(f"🔷 [{node_name}]   Assessment: {assessment.outcome}")
+                            logger.info(
+                                f"🔷 [{node_name}]   Assessment: {assessment.outcome}"
+                            )
                         else:
                             logger.info(f"🔷 [{node_name}]   Assessment completed")
-                    
+
                     if "complexity" in result:
-                        logger.info(f"🔷 [{node_name}]   Complexity: {result['complexity']}")
-                    
+                        logger.info(
+                            f"🔷 [{node_name}]   Complexity: {result['complexity']}"
+                        )
+
                     if "current_step" in result:
-                        logger.info(f"🔷 [{node_name}]   Current step: {result['current_step']}")
-                    
+                        logger.info(
+                            f"🔷 [{node_name}]   Current step: {result['current_step']}"
+                        )
+
                     if "retry_count" in result:
-                        logger.info(f"🔷 [{node_name}]   Retry count: {result['retry_count']}")
-                
+                        logger.info(
+                            f"🔷 [{node_name}]   Retry count: {result['retry_count']}"
+                        )
+
                 return result
             except GraphInterrupt as e:
                 # ✅ FIX: GraphInterrupt is expected for human-in-the-loop - don't log as error
@@ -93,7 +109,9 @@ def log_node_execution(node_name: str):
                 logger.error(f"🔷 [{node_name}] ===== FAILED =====")
                 logger.error(f"🔷 [{node_name}]   Error: {str(e)}", exc_info=True)
                 raise
+
         return wrapper
+
     return decorator
 
 
@@ -112,61 +130,33 @@ micro_retry = log_node_execution("MICRO_RETRY")(_micro_retry)
 check_file_approval = log_node_execution("CHECK_FILE_APPROVAL")(_check_file_approval)
 
 
-# Custom ToolNode wrapper with timing instrumentation
+# Custom ToolNode wrapper with logging
 class TimedToolNode:
-    """Wrapper around ToolNode to add timing instrumentation."""
+    """Wrapper around ToolNode to add logging."""
 
     def __init__(self, tools):
         self.tool_node = ToolNode(tools)
         self.logger = logging.getLogger(__name__)
 
     async def __call__(self, state: State, **kwargs):
-        """Execute tools with comprehensive timing logs."""
-        tool_node_start = time.perf_counter()
+        """Execute tools with logging."""
         self.logger.info(f"🔷 [TOOLS] ===== STARTING =====")
-        self.logger.info(f"⏱️  [TOOLS] Start timestamp: {tool_node_start:.6f}")
 
         try:
-            # Phase 1: Pre-execution
-            pre_exec_start = time.perf_counter()
-            self.logger.info(f"⏱️  [TOOLS] Phase 1: Pre-execution preparation")
-
             # Get tool calls from last message
-            if state.messages and hasattr(state.messages[-1], 'tool_calls'):
+            if state.messages and hasattr(state.messages[-1], "tool_calls"):
                 tool_calls = state.messages[-1].tool_calls
                 if tool_calls:
-                    self.logger.info(f"🔧 [TOOLS] Executing {len(tool_calls)} tool call(s)")
+                    self.logger.info(
+                        f"🔧 [TOOLS] Executing {len(tool_calls)} tool call(s)"
+                    )
                     for tc in tool_calls:
                         self.logger.info(f"🔧 [TOOLS]   - {tc.get('name', 'unknown')}")
-
-            pre_exec_duration = (time.perf_counter() - pre_exec_start) * 1000
-            self.logger.info(f"⏱️  [TOOLS] Pre-execution: {pre_exec_duration:.1f}ms")
-
-            # Phase 2: Tool execution
-            exec_start = time.perf_counter()
-            self.logger.info(f"⏱️  [TOOLS] Phase 2: Actual tool execution starting...")
 
             # Invoke the ToolNode properly using ainvoke
             result = await self.tool_node.ainvoke(state, **kwargs)
 
-            exec_duration = (time.perf_counter() - exec_start) * 1000
-            self.logger.info(f"⏱️  [TOOLS] Tool execution completed: {exec_duration:.1f}ms")
-
-            # Phase 3: Post-execution (state serialization, memory persistence, etc.)
-            post_exec_start = time.perf_counter()
-            self.logger.info(f"⏱️  [TOOLS] Phase 3: Post-execution processing")
-
-            # Memory persistence happens here via routing function
-            # We'll log when routing function calls memory.add_tool_call_sync()
-
-            post_exec_duration = (time.perf_counter() - post_exec_start) * 1000
-            self.logger.info(f"⏱️  [TOOLS] Post-execution: {post_exec_duration:.1f}ms")
-
-            # Total timing
-            tool_node_duration = (time.perf_counter() - tool_node_start) * 1000
             self.logger.info(f"🔷 [TOOLS] ===== COMPLETED =====")
-            self.logger.info(f"⏱️  [TOOLS] Total TOOLS node execution: {tool_node_duration:.1f}ms")
-            self.logger.info(f"⏱️  [TOOLS] End timestamp: {time.perf_counter():.6f}")
 
             return result
 
@@ -194,7 +184,7 @@ def create_graph() -> StateGraph:
     builder.add_node("advance_step", advance_step)
     builder.add_node("increment_retry", increment_retry)
     builder.add_node("finish", finish)
-    
+
     # Add edges
     builder.add_edge("__start__", "classify")
     builder.add_conditional_edges("classify", route_after_classify)
@@ -210,7 +200,7 @@ def create_graph() -> StateGraph:
     builder.add_edge("advance_step", "act")
     builder.add_edge("increment_retry", "act")
     builder.add_edge("finish", "__end__")
-    
+
     return builder.compile(name="ReAct Agent with File Operation Approval")
 
 

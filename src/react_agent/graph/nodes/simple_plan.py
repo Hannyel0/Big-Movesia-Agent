@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import uuid
+import logging
 from typing import Any, Dict
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.runtime import Runtime
 
 from react_agent.context import Context
+
+# Set up logging
+logger = logging.getLogger(__name__)
 from react_agent.state import (
     ExecutionPlan,
     PlanStep,
@@ -27,28 +31,34 @@ from react_agent.ui_messages import create_plan_ui_message
 def _analyze_request_nature(user_request: str) -> Dict[str, Any]:
     """Analyze the nature of the request to determine optimal approach."""
     request_lower = user_request.lower()
-    
+
     analysis = {
         "request_type": "unknown",
         "complexity_indicators": [],
         "suggested_approach": "adaptive",
-        "user_intent": "unclear"
+        "user_intent": "unclear",
     }
-    
+
     # Analyze user intent
-    if any(word in request_lower for word in ["what", "how", "why", "explain", "tell me"]):
+    if any(
+        word in request_lower for word in ["what", "how", "why", "explain", "tell me"]
+    ):
         analysis["user_intent"] = "information_seeking"
         analysis["request_type"] = "informational"
     elif any(word in request_lower for word in ["create", "make", "build", "generate"]):
         analysis["user_intent"] = "creation"
         analysis["request_type"] = "creation"
-    elif any(word in request_lower for word in ["fix", "debug", "error", "problem", "broken"]):
+    elif any(
+        word in request_lower for word in ["fix", "debug", "error", "problem", "broken"]
+    ):
         analysis["user_intent"] = "problem_solving"
         analysis["request_type"] = "troubleshooting"
-    elif any(word in request_lower for word in ["setup", "configure", "settings", "install"]):
+    elif any(
+        word in request_lower for word in ["setup", "configure", "settings", "install"]
+    ):
         analysis["user_intent"] = "configuration"
         analysis["request_type"] = "setup"
-    
+
     # Analyze complexity indicators
     if any(word in request_lower for word in ["simple", "basic", "quick", "easy"]):
         analysis["complexity_indicators"].append("user_wants_simple")
@@ -56,17 +66,20 @@ def _analyze_request_nature(user_request: str) -> Dict[str, Any]:
         analysis["complexity_indicators"].append("user_wants_advanced")
     if "step by step" in request_lower or "tutorial" in request_lower:
         analysis["complexity_indicators"].append("user_wants_guidance")
-    
+
     # Determine optimal approach
     if analysis["user_intent"] == "information_seeking":
         analysis["suggested_approach"] = "research_first"
-    elif analysis["request_type"] == "creation" and "user_wants_simple" in analysis["complexity_indicators"]:
+    elif (
+        analysis["request_type"] == "creation"
+        and "user_wants_simple" in analysis["complexity_indicators"]
+    ):
         analysis["suggested_approach"] = "direct_implementation"
     elif analysis["request_type"] == "troubleshooting":
         analysis["suggested_approach"] = "diagnose_then_solve"
     else:
         analysis["suggested_approach"] = "context_then_implement"
-    
+
     return analysis
 
 
@@ -74,42 +87,45 @@ async def simple_plan(state: State, runtime: Runtime[Context]) -> Dict[str, Any]
     """Create adaptive, intelligent simple plans based on request analysis."""
     context = runtime.context
     model = get_model(context.planning_model or context.model)
-    
+
     # Extract user request
     user_request = None
     for msg in reversed(state.messages):
         if isinstance(msg, HumanMessage):
             user_request = get_message_text(msg)
             break
-    
+
     if not user_request:
-        return {"messages": [AIMessage(content="I need a clear request to create a plan.")]}
-    
+        return {
+            "messages": [AIMessage(content="I need a clear request to create a plan.")]
+        }
+
     # MEMORY: Update focus for this request
     if state.memory:
         entities = extract_entities_from_request(user_request)
         topics = extract_topics_from_request(user_request)
         if entities or topics:
             await state.memory.update_focus(entities, topics)
-            print(f"[SimplePlan] Updated focus - Entities: {entities[:3]}, Topics: {topics[:3]}")
-    
+            print(
+                f"[SimplePlan] Updated focus - Entities: {entities[:3]}, Topics: {topics[:3]}"
+            )
+
     # Analyze the request intelligently
     request_analysis = _analyze_request_nature(user_request)
-    
+
     # Get complexity reasoning from previous classification
     complexity_reasoning = state.runtime_metadata.get(
-        "complexity_reasoning", 
-        "Straightforward task requiring focused approach"
+        "complexity_reasoning", "Straightforward task requiring focused approach"
     )
-    
+
     # INTELLIGENT SIMPLE PLANNING PROMPT
     intelligent_simple_request = f"""Analyze this request and create an optimal simple plan: "{user_request}"
 
 REQUEST ANALYSIS:
-- Request Type: {request_analysis['request_type']}
-- User Intent: {request_analysis['user_intent']}
-- Complexity Indicators: {request_analysis['complexity_indicators']}
-- Suggested Approach: {request_analysis['suggested_approach']}
+- Request Type: {request_analysis["request_type"]}
+- User Intent: {request_analysis["user_intent"]}
+- Complexity Indicators: {request_analysis["complexity_indicators"]}
+- Suggested Approach: {request_analysis["suggested_approach"]}
 - Classification Reasoning: {complexity_reasoning}
 
 INTELLIGENT PLANNING STRATEGY:
@@ -192,24 +208,24 @@ Focus purely on creating optimal step sequences, not on formatting or narration.
         base_prompt=base_adaptive_system_content,
         state=state,
         include_patterns=True,
-        include_episodes=True
+        include_episodes=True,
     )
 
     # Structure messages for adaptive planning
     messages = [
         {"role": "system", "content": adaptive_system_content},
-        {"role": "user", "content": intelligent_simple_request}
+        {"role": "user", "content": intelligent_simple_request},
     ]
-    
+
     try:
         # Use structured output for reliable planning
         structured_model = model.with_structured_output(StructuredExecutionPlan)
         structured_response = await structured_model.ainvoke(messages)
-        
+
         # Enforce maximum step limit but with flexibility
         max_steps = 3
         limited_steps = structured_response.steps[:max_steps]
-        
+
         # Convert to internal format
         steps = []
         for step_data in limited_steps:
@@ -217,110 +233,133 @@ Focus purely on creating optimal step sequences, not on formatting or narration.
                 description=step_data.description,
                 success_criteria=step_data.success_criteria,
                 tool_name=step_data.tool_name,
-                dependencies=step_data.dependencies
+                dependencies=step_data.dependencies,
             )
             steps.append(step)
-        
+
         plan = ExecutionPlan(
             goal=structured_response.goal,
             steps=steps,
             metadata={
-                "planning_mode": "intelligent_simple", 
+                "planning_mode": "intelligent_simple",
                 "request_analysis": request_analysis,
-                "original_step_count": len(structured_response.steps)
-            }
+                "original_step_count": len(structured_response.steps),
+            },
         )
-        
+
         # MEMORY: Store plan in memory
         if state.memory:
-            state.memory.add_plan({
-                "goal": plan.goal,
-                "steps": [{"description": s.description, "tool": s.tool_name} for s in steps]
-            })
+            state.memory.add_plan(
+                {
+                    "goal": plan.goal,
+                    "steps": [
+                        {"description": s.description, "tool": s.tool_name}
+                        for s in steps
+                    ],
+                }
+            )
             print(f"[SimplePlan] Plan stored in memory: {len(steps)} steps")
-        
+
         # Create concise narration (detailed plan shown in UI component)
         step_count = len(steps)
         narration = f"I've created a {step_count}-step plan to help you. Beginning execution now."
-        
+
         # Create stable message ID first
         msg_id = str(uuid.uuid4())
-        
+
         # Create AI message with explicit ID
         msg = AIMessage(content=narration, id=msg_id)
-        
+
         # Emit UIMessage for plan visualization with the same stable ID
-        plan_ui_msg = create_plan_ui_message(plan, msg_id)
-        
-        return {
+        # Reuse existing plan_ui_message_id if replanning, otherwise create new
+        plan_ui_msg = create_plan_ui_message(
+            plan, msg_id, ui_message_id=state.plan_ui_message_id
+        )
+
+        result = {
             "plan": plan,
+            "plan_ui_message_id": plan_ui_msg.id,  # ✅ CRITICAL: Store the ID
             "step_index": 0,
             "retry_count": 0,
             "messages": [msg],
-            "ui": [plan_ui_msg],  
+            "ui": [plan_ui_msg],
         }
-        
-    except Exception as e:
+
+        return result
+
+    except Exception:
         # Intelligent fallback based on request analysis
-        fallback_steps = _create_intelligent_fallback_plan(user_request, request_analysis)
+        fallback_steps = _create_intelligent_fallback_plan(
+            user_request, request_analysis
+        )
         fallback_plan = ExecutionPlan(
             goal=user_request,
             steps=fallback_steps,
-            metadata={"planning_mode": "intelligent_simple_fallback"}
+            metadata={"planning_mode": "intelligent_simple_fallback"},
         )
-        
-        fallback_narration = f"I've created a plan to help you. Beginning execution now."
-        
+
+        fallback_narration = (
+            f"I've created a plan to help you. Beginning execution now."
+        )
+
         # Create stable message ID first
         fallback_msg_id = str(uuid.uuid4())
-        
+
         # Create AI message with explicit ID
         fallback_msg = AIMessage(content=fallback_narration, id=fallback_msg_id)
-        
+
         # Emit UIMessage for fallback plan visualization
-        fallback_plan_ui_msg = create_plan_ui_message(fallback_plan, fallback_msg_id)
-        
-        return {
+        # Reuse existing plan_ui_message_id if replanning, otherwise create new
+        fallback_plan_ui_msg = create_plan_ui_message(
+            fallback_plan, fallback_msg_id, ui_message_id=state.plan_ui_message_id
+        )
+
+        result = {
             "plan": fallback_plan,
+            "plan_ui_message_id": fallback_plan_ui_msg.id,  # ✅ CRITICAL: Store the ID
             "step_index": 0,
             "retry_count": 0,
             "messages": [fallback_msg],
-            "ui": [fallback_plan_ui_msg],  
+            "ui": [fallback_plan_ui_msg],
         }
 
+        return result
 
-def _create_intelligent_fallback_plan(user_request: str, analysis: Dict[str, Any]) -> list[PlanStep]:
+
+def _create_intelligent_fallback_plan(
+    user_request: str, analysis: Dict[str, Any]
+) -> list[PlanStep]:
     """Create intelligent fallback plan based on request analysis."""
-    
+
     request_type = analysis.get("request_type", "unknown")
     user_intent = analysis.get("user_intent", "unclear")
-    
+
     if user_intent == "information_seeking":
         # Information requests - research focused
         return [
             PlanStep(
                 description=f"Research comprehensive information about: {user_request}",
                 tool_name="web_search",
-                success_criteria="Found detailed, relevant information to answer the question"
+                success_criteria="Found detailed, relevant information to answer the question",
             )
         ]
-    
+
     elif request_type == "troubleshooting":
         # Problem solving - diagnose first
         return [
             PlanStep(
                 description="Analyze current project state to identify issues",
-                tool_name="search_project", 
-                success_criteria="Retrieved project information and identified potential problems"
+                tool_name="search_project",
+                success_criteria="Retrieved project information and identified potential problems",
             ),
             PlanStep(
                 description="Find existing code that might be causing problems",
                 tool_name="code_snippets",
                 success_criteria="Located relevant code implementations to analyze",
-                dependencies=[0]
-            )
+                dependencies=[0],
+            ),
         ]
-    
+
     elif request_type == "creation":
         # Creation requests - efficient implementation
         if "simple" in analysis.get("complexity_indicators", []):
@@ -329,14 +368,14 @@ def _create_intelligent_fallback_plan(user_request: str, analysis: Dict[str, Any
                 PlanStep(
                     description="Find existing code patterns for the request",
                     tool_name="code_snippets",
-                    success_criteria="Retrieved suitable implementation examples"
+                    success_criteria="Retrieved suitable implementation examples",
                 ),
                 PlanStep(
                     description="Create the requested implementation",
                     tool_name="write_file",
                     success_criteria="Successfully created the requested file",
-                    dependencies=[0]
-                )
+                    dependencies=[0],
+                ),
             ]
         else:
             # Context-aware approach for standard creation
@@ -344,44 +383,46 @@ def _create_intelligent_fallback_plan(user_request: str, analysis: Dict[str, Any
                 PlanStep(
                     description="Understand project context and requirements",
                     tool_name="search_project",
-                    success_criteria="Retrieved relevant project information"
+                    success_criteria="Retrieved relevant project information",
                 ),
                 PlanStep(
                     description="Create the requested implementation",
                     tool_name="write_file",
                     success_criteria="Successfully created the requested item",
-                    dependencies=[0]
-                )
+                    dependencies=[0],
+                ),
             ]
-    
+
     elif request_type == "setup":
         # Configuration requests
         return [
             PlanStep(
                 description="Review current project configuration",
                 tool_name="search_project",
-                success_criteria="Understood current project setup and requirements"
+                success_criteria="Understood current project setup and requirements",
             ),
             PlanStep(
                 description="Apply requested configuration changes",
                 tool_name="modify_file",
                 success_criteria="Successfully updated project configuration",
-                dependencies=[0]
-            )
+                dependencies=[0],
+            ),
         ]
-    
+
     else:
         # Generic intelligent fallback
         return [
             PlanStep(
                 description="Research and understand the specific requirements",
                 tool_name="web_search",
-                success_criteria="Found relevant information and approach"
+                success_criteria="Found relevant information and approach",
             ),
             PlanStep(
                 description="Implement solution based on research",
-                tool_name="code_snippets" if "code" in user_request.lower() else "search_project",
-                success_criteria="Provided working solution for the request", 
-                dependencies=[0]
-            )
+                tool_name="code_snippets"
+                if "code" in user_request.lower()
+                else "search_project",
+                success_criteria="Provided working solution for the request",
+                dependencies=[0],
+            ),
         ]

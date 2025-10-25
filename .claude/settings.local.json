@@ -10,7 +10,12 @@
       "Bash(ruff format src/react_agent/ui_messages.py src/react_agent/graph/routing.py)",
       "Bash(ruff format src/react_agent/state.py src/react_agent/graph/routing.py)",
       "Bash(ruff format src/react_agent/graph/nodes/plan.py src/react_agent/graph/nodes/simple_plan.py)",
-      "Bash(ruff format src/react_agent/ui_messages.py)"
+      "Bash(ruff format src/react_agent/ui_messages.py)",
+      "Bash(ruff format src/react_agent/graph/nodes/act.py src/react_agent/graph/nodes/progress.py src/react_agent/graph/nodes/assess.py src/react_agent/graph/nodes/finish.py)",
+      "Bash(ruff format src/react_agent/state.py src/react_agent/ui_messages.py src/react_agent/graph/nodes/plan.py src/react_agent/graph/nodes/simple_plan.py src/react_agent/graph/nodes/act.py src/react_agent/graph/nodes/progress.py src/react_agent/graph/nodes/assess.py src/react_agent/graph/nodes/finish.py)",
+      "Bash(ruff format src/react_agent/graph/routing.py src/react_agent/graph/builder.py src/react_agent/memory/manager.py src/react_agent/tools/unity_docs.py src/react_agent/tools/search_project.py)",
+      "Bash(ruff format src/react_agent/ui_messages.py src/react_agent/graph/nodes/progress.py src/react_agent/graph/nodes/act.py)",
+      "Bash(ruff format src/react_agent/ui_messages.py src/react_agent/graph/nodes/progress.py src/react_agent/graph/nodes/plan.py src/react_agent/graph/nodes/simple_plan.py src/react_agent/graph/nodes/act.py src/react_agent/graph/nodes/assess.py src/react_agent/graph/nodes/finish.py)"
     ],
     "deny": [],
     "ask": []
