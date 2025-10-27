@@ -97,3 +97,33 @@ def create_plan_ui_message(
     )
 
     return ui_message
+
+
+def create_file_operation_ui_message(
+    approval_data: Dict[str, Any], 
+    message_id: str,
+    ui_message_id: str | None = None
+) -> AIMessage:
+    """Create a UIMessage for file operation approval.
+    
+    Args:
+        approval_data: The file operation approval data
+        message_id: The ID of the AI message this UI should attach to
+        ui_message_id: Optional existing UI message ID to reuse
+    
+    Returns:
+        AIMessage formatted as a UIMessage for the frontend
+    """
+    if ui_message_id is None:
+        ui_message_id = str(uuid.uuid4())
+    
+    return AIMessage(
+        content="",
+        id=ui_message_id,
+        additional_kwargs={
+            "ui_message": True,
+            "ui_type": "file_operation_approval",
+            "ui_data": approval_data,
+            "message_id": message_id,
+        },
+    )

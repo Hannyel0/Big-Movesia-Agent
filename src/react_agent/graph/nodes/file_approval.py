@@ -58,6 +58,25 @@ async def check_file_approval(state: State, runtime: Runtime[Context]) -> Dict[s
     print(f"   Operation: {approval_data.get('operation')}")
     print(f"   File: {approval_data.get('file_path')}")
     
+    # Emit UI message for frontend display
+    from react_agent.ui_messages import create_file_operation_ui_message
+
+    # Get the last AI message ID for linking
+    last_ai_message_id = None
+    for msg in reversed(state.messages):
+        if isinstance(msg, AIMessage) and not msg.additional_kwargs.get("ui_message"):
+            last_ai_message_id = msg.id
+            break
+
+    if last_ai_message_id:
+        ui_msg = create_file_operation_ui_message(
+            approval_data=approval_data,
+            message_id=last_ai_message_id
+        )
+        # Add to UI messages before interrupt
+        state.ui.append(ui_msg)
+        print(f"📤 [FileApproval] Emitted UI message for file operation")
+
     # Trigger interrupt for human approval
     approval_result = interrupt(approval_data)
     
