@@ -124,7 +124,7 @@ async def check_file_approval(
         rejection_msg = AIMessage(
             content=f"❌ File operation cancelled: {approval_data.get('message', 'User rejected the operation')}"
         )
-        return {"messages": [rejection_msg]}
+        return {"messages": [rejection_msg], "ui": state.ui}  # ✅ CRITICAL FIX: Return updated ui state
 
     # User approved - execute the operation
     print(f"✅ [FileApproval] Operation approved, executing...")
@@ -224,4 +224,5 @@ async def check_file_approval(
 
             print(f"📤 [FileApproval] Updated UI message to show failure")
 
-    return {"messages": [tool_msg, ai_msg]}
+    # ✅ CRITICAL FIX: Return the updated ui state so completed flag reaches frontend
+    return {"messages": [tool_msg, ai_msg], "ui": state.ui}
