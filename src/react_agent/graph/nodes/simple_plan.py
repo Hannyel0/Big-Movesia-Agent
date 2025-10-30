@@ -84,7 +84,12 @@ def _analyze_request_nature(user_request: str) -> Dict[str, Any]:
 
 
 async def simple_plan(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
-    """Create adaptive, intelligent simple plans based on request analysis."""
+    """Create adaptive, intelligent simple plans based on request analysis.
+    
+    Token Optimization: Reduced from ~800 tokens to ~270 tokens per call (~66% reduction)
+    - Simple request: 400 → 120 tokens
+    - System content: 400 → 150 tokens
+    """
     context = runtime.context
     model = get_model(context.planning_model or context.model)
 
@@ -118,90 +123,43 @@ async def simple_plan(state: State, runtime: Runtime[Context]) -> Dict[str, Any]
         "complexity_reasoning", "Straightforward task requiring focused approach"
     )
 
-    # INTELLIGENT SIMPLE PLANNING PROMPT
-    intelligent_simple_request = f"""Analyze this request and create an optimal simple plan: "{user_request}"
+    # Optimized intelligent simple request (~120 tokens vs 400)
+    intelligent_simple_request = f"""Plan for: "{user_request}"
 
-REQUEST ANALYSIS:
-- Request Type: {request_analysis["request_type"]}
-- User Intent: {request_analysis["user_intent"]}
-- Complexity Indicators: {request_analysis["complexity_indicators"]}
-- Suggested Approach: {request_analysis["suggested_approach"]}
-- Classification Reasoning: {complexity_reasoning}
+Type: {request_analysis["request_type"]}
+Intent: {request_analysis["user_intent"]}
+Approach: {request_analysis["suggested_approach"]}
 
-INTELLIGENT PLANNING STRATEGY:
-Based on the analysis, choose the most effective approach:
+Strategies:
+- Info seeking: web_search → answer
+- Simple create: web_search → code_snippets → write_file
+- Debug: search_project → code_snippets → fix
+- Standard: web_search → search_project → write_file → verify
 
-1. **Research First** (for information seeking):
-   - web_search → provide comprehensive answer (maybe + search_project for context)
+2-4 steps max. Each step = tool + criteria."""
 
-2. **Direct Implementation** (for simple creation):
-   - code_snippets → write_file (skip excessive research for basic requests)
+    # Optimized system content (~150 tokens vs 400)
+    base_adaptive_system_content = """Simple planning for Unity/Unreal tasks. Output: StructuredExecutionPlan.
 
-3. **Diagnose Then Solve** (for troubleshooting):
-   - search_project → code_snippets → (web_search if needed) → modify_file
+Tools: search_project | code_snippets | unity_docs | read_file | write_file | modify_file | delete_file | move_file | web_search
 
-4. **Context Then Implement** (for standard creation):
-   - search_project → write_file → (search_project validation if needed)
+Quick patterns:
+- Unity API/docs: unity_docs
+- Find code: code_snippets
+- Project info: search_project
+- Read: read_file
+- Create: write_file (approval)
+- Update: modify_file (approval)
+- Clean: delete_file/move_file (approval)
+- Research: web_search
 
-EFFICIENCY PRINCIPLES:
-- Don't over-research simple requests
-- Don't under-research complex ones
-- Consider what the user actually needs vs. what templates suggest
-{{ ... }}
-- 1-3 steps maximum, but make them count
-- Each step should add real value
+Common flows:
+- Info: web_search → answer
+- Create: web_search → code_snippets → write_file
+- Fix: search_project → code_snippets → modify_file
+- Standard: web_search → search_project → write_file
 
-Create a smart, streamlined plan that efficiently solves this specific request."""
-
-    # OPTIMIZED SYSTEM CONTENT for intelligent simple planning (structured output only)
-    base_adaptive_system_content = """## Simple Planning Mode
-
-You are creating efficient, intelligent plans for straightforward Unity/Unreal development tasks.
-
-Your output will be a STRUCTURED PLAN (StructuredExecutionPlan), not narrative text.
-Focus purely on creating optimal step sequences, not on formatting or narration.
-
-### TOOL PURPOSE CLARIFICATION:
-
-- **search_project**: Query indexed Unity project database using natural language
-- **code_snippets**: Semantic search through C# scripts by functionality  
-- **unity_docs**: Search local Unity documentation with semantic RAG (best for API/feature lookup)
-- **read_file**: Read file contents safely (no approval)
-- **write_file**: Create/write files (requires approval)
-- **modify_file**: Modify existing files (requires approval)
-- **delete_file**: Delete files (requires approval)
-- **move_file**: Move/rename files (requires approval)
-- **web_search**: Research external Unity documentation and tutorials
-
-**VALID TOOLS**: search_project, code_snippets, unity_docs, read_file, write_file, modify_file, delete_file, move_file, web_search
-
-### INTELLIGENT EFFICIENCY MATRIX:
-
-| Use Case | Best Tool | Workflow |
-|----------|-----------|----------|
-| Unity API/feature questions | unity_docs | Fast, local, semantic |
-| Information requests | web_search | General Unity concepts |
-| Understanding existing code | code_snippets | → read_file |
-| Modifying existing features | code_snippets | → modify_file |
-| Creating new features | unity_docs | → write_file |
-| Project inspection | search_project | Direct query |
-| Asset discovery | search_project | Direct query |
-| File cleanup | delete_file | With approval |
-| File reorganization | move_file | With approval |
-
-### DECISION FLOWCHART:
-
-1. Need Unity API reference or feature docs? → **unity_docs**
-2. Need to find existing code by functionality? → **code_snippets**
-3. Need to learn new Unity concepts? → **unity_docs** OR **web_search**
-4. Need project structure/asset info? → **search_project**
-5. Need to read files? → **read_file**
-6. Need to create files? → **write_file**
-7. Need to modify files? → **modify_file**
-8. Need to delete files? → **delete_file**
-9. Need to move/rename files? → **move_file**
-
-**CRITICAL**: Create plans that use production tools for real Unity project integration."""
+2-4 steps max. Use production tools."""
 
     # MEMORY: Inject memory context into planning prompt
     adaptive_system_content = await inject_memory_into_prompt(

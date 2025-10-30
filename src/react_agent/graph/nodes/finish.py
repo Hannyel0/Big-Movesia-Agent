@@ -58,54 +58,17 @@ async def _generate_direct_action_response(
     latest_result = tool_results[0]
 
     # Create a prompt for the LLM to generate a natural response
-    response_prompt = f"""You answered: "{user_question}"
+    # Optimized response prompt (~80 tokens vs 700)
+    response_prompt = f"""Answer: "{user_question}"
 
-Tool Result:
-{json.dumps(latest_result["result"], indent=2)}
+Result: {json.dumps(latest_result["result"], indent=2)}
 
-Generate a helpful, informative response using **proper markdown formatting**.
+Use markdown: ## headers, **bold**, lists, emojis (📁🔍✅)
+- Categorize info
+- Add insights
+- Offer to explore more
 
-### MARKDOWN FORMATTING REQUIREMENTS:
-
-**YOU WILL BE PENALIZED** for plain text responses. You MUST use:
-
-- **## Headers** for main sections
-- **Bold** for key terms, numbers, file names
-- **Bullet points** with `-` (not •)
-- **Blank lines** before/after headers and lists
-- **Emojis** for visual clarity: 📁 🔍 ✅ 💡 🎯
-
-### Response Structure Example:
-```markdown
-## 📁 Project Scripts
-
-You have **8 C# scripts** in your project!
-
-### Breakdown:
-- **Player controllers** (3 scripts)
-- **UI managers** (2 scripts)  
-- **Utility scripts** (3 scripts)
-
-### 💡 Insights:
-Most are located in the **Scripts/** folder. I noticed several editor scripts for workflow automation.
-
-### 🎯 Next Steps:
-Want me to dive into any specific ones?
-```
-
-### Your Response Guidelines:
-1. **Answer their question** with useful context
-2. **Group or categorize** information when it makes sense
-3. **Point out interesting patterns** or insights
-4. **Offer to dive deeper** if relevant
-5. **Be conversational** but informative - not just a data dump
-
-**Think**: "What would a helpful teammate say?" not "What's the minimum valid answer?"
-
-**BAD** (plain text): "You have 8 scripts."
-**GOOD** (markdown): "## 📁 Your Scripts\\n\\nYou have **8 C# scripts** in your project! They're mostly in the **Scripts/** folder..."
-
-Generate your markdown-formatted response now:"""
+Generate helpful response:"""
 
     try:
         # ✅ CACHING: Use cacheable system prompt

@@ -81,12 +81,11 @@ async def _micro_retry_tool_call(
         # Retry with same tool call but slight parameter adjustment for robustness
         model_with_tools = model.bind_tools(TOOLS)
 
-        # Create slightly adjusted prompt for retry
-        retry_prompt = f"""Retry executing: {current_step.description}
-
-This is retry attempt #{attempt_num} due to transient error.
-Use the {current_step.tool_name} tool with robust parameters.
-Focus on completing: {current_step.success_criteria}"""
+        # Optimized retry prompt (~50 tokens vs 100)
+        retry_prompt = f"""Retry: {current_step.description}
+Attempt #{attempt_num} after transient error.
+Tool: {current_step.tool_name}
+Goal: {current_step.success_criteria}"""
 
         # ✅ CACHING: Cache the retry system prompt for Anthropic models only
         cache_enabled = getattr(runtime.context, "enable_prompt_cache", True)
@@ -809,13 +808,12 @@ async def act(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
 def _create_tool_execution_prompt(
     current_step: PlanStep, step_context: Dict[str, Any]
 ) -> str:
-    """Create a focused prompt for tool execution without narration distractions."""
-    return f"""Execute step {step_context["step_index"] + 1}: {current_step.description}
+    """Create focused prompt for tool execution (~50 tokens vs 80)."""
+    return f"""Step {step_context["step_index"] + 1}: {current_step.description}
+Tool: {current_step.tool_name}
+Criteria: {current_step.success_criteria}
 
-Required Tool: {current_step.tool_name}
-Success Criteria: {current_step.success_criteria}
-
-Call the {current_step.tool_name} tool with appropriate parameters to complete this development step. Focus on creating working game development deliverables that meet the success criteria."""
+Execute tool with appropriate params."""
 
 
 def _is_generic_response(narration: str) -> bool:

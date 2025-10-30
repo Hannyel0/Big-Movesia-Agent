@@ -850,14 +850,12 @@ async def _generate_completion_summary(state: State, model, context: Context) ->
             except:
                 recent_tool_results.append(f"{msg.name}: completed")
 
-    completion_prompt = f"""You have just completed all steps for the goal: "{state.plan.goal}"
-Completed Steps:
-{chr(10).join(completed_steps_summary)}
+    # Optimized completion prompt (~60 tokens vs 120)
+    completion_prompt = f"""Goal: "{state.plan.goal}"
+Steps: {chr(10).join(completed_steps_summary)}
+Results: {chr(10).join(recent_tool_results[-5:]) if recent_tool_results else "All completed"}
 
-Key Results:
-{chr(10).join(recent_tool_results[-5:]) if recent_tool_results else "All steps completed successfully"}
-
-Generate a brief, professional completion message (1-2 sentences) that starts with "Perfect!" and summarizes what was accomplished."""
+Brief message (1-2 sentences) starting with "Perfect!" summarizing accomplishments."""
 
     try:
         # ✅ CACHING: Check if caching is enabled AND using Anthropic

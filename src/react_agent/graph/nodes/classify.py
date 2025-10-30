@@ -202,76 +202,36 @@ async def classify(
         continuation_context = _detect_continuation_context(state)
     
     # Base classification prompt
-    base_classification_prompt = """You are a Unity/Unreal Engine development complexity assessor with access to production tools.
+    base_classification_prompt = """Unity/Unreal dev complexity assessor with tools: search_project, code_snippets, unity_docs, file_operation, web_search
 
-**Available Production Tools:**
-- **search_project**: Query indexed project database
-- **code_snippets**: Semantic search through C# scripts
-- **unity_docs**: Search local Unity documentation with semantic RAG
-- **file_operation**: Safe file I/O with validation
-- **web_search**: Research Unity documentation and tutorials
+**Classification:**
+- **DIRECT**: Single-step (project queries, CONTINUATION requests like "which is biggest?", info questions)
+- **SIMPLE_PLAN**: 2-3 steps (basic implementations, simple mods)
+- **COMPLEX_PLAN**: 4+ steps (full systems, advanced features)
 
-**CRITICAL FOR CONTINUATION REQUESTS:**
-When the user's request references previous results or context (like "which is the biggest one?", "show me more", "the first one"), this is a DIRECT action that should:
-1. Use the existing context from previous tool results
-2. Analyze or present that data differently
-3. NOT require new tool executions or planning
+**CRITICAL - Continuations:** "Which one?", "Show more", "The biggest" = DIRECT (uses existing data, no new tools)
 
-**DIRECT**: Single-step responses
-- Project data queries: "What assets do I have?", "List my scripts"
-- CONTINUATION QUERIES: "Which is the biggest?", "Show me more details", "The first one"
-- Informational queries: "What is a prefab?", "How do controllers work?"
-- Follow-up analysis of existing results
+**User Narration (2-3 sentences):**
+- Describe OUTCOME & DETAILS (what you'll implement/find/fix)
+- Be specific about features/solutions
+- Focus on WHAT, not HOW agent works internally
+- Avoid: "using retrieved data", "no new tools", "filtering results"
+- Instead: what you'll analyze/add/fix
 
-**SIMPLE_PLAN**: 2-3 coordinated operations
-- Basic implementations using existing patterns
-- Simple modifications to existing code
-
-**COMPLEX_PLAN**: 4+ comprehensive steps
-- Complete system implementations
-- Advanced features with extensive integration
-
-**KEY**: Continuation requests referencing recent results = DIRECT (no new tools needed)
-
-**USER NARRATION GUIDELINES:**
-When providing the user_narration field, describe what you'll do to help them in 2-3 sentences:
-- Focus on the OUTCOME and DETAILS of what you'll implement/fix/find
-- Be specific about the features, steps, or solutions you'll provide
-- Explain WHAT you'll do, not HOW the agent works internally
-- Avoid phrases like: "using previously retrieved data", "no new tool calls needed", "filtering existing results"
-- Instead describe: what you'll analyze, what features you'll add, what issues you'll fix
-
-Examples of GOOD narrations (detailed, action-focused):
-- "I'll help you identify which script handles connections by examining your networking code. I'll analyze the script structure to show you exactly where connection logic is implemented and how it's organized."
-- "I'll create a comprehensive player movement script that includes WASD keyboard controls, smooth acceleration and deceleration, jumping with ground detection, and camera rotation. The script will be well-commented and ready to attach to your player GameObject."
-- "I'll help you debug the connection issue in your networking code. I'll examine the current implementation, identify potential causes like timeout settings or serialization problems, and provide specific fixes to get your multiplayer working smoothly."
-- "I'll analyze your project assets to find the largest one. I'll compare file sizes across all asset types including textures, models, audio files, and scenes to show you which one is taking up the most space and provide size details."
-
-Examples of BAD narrations (too short or exposing internals):
-- "I'll analyze those results for you. The request is a direct follow-up using previously retrieved data."
-- "I can help with that right away."
-- "I'll filter the existing results to show you the biggest one."
-"""
-
+Good: "I'll analyze your networking code to show where connection logic is implemented and how it's organized."
+Bad: "I'll filter the existing results to show you the biggest one."""
+    
     # Add explicit continuation context if detected
     if continuation_context:
         continuation_section = f"""
 
- CONTINUATION CONTEXT DETECTED 
+ CONTINUATION DETECTED 
 
-The user just received these results from {continuation_context['tool_result']['tool_name']}:
-**Result Summary:** {continuation_context['tool_result']['summary']}
+Previous tool: {continuation_context['tool_result']['tool_name']}
+Summary: {continuation_context['tool_result']['summary']}
+Data: {json.dumps(continuation_context['tool_result']['result'], indent=2)[:300]}...
 
-**Previous interaction included:**
-{json.dumps(continuation_context['tool_result']['result'], indent=2)[:500]}...
-
-The current request "{user_request}" is a FOLLOW-UP asking for more analysis, filtering, or details about these existing results.
-
-**CLASSIFICATION GUIDANCE FOR THIS CONTINUATION:**
-- This should be classified as DIRECT (no new tools needed)
-- The data already exists in memory
-- Just needs to analyze/present existing results differently
-- Direct_act can handle this with the existing context"""
+Request "{user_request}" is FOLLOW-UP → Classify as DIRECT (data in memory, no new tools needed)"""
         
         base_classification_prompt += continuation_section
     
@@ -295,21 +255,14 @@ The current request "{user_request}" is a FOLLOW-UP asking for more analysis, fi
     
     # Create classification request with continuation awareness
     if continuation_context:
-        classification_request = f""" CONTINUATION REQUEST DETECTED 
+        classification_request = f""" CONTINUATION: "{user_request}"
 
-Current request: "{user_request}"
-Previous tool: {continuation_context['tool_result']['tool_name']}
-Previous result: {continuation_context['tool_result']['summary']}
+Previous: {continuation_context['tool_result']['tool_name']} - {continuation_context['tool_result']['summary']}
 
-This is clearly a FOLLOW-UP question about the previous results.
-
-**Classify as DIRECT** because:
-1. The data already exists in memory
-2. No new tool execution is needed
-3. Just needs to analyze/filter/present existing data
-4. Direct_act can handle this using the continuation context
-
-Provide your classification confirming this is a continuation request."""
+Classify as DIRECT:
+1. Data exists in memory
+2. No new tools needed
+3. Analyze/filter/present existing data"""
     else:
         classification_request = f"""Classify this Unity/game development request: "{user_request}"
 - Unity Version: {unity_version or "Unknown"}

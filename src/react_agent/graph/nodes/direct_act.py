@@ -182,41 +182,19 @@ async def direct_act(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
                 await state.memory.update_focus(entities, topics)
     
     # Base system content
-    base_system_content = """## Unity/Unreal Development Assistant
+    # Optimized base system content (~150 tokens vs 700)
+    base_system_content = """## Unity/Unreal Dev Assistant
 
-You are a development assistant that **EXECUTES TOOLS** to retrieve data from the user's project.
+You EXECUTE TOOLS for project data, PROVIDE KNOWLEDGE for concepts.
 
-### CRITICAL DISTINCTION:
+**Use tools for:** "my assets", "show me GameObjects", "find scripts using X"
+**Provide knowledge for:** "what is X?", "how do I Y?", "explain Z"
 
-**Project Data Queries** (use tools):
-- "What assets do I have?" → Use `search_project` tool
-- "Show me my GameObjects" → Use `search_project` tool
-- "Find scripts using PlayerPrefs" → Use `code_snippets` tool
+ KEY: If they say "my"/"in my project"/"show me"/"what are all" → USE TOOLS
 
-**Conceptual Questions** (provide knowledge):
-- "What is an asset?" → Provide explanation
-- "How do I create GameObjects?" → Provide guidance
-- "Explain Unity's Input System" → Provide information
+ CONTINUATION: If they ask "see more"/"show full code"/"yes" after a summary → provide full data from recent tool results
 
-### 🎯 KEY RULE:
-
-If they say **"my"**, **"in my project"**, **"show me"**, or **"what are all"** → **USE TOOLS!**
-
-### 🔄 CONTINUATION AWARENESS:
-
-If you previously showed a summary and they ask to **"see more"**, **"show full code"**, or **"yes show me"**, they're asking for more detail about what you just discussed. Check recent tool results and provide the full data.
-
-### MARKDOWN FORMATTING REQUIREMENT:
-
-**ALWAYS format responses using proper markdown:**
-- Use **#** **##** **###** for headers
-- Add **blank lines before and after** headers/lists
-- Use **bold** for emphasis: **important terms**
-- Use `-` for bullet points (not •)
-- Use relevant emojis: 🔍 ✅ ❌ 📁 🛠️ ⚠️ 💡 🎯 📊
-- Structure information hierarchically with headers
-
-**You will be penalized for plain text responses without markdown formatting.**"""
+Format with markdown: ## headers, **bold**, blank lines, lists (-), emojis (🔍✅❌📁🛠️💡)"""
     
     # FIXED: Add continuation context if detected
     if continuation:
@@ -224,19 +202,17 @@ If you previously showed a summary and they ask to **"see more"**, **"show full 
         tool_name = tool_result.get('tool_name', 'unknown')
         result_data = tool_result.get('result', {})
         
+        # Optimized continuation context (~70 tokens vs 200)
         continuation_context = f"""
 
-# CONTINUATION CONTEXT
+# CONTINUATION
 
-The user is continuing from a previous interaction. Here's what they saw:
+Previous: {continuation.get('previous_message', 'N/A')[:100]}
 
-**Previous Message:** {continuation.get('previous_message', 'N/A')[:200]}
+Tool result ({tool_name}):
+{json.dumps(result_data, indent=2)[:400]}
 
-**Previous Tool Result ({tool_name}):$
-{json.dumps(result_data, indent=2)[:1000]}
-
-The user's current request ("{user_request}") is likely asking for more details, full code, or additional information about the above result.
-Provide the complete information they're requesting based on this context."""
+Request "{user_request}" asks for more details about this result."""
         
         base_system_content += continuation_context
     
@@ -259,10 +235,10 @@ Provide the complete information they're requesting based on this context."""
         
         if tool_name:
             
-            tool_prompt = f"""Execute the {tool_name} tool to retrieve data for: "{user_request}"
+            # Optimized project query tool prompt (~20 tokens vs 50)
+            tool_prompt = f"""Execute {tool_name} for: "{user_request}"
 
-The user is asking for data FROM their project. Use the tool to query their actual project database.
-Do NOT provide guidance on how to do it themselves - they want YOU to execute the query and show them the results."""
+User wants data FROM their project. Query project database and show results."""
             
             model_with_tools = model.bind_tools(TOOLS)
             
@@ -296,26 +272,17 @@ Do NOT provide guidance on how to do it themselves - they want YOU to execute th
     
     # Normal LLM response path
     
-    # Analyze request to determine approach
-    analysis_prompt = f"""Analyze this Unity/game development request: "{user_request}"
+    # Optimized analysis prompt (~70 tokens vs 280)
+    analysis_prompt = f"""Analyze: "{user_request}"
 
-Available tools:
-- search_project: For querying project data, assets, hierarchy, components
-- code_snippets: For semantic search through C# scripts by functionality
-- unity_docs: For searching local Unity documentation with semantic RAG
-- read_file: For reading file contents
-- write_file: For creating new files (requires approval)
-- modify_file: For modifying existing files (requires approval)
-- delete_file: For deleting files (requires approval)
-- move_file: For moving/renaming files (requires approval)
-- web_search: For finding tutorials, documentation, best practices
+Tools: search_project | code_snippets | unity_docs | read/write/modify/delete/move_file | web_search
 
-Response types:
-1. TOOL_CALL: Use a specific tool if the request clearly maps to one tool operation
-2. INFORMATIONAL: Provide direct knowledge-based answer
-3. GUIDANCE: Offer step-by-step instructions
+Response type:
+1. TOOL_CALL - maps to single tool operation
+2. INFORMATIONAL - direct knowledge answer
+3. GUIDANCE - step-by-step instructions
 
-Choose the most efficient approach."""
+Choose most efficient approach."""
     
     analysis_messages = [
         {"role": "system", "content": static_system_content},
@@ -333,9 +300,10 @@ Choose the most efficient approach."""
             
             if tool_name:
                 
-                tool_prompt = f"""Execute the {tool_name} tool to respond to: "{user_request}"
+                # Optimized tool prompt (~15 tokens vs 30)
+                tool_prompt = f"""Use {tool_name} for: "{user_request}"
 
-Use appropriate parameters based on the request. Focus on providing exactly what the user asked for."""
+Provide parameters based on request."""
                 
                 model_with_tools = model.bind_tools(TOOLS)
                 

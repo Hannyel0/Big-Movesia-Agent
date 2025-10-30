@@ -237,213 +237,42 @@ async def _generate_sql_query(
 
     model = get_model(context.model)
 
-    # Enhanced schema information with examples
-    schema_info = """
-    DATABASE SCHEMA (SQLite):
-    
-    📦 assets - All Unity/Unreal assets (scripts, prefabs, scenes, materials, etc.)
-    Columns:
-      - guid TEXT PRIMARY KEY (unique asset identifier)
-      - path TEXT (relative path like "Assets/Scripts/Player.cs")
-      - kind TEXT (asset type: "MonoScript", "Prefab", "Scene", "Material", etc.)
-      - mtime INTEGER (last modified time, Unix timestamp)
-      - size INTEGER (file size in bytes)
-      - hash TEXT (SHA256 hash of file content)
-      - deleted INTEGER (0=active, 1=deleted)
-      - updated_ts INTEGER (last database update timestamp)
-      - project_id TEXT (project identifier)
-    
-    🔗 asset_deps - Asset dependency relationships
-    Columns:
-      - guid TEXT (asset GUID)
-      - dep TEXT (dependency GUID)
-      PRIMARY KEY (guid, dep)
-    
-    🎬 scenes - Scene files
-    Columns:
-      - guid TEXT PRIMARY KEY
-      - path TEXT (scene file path)
-      - updated_ts INTEGER
-      - project_id TEXT
-    
-    🎬 hierarchy_scenes - Scene metadata with snapshot tracking
-    Columns:
-      - id INTEGER PRIMARY KEY
-      - project_id TEXT
-      - scene_path TEXT
-      - scene_guid TEXT
-      - last_updated INTEGER
-      - snapshot_hash TEXT
-    
-    🎮 hierarchy_gameobjects - GameObject hierarchy from parsed scenes
-    Columns:
-      - id INTEGER PRIMARY KEY
-      - project_id TEXT
-      - scene_path TEXT
-      - instance_id INTEGER (Unity instance ID)
-      - name TEXT (GameObject name)
-      - hierarchy_path TEXT (full path in hierarchy)
-      - parent_path TEXT (parent's hierarchy path, NULL for root)
-      - tag TEXT (Unity tag like "Player", "Enemy")
-      - layer INTEGER (Unity layer number)
-      - active_self INTEGER (0 or 1)
-      - active_in_hierarchy INTEGER (0 or 1)
-      - is_static INTEGER (0 or 1)
-      - pos_x, pos_y, pos_z REAL (position)
-      - rot_x, rot_y, rot_z, rot_w REAL (rotation quaternion)
-      - scale_x, scale_y, scale_z REAL (scale)
-      - sibling_index INTEGER
-      - last_updated INTEGER
-      - is_deleted INTEGER (0=active, 1=deleted)
-    
-    🧩 hierarchy_components - Components attached to GameObjects
-    Columns:
-      - id INTEGER PRIMARY KEY
-      - project_id TEXT
-      - scene_path TEXT
-      - gameobject_instance_id INTEGER (references hierarchy_gameobjects.instance_id)
-      - type_name TEXT (short name like "Transform", "Rigidbody")
-      - full_type_name TEXT (fully qualified type name)
-      - assembly_name TEXT (assembly containing the component)
-      - enabled INTEGER (0 or 1)
-      - properties_json TEXT (JSON string of component properties)
-      - last_updated INTEGER
-      - is_deleted INTEGER (0=active, 1=deleted)
-    
-    📝 events - Unity Editor events log
-    Columns:
-      - id INTEGER PRIMARY KEY
-      - ts INTEGER (timestamp)
-      - session TEXT (session ID)
-      - type TEXT (event type)
-      - body TEXT (JSON event data)
-      - project_id TEXT
-    
-    QUERY EXAMPLES:
-    
-    1. "Find all player scripts"
-       SELECT path, kind, size FROM assets 
-       WHERE kind = 'MonoScript' AND path LIKE '%Player%' 
-       AND deleted = 0 AND project_id = ?
-       LIMIT 50;
-    
-    2. "Show me GameObjects tagged as Player"
-       SELECT name, tag, active_self, scene_path FROM hierarchy_gameobjects 
-       WHERE tag = 'Player' AND is_deleted = 0 AND project_id = ?
-       LIMIT 50;
-    
-    3. "What assets depend on CharacterController?"
-       SELECT DISTINCT a.path, a.kind 
-       FROM assets a
-       JOIN asset_deps ad ON a.guid = ad.guid
-       JOIN assets dep ON ad.dep = dep.guid
-       WHERE dep.path LIKE '%CharacterController%' 
-       AND a.deleted = 0 AND a.project_id = ?
-       LIMIT 50;
-    
-    4. "Find all prefabs in the Player folder"
-       SELECT path, size, mtime FROM assets 
-       WHERE kind = 'Prefab' AND path LIKE '%/Player/%' 
-       AND deleted = 0 AND project_id = ?
-       ORDER BY mtime DESC
-       LIMIT 50;
-    
-    5. "Show me all components on GameObjects named 'Player'"
-       SELECT hgo.name, hgo.scene_path, hc.type_name, hc.enabled 
-       FROM hierarchy_gameobjects hgo
-       JOIN hierarchy_components hc ON hgo.instance_id = hc.gameobject_instance_id 
-           AND hgo.project_id = hc.project_id AND hgo.scene_path = hc.scene_path
-       WHERE hgo.name = 'Player' AND hgo.is_deleted = 0 AND hc.is_deleted = 0
-       AND hgo.project_id = ?
-       LIMIT 50;
-    
-    6. "Find GameObjects with Rigidbody components"
-       SELECT DISTINCT hgo.name, hgo.hierarchy_path, hgo.scene_path
-       FROM hierarchy_gameobjects hgo
-       JOIN hierarchy_components hc ON hgo.instance_id = hc.gameobject_instance_id
-           AND hgo.project_id = hc.project_id AND hgo.scene_path = hc.scene_path
-       WHERE hc.type_name = 'Rigidbody' AND hgo.is_deleted = 0 AND hc.is_deleted = 0
-       AND hgo.project_id = ?
-       LIMIT 50;
-    
-    7. "List all component types used in the project"
-       SELECT type_name, COUNT(*) as count
-       FROM hierarchy_components
-       WHERE is_deleted = 0 AND project_id = ?
-       GROUP BY type_name
-       ORDER BY count DESC
-       LIMIT 50;
-    
-    8. "List GameObjects in sample scene" (FUZZY MATCHING)
-       SELECT name, hierarchy_path, scene_path, active_self 
-       FROM hierarchy_gameobjects 
-       WHERE LOWER(scene_path) LIKE LOWER('%sample%scene%') 
-       AND is_deleted = 0 AND project_id = ?
-       ORDER BY sibling_index ASC
-       LIMIT 50;
-    
-    9. "Find assets named player controller" (CASE-INSENSITIVE)
-       SELECT path, kind, mtime FROM assets 
-       WHERE LOWER(path) LIKE LOWER('%playercontroller%') 
-       AND deleted = 0 AND project_id = ?
-       LIMIT 50;
-    
-    10. "Show GameObjects in main level" (PARTIAL SCENE NAME)
-       SELECT name, tag, scene_path FROM hierarchy_gameobjects 
-       WHERE LOWER(scene_path) LIKE LOWER('%main%') 
-       AND is_deleted = 0 AND project_id = ?
-       LIMIT 50;
-    
-    QUERY BEST PRACTICES:
-    - Always filter is_deleted = 0 for hierarchy tables
-    - Always filter deleted = 0 for assets table
-    - **Use LIKE with % wildcards for user-provided names (not exact matches)**
-    - **Use LOWER() for case-insensitive matching of names/paths**
-    - **For scene names: LOWER(scene_path) LIKE LOWER('%scene_name%')**
-    - **For asset names: LOWER(path) LIKE LOWER('%asset_name%')**
-    - Include project_id filter when available (use ? placeholder)
-    - Add LIMIT to prevent excessive results (default: 50)
-    - When joining hierarchy_gameobjects and hierarchy_components, match on:
-      instance_id = gameobject_instance_id AND project_id AND scene_path
-    - Use ORDER BY for sorted results (DESC for newest first)
-    - Use DISTINCT to avoid duplicates when joining
-    """
+    # ✅ COMPRESSED SCHEMA - Reduced from ~170 lines to ~60 lines (~65% token reduction)
+    schema_info = """SCHEMA (SQLite):
+assets: guid PK, path, kind (MonoScript|Prefab|Scene|Material), mtime, size, hash, deleted (0|1), updated_ts, project_id
+asset_deps: guid, dep (FK to assets.guid) - PK(guid,dep)
+scenes: guid PK, path, updated_ts, project_id
+hierarchy_scenes: id PK, project_id, scene_path, scene_guid, last_updated, snapshot_hash
+hierarchy_gameobjects: id PK, project_id, scene_path, instance_id, name, hierarchy_path, parent_path, tag, layer, active_self (0|1), active_in_hierarchy (0|1), is_static (0|1), pos_x/y/z, rot_x/y/z/w, scale_x/y/z, sibling_index, last_updated, is_deleted (0|1)
+hierarchy_components: id PK, project_id, scene_path, gameobject_instance_id (FK to hierarchy_gameobjects.instance_id), type_name (short), full_type_name, assembly_name, enabled (0|1), properties_json, last_updated, is_deleted (0|1)
+events: id PK, ts, session, type, body (JSON), project_id
 
-    prompt = f"""You are a SQL query generator for a Unity/Unreal project database.
+EXAMPLES:
+1. "player scripts" → SELECT path,kind,size FROM assets WHERE kind='MonoScript' AND LOWER(path) LIKE LOWER('%player%') AND deleted=0 AND project_id=? LIMIT 50
+2. "GameObjects in main scene" → SELECT name,hierarchy_path FROM hierarchy_gameobjects WHERE LOWER(scene_path) LIKE LOWER('%main%') AND is_deleted=0 AND project_id=? LIMIT 50
+3. "Rigidbody components" → SELECT DISTINCT hgo.name,hc.type_name FROM hierarchy_gameobjects hgo JOIN hierarchy_components hc ON hgo.instance_id=hc.gameobject_instance_id AND hgo.project_id=hc.project_id AND hgo.scene_path=hc.scene_path WHERE hc.type_name='Rigidbody' AND hgo.is_deleted=0 AND hc.is_deleted=0 AND hgo.project_id=? LIMIT 50
+
+RULES:
+- User names → LOWER(field) LIKE LOWER('%name%'), never exact match
+- Always: deleted=0 (assets), is_deleted=0 (hierarchy_*), project_id=?
+- JOIN hierarchy tables: match instance_id+project_id+scene_path
+- Default LIMIT 50"""
+
+    prompt = f"""Generate SQLite SELECT query for Unity/Unreal project database.
 
 {schema_info}
 
-User query: "{query_description}"
-{f"Focus on these tables: {', '.join(tables_hint)}" if tables_hint else ""}
+Query: "{query_description}"
+{f"Tables: {', '.join(tables_hint)}" if tables_hint else ""}
 
-Generate a valid SQLite SELECT query to answer this question. Requirements:
+Requirements:
+- User-provided names: use LOWER(field) LIKE LOWER('%name%')
+- Filter: deleted=0 (assets), is_deleted=0 (hierarchy_*)
+- Include: project_id=? WHERE clause
+- Add LIMIT (default 50)
+- Return relevant columns only
 
-CRITICAL - FUZZY MATCHING RULES:
-1. **For user-provided names** (scene names, asset names, GameObject names):
-   - Always use LIKE with % wildcards, not exact matches
-   - Always wrap in LOWER() for case-insensitive matching
-   - Example: LOWER(scene_path) LIKE LOWER('%user_provided_name%')
-   
-2. **When to use fuzzy vs exact matching**:
-   - User input like "sample scene" → LOWER(scene_path) LIKE LOWER('%sample%scene%')
-   - Unity constants like tag='Player' → Can use exact match
-   - Asset types like kind='MonoScript' → Use exact match
-   
-3. **Common name variations to handle**:
-   - "sample scene" might be "SampleScene", "sampleScene", "Sample Scene", "sample_scene"
-   - Use flexible patterns: LOWER(scene_path) LIKE LOWER('%sample%')
-
-QUERY STRUCTURE:
-1. Use proper JOINs when querying multiple tables
-2. Include project_id filter using ? placeholder (e.g., WHERE project_id = ?)
-3. Filter deleted = 0 for assets table
-4. Filter is_deleted = 0 for hierarchy tables
-5. Use helpful column aliases for readability
-6. Add LIMIT clause (default 50, adjust based on query type)
-7. Use ORDER BY for sorted results when appropriate
-8. Return only relevant columns, not SELECT *
-
-Respond with ONLY the SQL query, no explanations or markdown."""
+Respond with SQL only, no explanations."""
 
     logger.debug(f"📤 Sending query generation request to LLM")
 
