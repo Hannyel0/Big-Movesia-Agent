@@ -14,6 +14,12 @@ from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 
 from react_agent.context import Context
+from react_agent.tools.schemas.code_snippets_schemas import (
+    CodeSnippetsInput,
+    CodeSnippetsResponse,
+    CodeSnippet,
+    CodeSnippetsFilter,
+)
 
 
 EMBED_SERVER_URL = os.getenv("EMBED_SERVER_URL", "http://127.0.0.1:8766")
@@ -163,12 +169,15 @@ def _create_token_efficient_snippet(
     match_type: str,
     include_full_code: bool = False,
     max_code_chars: int = 2000
-) -> Dict[str, Any]:
-    """Create snippet with token usage in mind.
+) -> CodeSnippet:
+    """Create snippet with token usage in mind using Pydantic model.
     
     Args:
         include_full_code: If False, only include code signature/metadata
         max_code_chars: Maximum characters of code to include when full code requested
+        
+    Returns:
+        CodeSnippet model with validated fields
     """
     code_text = payload.get("text", "")
     file_path = payload.get("rel_path", "unknown")
@@ -176,26 +185,11 @@ def _create_token_efficient_snippet(
     # Extract metadata regardless
     metadata = _extract_metadata_from_code(code_text)
     
-    snippet = {
-        "file_path": file_path,
-        "file_name": file_path.split('/')[-1],
-        "line_range": payload.get("range", ""),
-        "relevance_score": round(score, 3),
-        "match_type": match_type,
-        "file_hash": payload.get("file_hash", ""),
-        
-        # Rich metadata (low token cost)
-        "classes": metadata["classes"],
-        "public_methods": metadata["public_methods"],
-        "properties": metadata["properties"],
-        "unity_callbacks": metadata["unity_callbacks"],
-        "namespaces": metadata["namespaces"],
-        "using_directives": metadata["using_directives"][:5],  # Limit to 5
-        
-        # Code statistics
-        "total_lines": len(code_text.split('\n')),
-        "code_size_bytes": len(code_text),
-    }
+    # Prepare code content based on include_full_code flag
+    code_content = None
+    code_signature_content = None
+    is_truncated = False
+    truncation_pos = None
     
     if include_full_code:
         # Truncate if too long
@@ -206,16 +200,44 @@ def _create_token_efficient_snippet(
             if last_newline > max_code_chars * 0.8:  # If we can get 80%+ with clean line break
                 truncated_code = truncated_code[:last_newline]
             
-            snippet["code"] = truncated_code + "\n\n// ... code truncated ..."
-            snippet["code_truncated"] = True
-            snippet["truncation_point"] = max_code_chars
+            code_content = truncated_code + "\n\n// ... code truncated ..."
+            is_truncated = True
+            truncation_pos = max_code_chars
         else:
-            snippet["code"] = code_text
-            snippet["code_truncated"] = False
+            code_content = code_text
+            is_truncated = False
     else:
         # Just include signature
-        snippet["code_signature"] = _extract_code_signature(code_text, max_lines=15)
-        snippet["full_code_available"] = True
+        code_signature_content = _extract_code_signature(code_text, max_lines=15)
+    
+    # Construct Pydantic model (automatic validation)
+    snippet = CodeSnippet(
+        file_path=file_path,
+        file_name=file_path.split('/')[-1],
+        line_range=payload.get("range", ""),
+        relevance_score=round(score, 3),
+        match_type=match_type,
+        file_hash=payload.get("file_hash", ""),
+        
+        # Rich metadata (low token cost)
+        classes=metadata["classes"],
+        public_methods=metadata["public_methods"],
+        properties=metadata["properties"],
+        unity_callbacks=metadata["unity_callbacks"],
+        namespaces=metadata["namespaces"],
+        using_directives=metadata["using_directives"][:5],  # Limit to 5
+        
+        # Code statistics
+        total_lines=len(code_text.split('\n')),
+        code_size_bytes=len(code_text),
+        
+        # Code content (conditional)
+        code=code_content,
+        code_signature=code_signature_content,
+        code_truncated=is_truncated,
+        truncation_point=truncation_pos,
+        full_code_available=True
+    )
     
     return snippet
 
@@ -489,17 +511,16 @@ async def _check_embedding_server_health() -> bool:
 
 
 
-@tool
+@tool(args_schema=CodeSnippetsInput)
 async def code_snippets(
     query: str,
     config: RunnableConfig,
-    filter_by: Optional[Dict[str, Any]] = None,
-    top_k: int = 3,  # REDUCED from 5 to 3
-    include_context: bool = True,
-    include_full_code: bool = False,  # NEW: Default to signatures only
-    max_code_chars: int = 1500,  # NEW: Limit code length when full code requested
+    filter_by: Optional[CodeSnippetsFilter] = None,
+    top_k: int = 3,
+    include_full_code: bool = False,
+    max_code_chars: int = 1500,
     score_threshold: float = 0.30
-) -> Dict[str, Any]:
+) -> CodeSnippetsResponse:
     """🚀 OPTIMIZED: Search C# scripts with token-efficient output.
     
     By default, returns metadata and code signatures to minimize tokens.
@@ -509,16 +530,18 @@ async def code_snippets(
     - Connection pooling for HTTP requests
     - Embedding cache (200 entries)
     - Persistent connections
+    - Pydantic validation for type safety
     
     Args:
-        query: Search query (file name or description)
-        top_k: Number of results (default 3, reduced for token efficiency)
+        query: Search query (file name or description, min 1 character)
+        filter_by: Optional filter criteria (file extension, namespace, size range)
+        top_k: Number of results (1-10, default 3 for token efficiency)
         include_full_code: Return full code? (default False - saves tokens!)
-        max_code_chars: Max code length when full code included (default 1500)
-        score_threshold: Minimum semantic score (default 0.30)
+        max_code_chars: Max code length when full code included (100-5000, default 1500)
+        score_threshold: Minimum semantic score (0.0-1.0, default 0.30)
         
     Returns:
-        Snippets with metadata + signatures (or full code if requested)
+        CodeSnippetsResponse with typed snippets, metadata, and performance metrics
     """
     import time
     tool_start = time.perf_counter()
@@ -529,20 +552,22 @@ async def code_snippets(
         project_id = configurable.get("project_id")
         
         if not project_id:
-            return {
-                "success": False,
-                "error": "Project ID not available",
-                "query": query
-            }
+            return CodeSnippetsResponse(
+                success=False,
+                error="Project ID not available",
+                query=query,
+                snippets=[],
+            )
         
         # Check embedding server
         server_ready = await _check_embedding_server_health()
         if not server_ready:
-            return {
-                "success": False,
-                "error": f"Embedding server not ready at {EMBED_SERVER_URL}",
-                "query": query
-            }
+            return CodeSnippetsResponse(
+                success=False,
+                error=f"Embedding server not ready at {EMBED_SERVER_URL}",
+                query=query,
+                snippets=[],
+            )
         
         # Two-stage search
         file_patterns = _extract_file_name_patterns(query)
@@ -557,7 +582,7 @@ async def code_snippets(
         
         merged_results = _merge_results(file_name_results, semantic_results, top_k=top_k)
         
-        # Create token-efficient snippets
+        # Create token-efficient snippets using Pydantic models
         snippets = [
             _create_token_efficient_snippet(
                 r["payload"],
@@ -571,40 +596,41 @@ async def code_snippets(
         
         # Calculate token usage estimate
         total_code_chars = sum(
-            len(s.get("code", s.get("code_signature", ""))) 
+            len(s.code or s.code_signature or "") 
             for s in snippets
         )
         estimated_tokens = total_code_chars // 4  # Rough estimate: 4 chars per token
         
         tool_duration = (time.perf_counter() - tool_start) * 1000
         
-        return {
-            "success": True,
-            "query": query,
-            "file_patterns_extracted": file_patterns,
-            "search_strategy": "two_stage_hybrid_token_efficient",
-            "snippets": snippets,
-            "total_found": len(snippets),
-            "score_threshold": score_threshold,
-            "project_id": project_id,
-            "timestamp": datetime.now(UTC).isoformat(),
+        return CodeSnippetsResponse(
+            success=True,
+            query=query,
+            file_patterns_extracted=file_patterns,
+            search_strategy="two_stage_hybrid_token_efficient",
+            snippets=snippets,
+            total_found=len(snippets),
+            score_threshold=score_threshold,
+            project_id=project_id,
+            timestamp=datetime.now(UTC).isoformat(),
             
             # Token usage info
-            "include_full_code": include_full_code,
-            "estimated_tokens": estimated_tokens,
-            "token_savings_mode": not include_full_code,
+            include_full_code=include_full_code,
+            estimated_tokens=estimated_tokens,
+            token_savings_mode=not include_full_code,
             
             # 🚀 Performance metrics
-            "execution_time_ms": round(tool_duration, 1)
-        }
+            execution_time_ms=round(tool_duration, 1)
+        )
         
     except Exception as e:
-        return {
-            "success": False,
-            "error": f"Code search failed: {str(e)}",
-            "query": query,
-            "error_type": type(e).__name__
-        }
+        return CodeSnippetsResponse(
+            success=False,
+            error=f"Code search failed: {str(e)}",
+            query=query,
+            error_type=type(e).__name__,
+            snippets=[],
+        )
 
 
 # 🚀 OPTIMIZATION: Cleanup function for graceful shutdown

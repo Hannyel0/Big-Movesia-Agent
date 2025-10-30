@@ -17,13 +17,19 @@ import asyncio
 import time
 from datetime import datetime, UTC, timedelta
 from enum import Enum
-from dataclasses import dataclass, field
 import hashlib
 import json
 
 import aiohttp
 import requests
 from langchain_core.tools import tool
+
+from react_agent.tools.schemas.web_search_schemas import (
+    SearchConfig,
+    WebSearchInput,
+    WebSearchResponse,
+    SearchResult,
+)
 
 # Optional caching support
 try:
@@ -40,49 +46,7 @@ class SearchEngine(str, Enum):
     BRAVE = "brave"
 
 
-@dataclass
-class SearchConfig:
-    """Configuration for the enhanced search tool."""
-    
-    # SearXNG Configuration
-    searxng_url: str = field(default_factory=lambda: os.getenv("SEARXNG_URL", "http://localhost:8888"))
-    searxng_timeout: int = field(default_factory=lambda: int(os.getenv("SEARXNG_TIMEOUT", "15")))
-    searxng_engines: Optional[str] = field(default_factory=lambda: os.getenv("SEARXNG_ENGINES"))  # e.g., "google,duckduckgo,brave"
-    searxng_categories: Optional[str] = field(default_factory=lambda: os.getenv("SEARXNG_CATEGORIES"))  # e.g., "general,images"
-    searxng_language: str = field(default_factory=lambda: os.getenv("SEARXNG_LANGUAGE", "en"))
-    
-    # Brave Search Configuration
-    brave_api_key: Optional[str] = field(default_factory=lambda: os.getenv("BRAVE_SEARCH_API_KEY"))
-    brave_timeout: int = field(default_factory=lambda: int(os.getenv("BRAVE_TIMEOUT", "10")))
-    brave_base_url: str = "https://api.search.brave.com/res/v1/web/search"
-    
-    # Retry Configuration
-    max_retries: int = 3
-    retry_delay: float = 1.0  # Initial delay in seconds
-    retry_exponential_base: float = 2.0  # Exponential backoff multiplier
-    
-    # Result Configuration
-    max_results: int = field(default_factory=lambda: int(os.getenv("MAX_SEARCH_RESULTS", "10")))
-    
-    # Cache Configuration
-    enable_cache: bool = field(default_factory=lambda: os.getenv("ENABLE_SEARCH_CACHE", "true").lower() == "true")
-    cache_ttl: int = field(default_factory=lambda: int(os.getenv("SEARCH_CACHE_TTL", "3600")))  # 1 hour default
-    cache_max_size: int = field(default_factory=lambda: int(os.getenv("SEARCH_CACHE_SIZE", "100")))
-    
-    # Fallback Configuration
-    enable_brave_fallback: bool = True
-    fallback_on_empty_results: bool = True
-    
-    def __post_init__(self):
-        """Validate configuration."""
-        # Validate SearXNG URL
-        if not self.searxng_url:
-            raise ValueError("SEARXNG_URL must be configured")
-        
-        # Validate Brave API key if fallback is enabled
-        if self.enable_brave_fallback and not self.brave_api_key:
-            print("Warning: BRAVE_SEARCH_API_KEY not set. Brave fallback will be disabled.")
-            self.enable_brave_fallback = False
+# SearchConfig is now imported from web_search_schemas.py
 
 
 class SearchCache:
@@ -619,59 +583,83 @@ def get_search_instance() -> EnhancedWebSearch:
     return _search_instance
 
 
-@tool
+@tool(args_schema=WebSearchInput)
 async def web_search(
     query: str,
     max_results: int = 10,
-    time_range: Optional[str] = None,
+    time_range: Optional[Literal["day", "month", "year"]] = None,
     safe_search: int = 0
-) -> Dict[str, Any]:
+) -> WebSearchResponse:
     """Search the web for information about game development, Unity, and related topics.
     
     Uses SearXNG as the primary search engine with automatic fallback to Brave Search
     if needed. Results are cached to improve performance.
     
     Args:
-        query: Search query string
-        max_results: Maximum number of results to return (default: 10)
+        query: Search query string (min 1 character)
+        max_results: Maximum number of results to return (1-100, default: 10)
         time_range: Optional time range filter - "day", "month", or "year"
         safe_search: Safe search level - 0 (off), 1 (moderate), or 2 (strict)
         
     Returns:
-        Search results with URLs, titles, and content. Includes metadata about
-        the search engine used, number of results, and any suggestions or answers.
+        WebSearchResponse with typed results, metadata, and performance info
         
     Example:
         >>> result = await web_search("Unity coroutines best practices")
-        >>> for item in result["results"]:
-        >>>     print(f"{item['title']}: {item['url']}")
+        >>> for item in result.results:
+        >>>     print(f"{item.title}: {item.url}")
     """
     try:
         search = get_search_instance()
         
-        # Validate time_range
-        valid_time_ranges = ["day", "month", "year"]
-        if time_range and time_range not in valid_time_ranges:
-            return {
-                "success": False,
-                "error": f"Invalid time_range. Must be one of: {', '.join(valid_time_ranges)}",
-                "query": query
-            }
-        
-        return await search.search(
+        # Execute search (time_range validation now handled by Pydantic)
+        result_dict = await search.search(
             query=query,
             max_results=max_results,
             time_range=time_range,
             safe_search=safe_search
         )
         
+        # Convert dict results to Pydantic models
+        if result_dict.get("success"):
+            # Convert result dicts to SearchResult models
+            typed_results = [
+                SearchResult(**r) for r in result_dict.get("results", [])
+            ]
+            
+            return WebSearchResponse(
+                success=True,
+                query=result_dict["query"],
+                engine=result_dict.get("engine", "unknown"),
+                results=typed_results,
+                result_count=len(typed_results),
+                timestamp=result_dict.get("timestamp", datetime.now(UTC).isoformat()),
+                from_cache=result_dict.get("from_cache", False),
+                fallback_used=result_dict.get("fallback_used", False),
+                infoboxes=result_dict.get("infoboxes", []),
+                suggestions=result_dict.get("suggestions", []),
+                answers=result_dict.get("answers", []),
+                corrections=result_dict.get("corrections", []),
+            )
+        else:
+            # Error case
+            return WebSearchResponse(
+                success=False,
+                query=result_dict.get("query", query),
+                error=result_dict.get("error", "Unknown error"),
+                engines_tried=result_dict.get("engines_tried", []),
+                timestamp=result_dict.get("timestamp", datetime.now(UTC).isoformat()),
+                results=[],
+            )
+        
     except Exception as e:
-        return {
-            "success": False,
-            "error": f"Web search failed: {str(e)}",
-            "query": query,
-            "timestamp": datetime.now(UTC).isoformat()
-        }
+        return WebSearchResponse(
+            success=False,
+            error=f"Web search failed: {str(e)}",
+            query=query,
+            timestamp=datetime.now(UTC).isoformat(),
+            results=[],
+        )
 
 
 # Synchronous wrapper for backward compatibility

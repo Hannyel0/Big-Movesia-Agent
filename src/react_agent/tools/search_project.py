@@ -16,6 +16,11 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.runtime import get_runtime
 
 from react_agent.context import Context
+from react_agent.tools.schemas.search_project_schemas import (
+    SearchProjectInput,
+    SearchProjectResponse,
+    TableName,
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -39,10 +44,12 @@ _cache_misses = 0
 CACHE_MAX_AGE = 3600  # 1 hour in seconds
 
 
-def _get_query_hash(query_description: str, tables_hint: Optional[List[str]]) -> str:
+def _get_query_hash(query_description: str, tables_hint: Optional[List[TableName]]) -> str:
     """Generate a hash for caching query translations."""
+    # Convert TableName enums to strings for hashing
+    table_strs = [t.value if isinstance(t, TableName) else str(t) for t in (tables_hint or [])]
     cache_key = (
-        f"{query_description.lower().strip()}:{','.join(sorted(tables_hint or []))}"
+        f"{query_description.lower().strip()}:{','.join(sorted(table_strs))}"
     )
     return hashlib.md5(cache_key.encode()).hexdigest()
 
@@ -226,14 +233,17 @@ def _preprocess_user_query(query_description: str) -> str:
 
 
 async def _generate_sql_query(
-    query_description: str, tables_hint: Optional[List[str]], context: Context
+    query_description: str, tables_hint: Optional[List[TableName]], context: Context
 ) -> Dict[str, Any]:
     """Generate SQL query from natural language using LLM with enhanced schema info."""
     from react_agent.utils import get_model
 
     logger.info(f"🔄 Generating SQL for: '{query_description}'")
     if tables_hint:
-        logger.debug(f"📋 Table hints provided: {tables_hint}")
+        # Convert TableName enums to strings for logging and prompt
+        table_strs = [t.value if isinstance(t, TableName) else str(t) for t in tables_hint]
+        logger.debug(f"📋 Table hints provided: {table_strs}")
+        tables_hint = table_strs  # Use string values in prompt
 
     model = get_model(context.model)
 
@@ -330,25 +340,25 @@ def _execute_query_sync(sqlite_path: str, sql_query: str) -> tuple[list[dict], f
         raise  # Re-raise to be caught by async wrapper
 
 
-@tool
+@tool(args_schema=SearchProjectInput)
 async def search_project(
     query_description: str,
     config: RunnableConfig,
-    tables: Optional[List[str]] = None,
+    tables: Optional[List[TableName]] = None,
     return_format: Literal["structured", "natural_language"] = "structured",
-) -> Dict[str, Any]:
+) -> SearchProjectResponse:
     """Search the Unity/Unreal project using natural language queries.
 
     Converts natural language to SQL and queries the indexed SQLite database containing
     scenes, assets, hierarchy, components, dependencies, and events.
 
     Args:
-        query_description: Natural language description of what to find
+        query_description: Natural language description of what to find (min 3 characters)
         tables: Optional hint about which tables to query (assets, scenes, hierarchy_gameobjects, hierarchy_components, events)
         return_format: How to format results - "structured" returns raw data, "natural_language" returns readable text
 
     Returns:
-        Query results with the generated SQL for transparency
+        SearchProjectResponse with typed results, SQL query, and metadata
     """
     start_time = datetime.now(UTC)
     logger.info(f"\n{'=' * 70}")
@@ -377,19 +387,23 @@ async def search_project(
 
         if not sqlite_path:
             logger.error("❌ SQLite path not provided in config")
-            return {
-                "success": False,
-                "error": "SQLite database path not configured",
-                "query_description": query_description,
-            }
+            return SearchProjectResponse(
+                success=False,
+                error="SQLite database path not configured",
+                query_description=query_description,
+                results=[],
+                results_structured=[],
+            )
 
         if not os.path.exists(sqlite_path):
             logger.error(f"❌ SQLite database not found at: {sqlite_path}")
-            return {
-                "success": False,
-                "error": f"SQLite database not found at path: {sqlite_path}",
-                "query_description": query_description,
-            }
+            return SearchProjectResponse(
+                success=False,
+                error=f"SQLite database not found at path: {sqlite_path}",
+                query_description=query_description,
+                results=[],
+                results_structured=[],
+            )
 
         logger.info(f"✅ Database file exists: {sqlite_path}")
 
@@ -411,12 +425,14 @@ async def search_project(
 
             if not validation["is_valid"]:
                 logger.error(f"❌ Generated query failed validation")
-                return {
-                    "success": False,
-                    "error": f"Invalid SQL query generated: {'; '.join(validation['errors'])}",
-                    "query_description": query_description,
-                    "sql_query": sql_query,
-                }
+                return SearchProjectResponse(
+                    success=False,
+                    error=f"Invalid SQL query generated: {'; '.join(validation['errors'])}",
+                    query_description=query_description,
+                    sql_query=sql_query,
+                    results=[],
+                    results_structured=[],
+                )
 
             # Cache the validated query
             _cache_query(query_hash, sql_query)
@@ -523,12 +539,14 @@ async def search_project(
             logger.error(
                 f"❌ SQLite error during execution: {str(sql_err)}", exc_info=True
             )
-            return {
-                "success": False,
-                "error": f"SQL execution failed: {str(sql_err)}",
-                "query_description": query_description,
-                "sql_query": sql_query,
-            }
+            return SearchProjectResponse(
+                success=False,
+                error=f"SQL execution failed: {str(sql_err)}",
+                query_description=query_description,
+                sql_query=sql_query,
+                results=[],
+                results_structured=[],
+            )
 
         # Format results based on return_format
         # ✅ PRIORITY 3 FIX: Return BOTH formats so structured data isn't lost
@@ -547,18 +565,18 @@ async def search_project(
 
         total_duration = (datetime.now(UTC) - start_time).total_seconds()
 
-        result = {
-            "success": True,
-            "results": formatted_natural,  # Natural language string OR structured list
-            "results_structured": results,  # ✅ ADD: Always include raw structured data
-            "result_count": len(results),
-            "sql_query": sql_query,
-            "query_description": query_description,
-            "timestamp": datetime.now(UTC).isoformat(),
-            "execution_time_seconds": query_duration,
-            "total_time_seconds": total_duration,
-            "cache_hit": cached_sql is not None,
-        }
+        result = SearchProjectResponse(
+            success=True,
+            results=formatted_natural,  # Natural language string OR structured list
+            results_structured=results,  # Always include raw structured data
+            result_count=len(results),
+            sql_query=sql_query,
+            query_description=query_description,
+            timestamp=datetime.now(UTC).isoformat(),
+            execution_time_seconds=query_duration,
+            total_time_seconds=total_duration,
+            cache_hit=cached_sql is not None,
+        )
 
         # ✅ ADD: Log that we're preserving structured data
         logger.debug(f"📦 Preserved structured data: {len(results)} items")
@@ -583,13 +601,15 @@ async def search_project(
         logger.error(f"   Duration: {error_duration:.3f}s")
         logger.error(f"{'=' * 70}\n", exc_info=True)
 
-        return {
-            "success": False,
-            "error": f"Search failed: {str(e)}",
-            "query_description": query_description,
-            "sql_query": locals().get("sql_query", "N/A"),
-            "execution_time_seconds": error_duration,
-        }
+        return SearchProjectResponse(
+            success=False,
+            error=f"Search failed: {str(e)}",
+            query_description=query_description,
+            sql_query=locals().get("sql_query", "N/A"),
+            execution_time_seconds=error_duration,
+            results=[],
+            results_structured=[],
+        )
 
 
 def _format_results_natural_language(results: List[Dict], query: str) -> str:
